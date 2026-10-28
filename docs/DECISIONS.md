@@ -14,6 +14,9 @@
 - **状态文件带版本**：`/tmp/claude-statusline-<sid>.json` 只认文件自身的 `v`；与 `STATE_V`
   不符即整体重扫（分片、后台），旧结构不会被当成新结构读。v9 把每文件消息数键改为
   `last_id` / `msgs`。
+- **18 段 token 缓存的字段顺序以 `statusline-tokens.py` 的 `FIELDS` 为准**：生产者按字段名
+  填、按 `FIELDS` 输出；bash 的 `IFS=tab read`、测试与 `tools/preview.sh` 的假数据由
+  `tests/test_tokens.py` 的契约测试守护。改顺序只动 `FIELDS` 与 `BASH_NAMES`。
 
 ## 外观沿革
 
