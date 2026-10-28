@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 跑全部测试。每个渲染测试都在独立沙箱里跑（CLAUDE_SL_TMP + 假 iTerm profile），
-# 不读也不写线上缓存、不联网。约 30 秒。
+# 不读也不写线上缓存、不联网。约 1.5–5 分钟（随负载；隔离沙箱要起数百次真实渲染）。
 #
 #   bash run_tests.sh            全部
 #   bash run_tests.sh tokens     只跑某个模块（render / tokens / theme）

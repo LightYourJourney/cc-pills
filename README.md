@@ -102,7 +102,7 @@ install.sh  run_tests.sh
 ## Tests
 
 ```bash
-bash run_tests.sh              # ~40 s, fully isolated (no live caches, no network)
+bash run_tests.sh              # ~1.5–5 min depending on load, fully isolated (no live caches, no network)
 bash run_tests.sh tokens       # one module: render / tokens / theme
 UPDATE_GOLDEN=1 bash run_tests.sh   # after an intentional rendering change
 ```

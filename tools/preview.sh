@@ -25,12 +25,12 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 now=$(date +%s)
 
-# 场景：名称|ctx%|ctx token|5h%|7d%|cache 剩余秒（cold = 已冷）|Claude 状态|假 token 缓存（17 段）
+# 场景：名称|ctx%|ctx token|5h%|7d%|cache 剩余秒（cold = 已冷）|Claude 状态|假 token 缓存（18 段）
 T=$'\t'
 SCENES=(
-  "常态|35|350000|20|40|3000|none|118M${T}736k${T}\$4.9/h${T}1${T}ok${T}-${T}ok${T}-${T}-${T}-${T}-${T}-${T}-${T}-${T}98.2${T}-${T}-"
-  "截图（5h 将提前用完、7d 88%）|18|175000|58|88|3500|none|118M${T}736k${T}\$13/h${T}1${T}warn${T}2h00m${T}high${T}16h21m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-"
-  "告警（ctx 96%、5h 82%、7d 97%、cache 已冷、Claude major）|96|960000|82|97|cold|major|118M${T}736k${T}\$24/h${T}1${T}warn${T}36m${T}bad${T}3h42m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-"
+  "常态|35|350000|20|40|3000|none|118M${T}736k${T}\$4.9/h${T}1${T}ok${T}-${T}ok${T}-${T}-${T}-${T}-${T}-${T}-${T}-${T}98.2${T}-${T}-${T}517"
+  "截图（5h 将提前用完、7d 88%）|18|175000|58|88|3500|none|118M${T}736k${T}\$13/h${T}1${T}warn${T}2h00m${T}high${T}16h21m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-${T}517"
+  "告警（ctx 96%、5h 82%、7d 97%、cache 已冷、Claude major）|96|960000|82|97|cold|major|118M${T}736k${T}\$24/h${T}1${T}warn${T}36m${T}bad${T}3h42m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-${T}517"
 )
 mk() {   # mk <sid> <ctx%> <ctx tok> <5h%> <7d%> <cache>
   local exp=$((now + ${6/cold/0})) warm=true

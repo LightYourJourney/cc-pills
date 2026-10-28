@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -12,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from _util import SRC
+from _util import FIELDS, IDX, REPO, SRC
 
 PATH = os.path.join(SRC, 'statusline-tokens.py')
 
@@ -93,14 +94,14 @@ class Counting(Base):
                                     line('c', 10, 1, 'end_turn')])
         self.write('m/subagents/agent-1.jsonl', [line('s1', 1, 1, 'end_turn')])
         out = self.run_tok(tp, 'c7').stdout.rstrip('\n').split('\t')
-        self.assertEqual(out[17], '4', '主对话 3 条（a 的三行只算一次）+ subagent 1 条')
+        self.assertEqual(out[IDX['msgs']], '4', '主对话 3 条（a 的三行只算一次）+ subagent 1 条')
 
     def test_old_state_version_rescans_message_count(self):
         """状态版本升级后必须整体重扫，否则消息数只从升级那一刻起算（线上曾显示 1）。"""
         tp = self.write('v.jsonl', [line('a', 1, 1, 'end_turn'), line('b', 1, 1, 'end_turn')])
         with open(os.path.join(self.d, 'claude-statusline-v1.json'), 'w') as f:
             json.dump({'v': 7, 'files': {tp: {'off': os.path.getsize(tp), 'fp': 0}}}, f)
-        self.assertEqual(self.run_tok(tp, 'v1').stdout.rstrip('\n').split('\t')[17], '2')
+        self.assertEqual(self.run_tok(tp, 'v1').stdout.rstrip('\n').split('\t')[IDX['msgs']], '2')
 
     def test_time_budget_shared_across_files(self):
         tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
@@ -132,6 +133,15 @@ class Trackers(Base):
         for k in range(0, 1201, 10):
             self.t.track(st, 'cost', 12 * k / 3600, 1000 + k, epoch='stdin')
         self.assertAlmostEqual(self.t.rate(st, 'cost', 2200) * 3600, 12, delta=0.5)
+
+    def test_cost_half_life_is_1200s(self):
+        """半衰期 600s → 1200s（DECISIONS：把单笔大请求的跳变压到 $7）：衰减 1200s 恰好减半。"""
+        st = {'trk': {}}
+        for k in range(0, 1201, 10):
+            self.t.track(st, 'cost', 12 * k / 3600, 1000 + k, epoch='stdin')
+        ew = st['trk']['cost']['ew']
+        self.t.track(st, 'cost', st['trk']['cost']['lv'] * 0.98, 3400, epoch='stdin')
+        self.assertAlmostEqual(st['trk']['cost']['ew'] / ew, 0.5, delta=0.01)
 
 
 class Pace(Base):
@@ -182,7 +192,7 @@ class Relay(Base):
         tp = self.write('g.jsonl', [line('mold', 1000000, 0, 'end_turn', ts=ts(now - 86400 * 40)),
                                     line('mnew', 1000, 100, 'end_turn', ts=ts(now - 60))])
         out = self.run_tok(tp, 'r1', f'relay={db}', 'cost=10').stdout.split('\t')
-        self.assertAlmostEqual(float(out[10]), 30 + (1000 * 5 + 100 * 25) / 1e6, places=6,
+        self.assertAlmostEqual(float(out[IDX['rcost']]), 30 + (1000 * 5 + 100 * 25) / 1e6, places=6,
                                msg='早于库内最早记录的消息不应再自算')
         st = self.state('r1')
         self.assertEqual(st['trk']['cost']['ep'], 'ledger')
@@ -208,8 +218,8 @@ class Relay(Base):
         c.close()
         tp = self.write('i.jsonl', [line('m1', 1, 1, 'end_turn')])
         out = self.run_tok(tp, 'r3', f'relay={db}').stdout.split('\t')
-        # 今日 = 本会话账本 0 + 无头 Claude 2.5 + 本会话尾部（m1 无价格 → 不计），Codex 的 9 排除
-        self.assertAlmostEqual(float(out[12]), 2.5, places=6)
+        # 今日 = 本会话账本 0 + 无头 Claude 2.5 + 本会话尾部 0.00003（四位小数下不可见），Codex 的 9 排除
+        self.assertAlmostEqual(float(out[IDX['rtoday']]), 2.5, places=4)
 
     def test_proxy_rows_dedup_only_claude(self):
         """代理已记账的消息不重复自算；Codex 的同 token 行不能顶替 Claude 消息。"""
@@ -226,13 +236,26 @@ class Relay(Base):
         tp = self.write('h.jsonl', [line('mprox', 2000, 200, 'end_turn', ts=ts),
                                     line('mcodex', 3000, 300, 'end_turn', ts=ts)])
         out = self.run_tok(tp, 'r2', f'relay={db}').stdout.split('\t')
-        self.assertAlmostEqual(float(out[10]), 0.5 + (3000 * 5 + 300 * 25) / 1e6, places=6)
+        self.assertAlmostEqual(float(out[IDX['rcost']]), 0.5 + (3000 * 5 + 300 * 25) / 1e6, places=6)
 
     def test_pricing_candidates(self):
         c = self.t.pricing_candidates
         self.assertIn('claude-opus-5-5', c('anthropic/claude-opus-5-5-20261001[1m]'))
         self.assertIn('claude-sonnet-5-5', c('Claude-Sonnet-5-5@20261001'))
         self.assertEqual(c('unknown'), [])
+
+
+class Protocol(unittest.TestCase):
+    def test_preview_fake_tokens_have_eighteen_fields(self):
+        """preview.sh 的假 token 缓存必须同为 18 段——曾停在 17 段，预览里永远看不到消息数。"""
+        with open(os.path.join(REPO, 'tools', 'preview.sh')) as f:
+            src = f.read()
+        block = re.search(r'^SCENES=\((.*?)^\)', src, re.S | re.M).group(1)
+        scenes = [l for l in block.splitlines() if '|' in l]
+        self.assertTrue(scenes, '没找到 preview.sh 的场景表')
+        for line in scenes:
+            tok = line.split('|')[-1]
+            self.assertEqual(tok.count('${T}') + 1, len(FIELDS), line.strip())
 
 
 if __name__ == '__main__':

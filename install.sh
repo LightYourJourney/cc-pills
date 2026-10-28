@@ -27,15 +27,18 @@ for a in "$@"; do
     *) echo "未知参数：$a（--help 看用法）" >&2; exit 2 ;;
   esac
 done
-[ "$WITH_SUB" = 1 ] && FILES+=(subagent-statusline.sh)
+# install 只装 --with-subagent 指定的；check / uninstall 覆盖实际装过的副本
+if [ "$WITH_SUB" = 1 ] || { [ "$MODE" != install ] && [ -e "$DEST/subagent-statusline.sh" ]; }; then
+  FILES+=(subagent-statusline.sh)
+fi
 
 check_deps() {
   local miss=0
-  for c in bash jq python3 git curl; do
+  for c in bash jq python3 git; do
     command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖：$c" >&2; miss=1; }
   done
-  local v=${BASH_VERSINFO[0]}
-  [ "$v" -ge 4 ] || { echo "需要 bash ≥ 4（当前 $v）；macOS 自带 3.2 请装 Homebrew bash" >&2; miss=1; }
+  local v=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))
+  [ "$v" -ge 402 ] || { echo "需要 bash ≥ 4.2（当前 ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}）；macOS 自带 3.2 请装 Homebrew bash" >&2; miss=1; }
   return "$miss"
 }
 

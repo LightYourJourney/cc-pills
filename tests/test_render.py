@@ -37,13 +37,19 @@ def scenarios(sb):
     ]
 
 
+def each_scenario(sb):
+    """逐个场景写好 token 缓存与 Claude 状态，产出 (名称, stdin, 额外环境变量)。"""
+    for name, d, tok, env, status in scenarios(sb):
+        sb.write_tok(d['session_id'], **tok)
+        sb.set_status(status)
+        yield name, d, env
+
+
 def render_all():
     out = {}
     for st in STYLES:
         with Sandbox(style=st) as sb:
-            for name, d, tok, env, status in scenarios(sb):
-                sb.write_tok(d['session_id'], **tok)
-                sb.set_status(status)
+            for name, d, env in each_scenario(sb):
                 for c in WIDTHS:
                     out[f'{st}|{name}|{c}'] = sb.render(d, c, env=env)
     return out
@@ -70,25 +76,23 @@ class WidthProperty(unittest.TestCase):
 
     def test_never_overflow_while_degradable(self):
         with Sandbox() as sb:
-            for name, d, tok, env, status in scenarios(sb):
-                sb.write_tok(d['session_id'], **tok)
-                sb.set_status(status)
-                minimal = sb.render(d, 12, env=env)
+            for name, d, env in each_scenario(sb):
                 for c in range(30, 221, 5):
                     o = sb.render(d, c, env=env)
                     if width(o) > c - 4:
+                        # 现场渲染最小形态：倒计时跨分钟会改文本，预先渲染的基准会误判
+                        minimal = sb.render(d, 12, env=env)
                         self.assertEqual(o, minimal, f'{name} C={c}：宽 {width(o)} 超预算 {c - 4}，但还能降级')
 
     def test_backfill_leaves_little_slack(self):
         """回填：有降级时剩余空间应小于任何一项可恢复内容（实测各场景 ≤ 7 列；无回填的旧版 100 列时余 16 列）。"""
         with Sandbox() as sb:
-            for name, d, tok, env, status in scenarios(sb):
-                sb.write_tok(d['session_id'], **tok)
-                sb.set_status(status)
-                full = sb.render(d, 400, env=env)
+            for name, d, env in each_scenario(sb):
+                full = width(sb.render(d, 400, env=env))
                 for c in range(40, 221, 4):
                     o = sb.render(d, c, env=env)
-                    if o != full and width(o) <= c - 4:
+                    # 用宽度而不是文本判断「是否降级」：倒计时跨分钟会改文本、不改宽度
+                    if width(o) < full and width(o) <= c - 4:
                         self.assertLessEqual(c - 4 - width(o), 10, f'{name} C={c}：降级后还空着 {c - 4 - width(o)} 列')
 
     def test_backfill_restores_by_priority(self):
@@ -235,7 +239,8 @@ class Semantics(unittest.TestCase):
             sb.write_tok('mc', **{'in': '172M'}, out='1M', rate='$8.4/h', hit='98.4', msgs='517')
             o = strip(sb.render(d, 220))
             self.assertIn('m517', o)
-            self.assertLess(o.index('m517'), len(o), '消息数应在尾段胶囊里')
+            tail = o.split('')[-1]          # 最后一个胶囊 = 尾段
+            self.assertIn('m517', tail, '消息数应在尾段胶囊里')
 
     def test_third_party_model_abbreviation(self):
         """无空格的模型名：紧凑级取首个 "-" 段并保留方括号（deepseek[1M]·XH）。"""

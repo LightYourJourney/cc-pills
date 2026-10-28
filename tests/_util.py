@@ -47,11 +47,14 @@ def width(s):
     return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in strip(s))
 
 
+FIELDS = ['in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
+          'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs']
+IDX = {k: i for i, k in enumerate(FIELDS)}
+
+
 def tok_line(**kw):
     """18 段 token 缓存（见 statusline-tokens.py 文档）。"""
-    keys = ['in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
-            'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs']
-    return '\t'.join(str(kw.get(k, '-')) for k in keys) + '\n'
+    return '\t'.join(str(kw.get(k, '-')) for k in FIELDS) + '\n'
 
 
 class Sandbox:

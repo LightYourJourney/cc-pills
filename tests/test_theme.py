@@ -14,10 +14,9 @@ import sys
 import tempfile
 import unittest
 
-from _util import SRC
+from _util import SRC, STYLES
 
 PATH = os.path.join(SRC, 'statusline-theme.py')
-STYLES = ('tint', 'cool', 'jewel', 'glass', 'mono', 'pastel', 'tokyo-glass')
 THEMES = ('tokyonight', 'dracula', 'catppuccin', 'onedark', 'nord')
 ANSI = ('#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff')
 # (背景, 前景)：真实终端里浅底配深字、深底配浅字
@@ -27,7 +26,6 @@ PROFILES = (('#ffffff', '#1e1e1e'), ('#f5f5f5', '#2b2b2b'), ('#c8c8c8', '#202020
 TRIPLE = re.compile(r'^\d+;\d+;\d+$')
 MIN_TEXT = 4.5      # 二级 / 三级文字（除 T_DIM）的最低对比度
 MIN_DIM = 2.0       # T_DIM（分隔符）只求可辨
-MIN_PILL_DE = 6.0   # 基础表面色与终端背景的最小可辨距离（pastel / tokyo-glass 的文档下限更低）
 
 spec = importlib.util.spec_from_file_location('ccptheme', PATH)
 theme = importlib.util.module_from_spec(spec)
@@ -97,11 +95,13 @@ class ContrastMatrix(unittest.TestCase):
         for bg, fg in PROFILES:
             home = make_home(bg, fg)
             for st in STYLES:
+                if theme.STYLES[st].get('light') or theme.STYLES[st].get('tokens'):
+                    continue          # 这两种风格的 P_NEU 由风格定义，不受 MIN_PILL_DE 约束
                 kv, _ = palette(home, st)
                 base = level(kv['P_NEU'])
                 de = math.dist(theme.lab(base), theme.lab(rgb(bg)))
-                if de < MIN_PILL_DE:
-                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {MIN_PILL_DE}')
+                if de < theme.MIN_PILL_DE:
+                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {theme.MIN_PILL_DE}')
         self.assertFalse(bad, '\n'.join(bad))
 
     def test_light_terminal_pills_do_not_collapse(self):

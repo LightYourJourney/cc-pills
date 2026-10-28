@@ -92,7 +92,7 @@ MAX_CHUNK = 32 * 1024 * 1024  # 每片解析字节数（每片之后落盘一次
 TIME_BUDGET = 1.0             # 单次调用连读分片的时间预算（秒）
 PEND_KEEP = 4096              # 去重 pending 映射的 FIFO 上限（见约束 4；全部文件共用一个映射）
 FP_BYTES = 64                 # 尾部指纹字节数（约束 6）
-STATE_V = 8                   # 状态结构版本；不一致即重扫（v8：每文件消息数 lc/mc；v7：多文件、指纹、未入账集合）
+STATE_V = 9                   # 状态结构版本；不一致即重扫（v9：每文件消息数 last_id/msgs；v8：多文件、指纹、未入账集合）
 PROXY_DEDUP_WINDOW = 600      # 与 CC Switch SESSION_PROXY_DEDUP_WINDOW_SECONDS 一致
 PROXY_SETTLE = 900            # 消息发出超过此秒数仍匹配不到代理行，不再反复查
 
@@ -204,9 +204,9 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
         mid = msg.get('id')
         # 消息数：同一个 message.id 的行在 transcript 里连续出现（本机实测非连续复现 0 次），
         # 按 id 变化计数即精确值——不必存 id 表，状态只多两个标量
-        if mid and mid != fs.get('lid'):
-            fs['lid'] = mid
-            fs['mc'] = fs.get('mc', 0) + 1
+        if mid and mid != fs.get('last_id'):
+            fs['last_id'] = mid
+            fs['msgs'] = fs.get('msgs', 0) + 1
         if mid and mid in pend:                # 约束 4：stop_reason 优先，其次 output 最大
             old, ostop = pend[mid]
             if not ((stop and not ostop) or (stop == ostop and vals[1] > old[1])):
@@ -581,7 +581,7 @@ def main():
         out += list(pace(sp[0], 100, left, rates, th, URGENT['sp']))
     else:
         out += ['-', '-']
-    out.append(str(sum(fs.get('mc', 0) for fs in st['files'].values())))   # 消息数（见 1 的计数）
+    out.append(str(sum(fs.get('msgs', 0) for fs in st['files'].values())))   # 消息数（见 1 的计数）
     print('\t'.join(out))
 
 

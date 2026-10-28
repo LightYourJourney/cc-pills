@@ -23,7 +23,7 @@
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     /tmp/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
 #                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
-#     /tmp/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十七段输出，见其文档）
+#     /tmp/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档）
 #     /tmp/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
 #   并发刷新幂等（同输入同输出 + mv 原子替换）；被 abort 杀掉的刷新进程由下一周期重试补上。
 #   输入（transcript 大小 / 费用 / 额度）都没变且距上次不足 TOK_MIN_GAP 秒时跳过 python。
@@ -71,7 +71,7 @@
 #     节奏告警与「out 预计用完」由 statusline-tokens.py 计算（窗口均速与近期速率取大）。
 #     低信息量时隐藏：5h 的重置倒计时、以及整个 7d，只在已用 ≥ WARN_AT 或节奏告警时出现。
 #     已用 ≥ 100% 判最高级并显示「用尽」。
-#   - $/h：statusline-tokens.py 对费用做半衰期 10 分钟的 EWMA。
+#   - $/h：statusline-tokens.py 对费用做半衰期 20 分钟的 EWMA。
 #   - cache：prompt_cache.expires_at 倒计时（TTL 取 prompt_cache.ttl）。剩余 ≥ TTL/2
 #     时隐藏；TTL/6 ~ TTL/2 在尾段弱化显示；不足 TTL/6 升为黄色胶囊；expires_at 已过才判
 #     cold（红），并附「+<recache_tokens_if_cold>」= 过期后下一轮要按 cache write 重写的
@@ -523,7 +523,7 @@ branch=${branch//[[:cntrl:]]/}; model=${model//[[:cntrl:]]/}; eff=${eff//[[:cntr
 [ "$branch" = "-" ] && branch=""
 [ "$gstatus" = "-" ] && gstatus=""
 
-# ── token / 节奏 / 中转站缓存（十七段，见 statusline-tokens.py）──────────
+# ── token / 节奏 / 中转站缓存（十八段，见 statusline-tokens.py）──────────
 skey=${sid//\//_}; skey=${skey// /_}
 t_in="" t_out="" p_rate="" comp="" q5lv="" q5out="" q7lv="" q7out="" dlv="" dout=""
 r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout="" msgs=""

@@ -95,7 +95,7 @@ install.sh  run_tests.sh
 ## 测试
 
 ```bash
-bash run_tests.sh              # 约 40 秒，全隔离（不读线上缓存、不联网）
+bash run_tests.sh              # 约 1.5–5 分钟（随负载），全隔离（不读线上缓存、不联网）
 bash run_tests.sh tokens       # 单模块：render / tokens / theme
 UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
 ```
