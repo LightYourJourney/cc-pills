@@ -36,7 +36,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 ## 安装
 
 ```bash
-git clone https://github.com/<you>/cc-pills.git
+git clone https://github.com/LightYourJourney/cc-pills.git
 cd cc-pills
 bash install.sh --with-subagent --with-conf
 ```

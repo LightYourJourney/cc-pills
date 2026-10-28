@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装依赖（runner 自带 bash 3.2，脚本需要 ≥ 4.2）
+        run: brew install bash jq
+      - name: 版本（arm runner 在 /opt/homebrew，intel 在 /usr/local）
+        run: |
+          for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$b" ] && "$b" --version | head -1
+          done
+          python3 --version
+          jq --version
+      - name: 跑测试（隔离沙箱，不联网）
+        run: bash run_tests.sh

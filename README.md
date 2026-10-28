@@ -41,7 +41,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 ## Install
 
 ```bash
-git clone https://github.com/<you>/cc-pills.git
+git clone https://github.com/LightYourJourney/cc-pills.git
 cd cc-pills
 bash install.sh --with-subagent --with-conf
 ```
