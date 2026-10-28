@@ -26,6 +26,7 @@ PROFILES = (('#ffffff', '#1e1e1e'), ('#f5f5f5', '#2b2b2b'), ('#c8c8c8', '#202020
 TRIPLE = re.compile(r'^\d+;\d+;\d+$')
 MIN_TEXT = 4.5      # 二级 / 三级文字（除 T_DIM）的最低对比度
 MIN_DIM = 2.0       # T_DIM（分隔符）只求可辨
+MIN_PILL_DE = 12    # 基础表面色与终端背景的最小可辨距离（docs/DECISIONS.md 的硬下限）
 
 spec = importlib.util.spec_from_file_location('ccptheme', PATH)
 theme = importlib.util.module_from_spec(spec)
@@ -91,6 +92,7 @@ class ContrastMatrix(unittest.TestCase):
         self.assertFalse(bad, f'{len(bad)} 处文字对比不足：\n' + '\n'.join(bad[:10]))
 
     def test_base_pill_distinguishable(self):
+        self.assertEqual(theme.MIN_PILL_DE, MIN_PILL_DE, 'DECISIONS 规定 12，常量被改低时这条要一起改')
         bad = []
         for bg, fg in PROFILES:
             home = make_home(bg, fg)
@@ -100,8 +102,8 @@ class ContrastMatrix(unittest.TestCase):
                 kv, _ = palette(home, st)
                 base = level(kv['P_NEU'])
                 de = math.dist(theme.lab(base), theme.lab(rgb(bg)))
-                if de < theme.MIN_PILL_DE:
-                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {theme.MIN_PILL_DE}')
+                if de < MIN_PILL_DE:
+                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {MIN_PILL_DE}')
         self.assertFalse(bad, '\n'.join(bad))
 
     def test_light_terminal_pills_do_not_collapse(self):

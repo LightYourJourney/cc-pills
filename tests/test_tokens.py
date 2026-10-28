@@ -64,7 +64,7 @@ class Counting(Base):
         tp = self.write('a.jsonl', [line('m1', 10, 5, None), line('m1', 10, 300, 'end_turn'),
                                     line('m1', 10, 100, None), line('m2', 20, 40, 'end_turn')])
         out = self.run_tok(tp, 'c1').stdout.split('\t')
-        self.assertEqual(out[:2], ['30', '340'])
+        self.assertEqual([out[IDX['in']], out[IDX['out']]], ['30', '340'])
 
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
@@ -72,20 +72,22 @@ class Counting(Base):
                                                    'input': {'pattern': 'compact_boundary'}}),
             json.dumps({'type': 'system', 'subtype': 'compact_boundary'})])
         out = self.run_tok(tp, 'c2').stdout.split('\t')
-        self.assertEqual((out[0], out[1], out[3]), ('10', '300', '1'))
+        self.assertEqual((out[IDX['in']], out[IDX['out']], out[IDX['comp']]), ('10', '300', '1'))
 
     def test_deleted_subagent_triggers_rescan(self):
         tp = self.write('c.jsonl', [line('m1', 10, 5, 'end_turn')])
         sub = self.write('c/subagents/agent-x.jsonl', [line('s1', 7, 3, 'end_turn')])
-        self.assertEqual(self.run_tok(tp, 'c3').stdout.split('\t')[:2], ['17', '8'])
+        o = self.run_tok(tp, 'c3').stdout.split('\t')
+        self.assertEqual([o[IDX['in']], o[IDX['out']]], ['17', '8'])
         os.remove(sub)
         r = self.run_tok(tp, 'c3')
-        self.assertEqual(r.stdout.split('\t')[:2], ['10', '5'])
+        o = r.stdout.split('\t')
+        self.assertEqual([o[IDX['in']], o[IDX['out']]], ['10', '5'])
         self.assertEqual(r.stderr, '')
 
     def test_eighteen_fields(self):
         tp = self.write('d.jsonl', [line('m1', 1, 1, 'end_turn')])
-        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), 18)
+        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), len(FIELDS))
 
     def test_message_count_by_id_changes(self):
         """同一 id 的多行只计一次；id 连续变化逐个计；subagent 也计入。"""
@@ -162,10 +164,10 @@ class Pace(Base):
         tp = self.write('f.jsonl', [line('m1', 1, 1, 'end_turn')])
         now = int(time.time())
         out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},daily').stdout.rstrip('\n').split('\t')
-        self.assertEqual(out[15], 'warn')
-        self.assertNotEqual(out[16], '-')
+        self.assertEqual(out[IDX['splv']], 'warn')
+        self.assertNotEqual(out[IDX['spout']], '-')
         out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout.rstrip('\n').split('\t')
-        self.assertEqual(out[15:17], ['-', '-'])
+        self.assertEqual([out[IDX['splv']], out[IDX['spout']]], ['-', '-'])
 
 
 class Relay(Base):

@@ -80,19 +80,22 @@ class WidthProperty(unittest.TestCase):
                 for c in range(30, 221, 5):
                     o = sb.render(d, c, env=env)
                     if width(o) > c - 4:
-                        # 现场渲染最小形态：倒计时跨分钟会改文本，预先渲染的基准会误判
+                        # 现场渲染最小形态：只缩小倒计时跨分钟造成的误判窗口（两次渲染仍可能跨秒）
                         minimal = sb.render(d, 12, env=env)
                         self.assertEqual(o, minimal, f'{name} C={c}：宽 {width(o)} 超预算 {c - 4}，但还能降级')
 
     def test_backfill_leaves_little_slack(self):
-        """回填：有降级时剩余空间应小于任何一项可恢复内容（实测各场景 ≤ 7 列；无回填的旧版 100 列时余 16 列）。"""
+        """回填：有降级时剩余空间应小于任何一项可恢复内容（实测各场景 ≤ 7 列；无回填的旧版 100 列时余 16 列）。
+
+        判据按宽度：现有 drop / shrink 步骤都严格减宽；将来加入等宽降级，这条要跟着改。
+        """
         with Sandbox() as sb:
             for name, d, env in each_scenario(sb):
-                full = width(sb.render(d, 400, env=env))
+                full_w = width(sb.render(d, 400, env=env))
                 for c in range(40, 221, 4):
                     o = sb.render(d, c, env=env)
-                    # 用宽度而不是文本判断「是否降级」：倒计时跨分钟会改文本、不改宽度
-                    if width(o) < full and width(o) <= c - 4:
+                    # 用宽度而不是文本判断「是否降级」：倒计时跨分钟会改文本、通常不改宽度
+                    if width(o) < full_w and width(o) <= c - 4:
                         self.assertLessEqual(c - 4 - width(o), 10, f'{name} C={c}：降级后还空着 {c - 4 - width(o)} 列')
 
     def test_backfill_restores_by_priority(self):
