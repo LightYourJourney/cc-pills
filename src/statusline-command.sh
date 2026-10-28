@@ -7,7 +7,7 @@
 #   宽  (ccchat  main [+?]) (Opus 5.5 high) (ctx 42% 419k ↻1) (5h 60% ↺2h26m out 1h42m)
 #       (7d 82% ↺2d3h out 1d1h) ($17.54 $4.9/h) (cache 20m hit 97.4% ↑30.1M ↓290k api 52m)
 #   窄  (ccchat  main) (O5.5·H) (ctx42% 419k) (5h60%) (99% ↑30.1M)
-#   中转站：($3.21 $1.8/h) (今日 $23.40/$50 out 3h10m)；估算 $17.54*、下限 $0.42+
+#   中转站：($3.21 $1.8/h) ($23.40/$50 out 3h10m)；估算 $17.54*、下限 $0.42+
 #   告警胶囊：(cache 8m +275k) (claude major)
 #
 # 设计原因与沿革见 docs/DECISIONS.md；这里只写改代码必须遵守的契约。
@@ -33,7 +33,7 @@
 # 每组一个圆角胶囊（U+E0B6 / U+E0B4），组内各项以单个空格分隔，组间一个空格。胶囊底色按组
 # 取（pcolor：P_GIT / P_MODEL / P_CTX / P_Q5 / P_Q7 / P_USD / P_TAIL，告警胶囊用 P_NEU），
 # 具体颜色由 PILL_STYLE 决定。区分靠文字三层：
-#   - 标签（ctx / 5h / 7d / 今日 / hit / api）用组色：ctx 绿、额度紫、费用青、尾段弱化；
+#   - 标签（ctx / 5h / 7d / hit / api）用组色：ctx 绿、额度紫、费用青、尾段弱化；
 #     降饱和且避开黄红色相，彩度封顶在告警色的 75%，标签再多也不压过告警。
 #   - 主值（百分比）前景色加粗；会话费用用费用组色（字重 W_ACC）；次值（ctx 量、↻、
 #     重置倒计时、$/h）灰；三级统计（hit、io、api）更弱。
@@ -54,7 +54,8 @@
 #   - 中转站：CC Switch 账本 + 尚未入账的尾部（实时），由 statusline-tokens.py 计算。
 #     账本两源（代理行 / 会话日志行）互补、已由 CC Switch 去重；尾部按 CC Switch 的价格表
 #     与计价规则自算。有未计价消息（模型不在价格表）时显示「$x+」下限。另显示今日
-#     中转站花费；CC Switch 给当前供应商设了 limit_daily_usd 时显示「今日 $x/$限额」。
+#     中转站花费（无标签，紧跟在会话费用之后）；CC Switch 给当前供应商设了
+#     limit_daily_usd 时显示「$x/$限额」。
 #   - 拿不到 CC Switch 数据（未装 / 读库失败）：回落「$x*」（Claude Code 标价估算）。
 #   - 网关花费限额（rate_limits.spend_limit）：显示「今日 / 本周 / 本月 $已用/$限额」
 #     （无美元时显示百分比），按节奏告警；存在时优先于 CC Switch 的日限额。
@@ -173,7 +174,7 @@ CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 # 配置文件里写了任何 step 行，就整体替换这份默认序列。
 STEPS=(                                               # 逐项裁定去留，见 docs/DECISIONS.md
   "drop api" "drop msgs" "drop today" "drop claudem" "drop q7r" "shrink io" "drop q5r" "drop cachet"
-  "drop comp" "drop recache" "shrink git" "shrink dir" "shrink hit" "drop q7" "drop rate" "shrink day"
+  "drop comp" "drop recache" "shrink git" "shrink dir" "shrink hit" "drop q7" "drop rate"
   "shrink q5out" "shrink q7out" "shrink dout" "shrink q5" "shrink q7" "shrink spend" "shrink spout" "drop day" "drop spend" "drop cost"
   "shrink claude" "drop claude" "drop dout" "drop spout" "drop q7out" "drop q5out"
   "shrink ctx" "shrink cache" "shrink model" "shrink model" "shrink model"
@@ -821,12 +822,12 @@ if [ "$mode" = relay ] && [ -n "$r_cost" ]; then
     :                                          # 网关花费限额优先于 CC Switch 日限额（见下）
   elif [ -n "$r_limit" ]; then
     money "$r_today"; t1=$MONEY; money "$r_limit"
-    pl "$dlv"; item day  day "$R" "今日 ${t1}/${MONEY}" "${t1}/${MONEY}"; LB[day]=今日
+    pl "$dlv"; item day  day "$R" "${t1}/${MONEY}"
     al "$dlv"; outtxt "$dout"; item dout day "$R" "$OT" "!"
     risky "$dlv" && NODROP[day]=1
   else
     money "$r_today"
-    item today usd SEC "今日 ${MONEY}" "${MONEY}"; LB[today]=今日
+    item today usd SEC "${MONEY}"
   fi
 elif [ -n "$costraw" ]; then
   money "$costraw"

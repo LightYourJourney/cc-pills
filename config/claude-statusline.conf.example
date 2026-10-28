@@ -47,7 +47,7 @@
 #      动作            项          例子                              出现条件
 step = drop    api      # API 时长    api 1h05m                         一直
 step = drop    msgs     # 消息数      m142                              一直
-step = drop    today    # 中转站今日  今日 $23.40                       中转站且未设日限额
+step = drop    today    # 中转站今日  $23.40                            中转站且未设日限额
 step = drop    claudem  # 状态页 minor claude minor                     状态页有 minor / maintenance 事件
 step = drop    q7r      # 7d 重置     ↺2d0h                             7d 出现时
 step = shrink  io       # 累计 token  ↑74M ↓421k → ↑74M                 （永不丢弃，只缩短）
@@ -60,7 +60,6 @@ step = shrink  dir      # 目录        ccchat/docs/courses → courses       �
 step = shrink  hit      # 命中率      hit 98.6% → 99%                   （永不丢弃，只缩短）
 step = drop    q7       # 7d 已用     7d 60%                            7d 已用 ≥50%（有风险时不可丢）
 step = drop    rate     # 花费速率    $24/h                             预热 2 分钟后
-step = shrink  day      # 中转站今日  今日 $23/$50 → $23/$50            中转站且设了日限额
 step = shrink  q5out    # 5h 预计用完 out 1h21m → !                     会在重置前用完
 step = shrink  q7out    # 7d 预计用完 out 19h17m → !
 step = shrink  dout     # 日限额用完  out 3h10m → !
