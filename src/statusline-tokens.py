@@ -15,8 +15,10 @@
   1. session 累计 总输入/输出 tokens：主 transcript + <sid>/subagents/*.jsonl +
      <sid>/subagents/workflows/*/*.jsonl（与 CC Switch 的会话归属一致，subagent 计入）；
      总输入 = input + cache 读 + cache 写。
-  2. 花费速率 $/h：对费用逐次采样做时间加权 EWMA（半衰期 600s，偏差校正同 Adam——
-     不校正时恒定 $12/h 跑满 20 分钟只显示 $8.8/h）。
+  2. 花费速率 $/h：对费用逐次采样做时间加权 EWMA（半衰期 1200s，偏差校正同 Adam——
+     不校正时恒定 $12/h 跑满 20 分钟只显示 $8.8/h）。半衰期从 600s 提到 1200s：实测单笔
+     大请求会让 600s 读数一分钟内跳 $14，1200s 把最大跳变压到 $7、超 $8 的跳变归零
+     （滑动窗口反而更跳：单笔花费进出窗口即阶跃）。
   3. 主对话 compact 次数（主 transcript 的 system/compact_boundary 且非 sidechain）。
   4. 中转站会话花费 =【CC Switch 账本】+【尚未入账的尾部】。
      账本 = proxy_request_logs 中本会话的全部行。代理行（data_source='proxy'，上游模型价
@@ -48,10 +50,10 @@
      不用 stdin 的 prompt_cache.hit_ratio：那是每个 Claude Code 进程各自的统计，
      /restart 或 resume 后从零开始，读数不代表会话。
 
-输出单行、tab 分隔的十七段纯文本，不可得的段写 "-"（bash 侧 IFS=tab read 需占位）：
+输出单行、tab 分隔的十八段纯文本，不可得的段写 "-"（bash 侧 IFS=tab read 需占位）：
   总输入 输出 $/h compact次数 5h等级 5h用完倒计时 7d等级 7d用完倒计时 日等级 日用完倒计时
   中转站会话花费 未计价消息数 中转站今日 日限额 命中率%（一位小数）
-  花费限额等级 花费限额用完倒计时
+  花费限额等级 花费限额用完倒计时 消息数
 （等级 ∈ ok / warn / high / bad，见 5）。transcript 未追平或任何异常时输出空——bash 侧
 保留旧缓存（其约束 10），表现为数字停在上一次的值，而不是隐藏。
 
@@ -95,7 +97,7 @@ PROXY_DEDUP_WINDOW = 600      # 与 CC Switch SESSION_PROXY_DEDUP_WINDOW_SECONDS
 PROXY_SETTLE = 900            # 消息发出超过此秒数仍匹配不到代理行，不再反复查
 
 # 各追踪器：(EWMA 半衰期秒, 预热秒)
-TRACK = {'cost': (600, 120), 'q5': (900, 300), 'day': (600, 120), 'sp': (900, 300)}
+TRACK = {'cost': (1200, 120), 'q5': (900, 300), 'day': (600, 120), 'sp': (900, 300)}
 # 额度窗口：(窗口秒数, 窗口均速至少需已过的秒数, 是否并用近期速率)
 WINDOW = {'q5': (18000, 1800, True), 'q7': (604800, 86400, False)}
 # 网关花费限额按 period 取窗口（月按 30 天）；日限额并用近期速率，周 / 月同 7d 只用窗口均速
@@ -200,6 +202,11 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
                 u.get('cache_read_input_tokens') or 0)
         stop = msg.get('stop_reason') is not None
         mid = msg.get('id')
+        # 消息数：同一个 message.id 的行在 transcript 里连续出现（本机实测非连续复现 0 次），
+        # 按 id 变化计数即精确值——不必存 id 表，状态只多两个标量
+        if mid and mid != fs.get('lid'):
+            fs['lid'] = mid
+            fs['mc'] = fs.get('mc', 0) + 1
         if mid and mid in pend:                # 约束 4：stop_reason 优先，其次 output 最大
             old, ostop = pend[mid]
             if not ((stop and not ostop) or (stop == ostop and vals[1] > old[1])):
@@ -574,6 +581,7 @@ def main():
         out += list(pace(sp[0], 100, left, rates, th, URGENT['sp']))
     else:
         out += ['-', '-']
+    out.append(str(sum(fs.get('mc', 0) for fs in st['files'].values())))   # 消息数（见 1 的计数）
     print('\t'.join(out))
 
 

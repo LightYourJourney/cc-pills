@@ -48,9 +48,9 @@ def width(s):
 
 
 def tok_line(**kw):
-    """17 段 token 缓存（见 statusline-tokens.py 文档）。"""
+    """18 段 token 缓存（见 statusline-tokens.py 文档）。"""
     keys = ['in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
-            'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout']
+            'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs']
     return '\t'.join(str(kw.get(k, '-')) for k in keys) + '\n'
 
 

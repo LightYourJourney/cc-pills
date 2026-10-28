@@ -80,6 +80,8 @@
 #   - ↑/↓：transcript 聚合的 session 累计 总输入（含缓存读写）/ 输出，含同会话 subagent。
 #   - 时长：只显示 api = cost.total_api_duration_ms；墙钟时长含离开的空闲时间，不显示。
 #   - ↻：主对话 compact_boundary 次数，为 0 时隐藏。
+#   - m：本会话消息数（assistant 响应的不同 message.id 个数，含 subagent），见
+#     statusline-tokens.py 的计数口径。
 #   - claude：status.claude.com 总体 indicator，none 时隐藏；不含中转站。minor /
 #     maintenance 只在尾段弱化显示，major / critical 才是红色告警。status_page=off 时
 #     不请求、不显示。
@@ -170,7 +172,7 @@ CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 # 额度（q7 / day）进入风险态时，其 drop 步骤自动失效。
 # 配置文件里写了任何 step 行，就整体替换这份默认序列。
 STEPS=(                                               # 逐项裁定去留，见 docs/DECISIONS.md
-  "drop api" "drop today" "drop claudem" "drop q7r" "shrink io" "drop q5r" "drop cachet"
+  "drop api" "drop msgs" "drop today" "drop claudem" "drop q7r" "shrink io" "drop q5r" "drop cachet"
   "drop comp" "drop recache" "shrink git" "shrink dir" "shrink hit" "drop q7" "drop rate" "shrink day"
   "shrink q5out" "shrink q7out" "shrink dout" "shrink q5" "shrink q7" "shrink spend" "shrink spout" "drop day" "drop spend" "drop cost"
   "shrink claude" "drop claude" "drop dout" "drop spout" "drop q7out" "drop q5out"
@@ -178,7 +180,7 @@ STEPS=(                                               # 逐项裁定去留，见
 )
 # 合法的项名（配置文件里写错的项名会被忽略）
 ITEM_IDS=" dir git gitst model ctx ctxin q5 q5r q5out q7 q7r q7out cost rate day dout today
-  spend spout cache recache claude claudem comp cachet hit io api "
+  spend spout cache recache claude claudem comp cachet hit io api msgs "
 
 # ── 用户配置文件（覆盖上面的参数与优先级；不存在则全用默认）──────────────
 # 格式：每行「键 = 值」，# 开头为注释。只认白名单里的键，值不合法则忽略——
@@ -523,12 +525,12 @@ branch=${branch//[[:cntrl:]]/}; model=${model//[[:cntrl:]]/}; eff=${eff//[[:cntr
 # ── token / 节奏 / 中转站缓存（十七段，见 statusline-tokens.py）──────────
 skey=${sid//\//_}; skey=${skey// /_}
 t_in="" t_out="" p_rate="" comp="" q5lv="" q5out="" q7lv="" q7out="" dlv="" dout=""
-r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout=""
+r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout="" msgs=""
 if [ -n "$sid" ] && [ -r "${SLT}/claude-sl-tok-${skey}.cache" ]; then
   IFS=$'\t' read -r t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout \
-    r_cost r_unpriced r_today r_limit t_hit splv spout < "${SLT}/claude-sl-tok-${skey}.cache"
+    r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "${SLT}/claude-sl-tok-${skey}.cache"
 fi
-for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout; do
+for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout msgs; do
   [ "${!v}" = "-" ] && printf -v "$v" ''
 done
 [ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
@@ -770,8 +772,16 @@ item git   git GIT "$g" ${gs:+"$gs"}
 item gitst git SEC "${gstatus:+[${gstatus}]}"
 # 模型名缩写链：全名 → 去 "Claude " 前缀与 " (…)" 后缀 → 首词取首字母（Opus 5.5 → O5.5）→ effort 取首字母。
 # 此前只按「两个词」处理，"Claude Opus 5.5 (1M context)" 会被缩成 "COpus 5.5 (1M context)"。
+# 无空格的名字（deepseek-flash[1M]、kimi-k2-0905[256k]）取首个 "-" 段并保留方括号里的
+# 上下文标记：deepseek[1M]；gpt-6.1-sol → gpt。带空格的仍按「首词首字母」缩（Opus 5.5 → O5.5）。
 mbase=${model#Claude }; mbase=${mbase% (*)}
-m1=${mbase%% *}; mshort=$mbase; [ "$m1" != "$mbase" ] && mshort="${m1:0:1}${mbase#* }"
+m1=${mbase%% *}; mshort=$mbase
+if [ "$m1" != "$mbase" ]; then
+  mshort="${m1:0:1}${mbase#* }"
+elif [ "$mbase" != "${mbase%%-*}" ]; then
+  mtail=""; case "$mbase" in *'['*) mtail="[${mbase#*[}" ;; esac
+  mshort="${mbase%%-*}${mtail}"
+fi
 case "$eff" in low) e1=L ;; medium) e1=M ;; high) e1=H ;; xhigh) e1=XH ;; max) e1=MAX ;; *) e1=$eff ;; esac
 mv=(); pv=""
 for v in "${model}${eff:+ ${eff}}" "${mbase}${eff:+ ${eff}}" "${mshort}${eff:+ ${eff}}" "${mshort}${e1:+·${e1}}"; do
@@ -863,6 +873,7 @@ item cachet tail TER "${ct:+cache ${ct}}" "$ct"; LB[cachet]=cache
 item hit    tail TER "${hit:+hit ${hit}%}" "${hit0}%"; LB[hit]=hit
 item io     tail TER "${t_in:+↑${t_in} ↓${t_out}}" "${t_in:+↑${t_in}}"
 item api    tail TER "${apidur:+api ${apidur}}" "$apidur"; LB[api]=api
+item msgs   tail TER "${msgs:+m${msgs}}"
 
 fit
 render

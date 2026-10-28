@@ -46,6 +46,7 @@
 # 可丢弃（按优先级：从最先丢到最后丢；shrink 行穿插其间）：
 #      动作            项          例子                              出现条件
 step = drop    api      # API 时长    api 1h05m                         一直
+step = drop    msgs     # 消息数      m142                              一直
 step = drop    today    # 中转站今日  今日 $23.40                       中转站且未设日限额
 step = drop    claudem  # 状态页 minor claude minor                     状态页有 minor / maintenance 事件
 step = drop    q7r      # 7d 重置     ↺2d0h                             7d 出现时

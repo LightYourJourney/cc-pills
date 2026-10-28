@@ -82,9 +82,18 @@ class Counting(Base):
         self.assertEqual(r.stdout.split('\t')[:2], ['10', '5'])
         self.assertEqual(r.stderr, '')
 
-    def test_seventeen_fields(self):
+    def test_eighteen_fields(self):
         tp = self.write('d.jsonl', [line('m1', 1, 1, 'end_turn')])
-        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), 17)
+        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), 18)
+
+    def test_message_count_by_id_changes(self):
+        """同一 id 的多行只计一次；id 连续变化逐个计；subagent 也计入。"""
+        tp = self.write('m.jsonl', [line('a', 10, 1, None), line('a', 10, 2, None),
+                                    line('a', 10, 5, 'end_turn'), line('b', 10, 1, 'end_turn'),
+                                    line('c', 10, 1, 'end_turn')])
+        self.write('m/subagents/agent-1.jsonl', [line('s1', 1, 1, 'end_turn')])
+        out = self.run_tok(tp, 'c7').stdout.rstrip('\n').split('\t')
+        self.assertEqual(out[17], '4', '主对话 3 条（a 的三行只算一次）+ subagent 1 条')
 
     def test_time_budget_shared_across_files(self):
         tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
@@ -139,7 +148,7 @@ class Pace(Base):
         self.assertEqual(out[15], 'warn')
         self.assertNotEqual(out[16], '-')
         out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout.rstrip('\n').split('\t')
-        self.assertEqual(out[15:], ['-', '-'])
+        self.assertEqual(out[15:17], ['-', '-'])
 
 
 class Relay(Base):

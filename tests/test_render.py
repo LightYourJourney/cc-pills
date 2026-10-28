@@ -229,6 +229,26 @@ class Semantics(unittest.TestCase):
             self.assertNotIn('cold', strip(sb.render(d)))
             self.assertIn('cache cold', strip(sb.render(sb.stdin(cache='cold'))))
 
+    def test_message_count_item(self):
+        with Sandbox() as sb:
+            d = sb.stdin('mc', q5=20)
+            sb.write_tok('mc', **{'in': '172M'}, out='1M', rate='$8.4/h', hit='98.4', msgs='517')
+            o = strip(sb.render(d, 220))
+            self.assertIn('m517', o)
+            self.assertLess(o.index('m517'), len(o), '消息数应在尾段胶囊里')
+
+    def test_third_party_model_abbreviation(self):
+        """无空格的模型名：紧凑级取首个 "-" 段并保留方括号（deepseek[1M]·XH）。"""
+        with Sandbox() as sb:
+            tok = dict(**{'in': '172M'}, out='1M', rate='$8.4/h', hit='98.4', msgs='517')
+            d = sb.stdin('mm', model='deepseek-flash[1M]', effort='xhigh')
+            sb.write_tok('mm', **tok)
+            self.assertIn('deepseek-flash[1M] xhigh', strip(sb.render(d, 220)))
+            self.assertIn('deepseek[1M]·XH', strip(sb.render(d, 55)))
+            d = sb.stdin('mg', model='gpt-6.1-sol', effort='high')
+            sb.write_tok('mg', **tok)
+            self.assertIn('gpt·H', strip(sb.render(d, 50)))
+
     def test_status_page_off(self):
         with Sandbox(conf_extra='status_page = off', status='major') as sb:
             self.assertNotIn('major', strip(sb.render(sb.stdin())))
