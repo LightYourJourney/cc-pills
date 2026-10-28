@@ -1,4 +1,5 @@
-# Claude Code 状态栏配置（由 ~/.claude/statusline-command.sh 读取）
+# cc-pills 配置（由已安装的 statusline-command.sh 读取；默认位置
+# ${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-command.sh，配置本体在 ~/.config/claude-statusline.conf）
 # 格式：键 = 值；# 开头为注释。只认下面列出的键，值不合法会被忽略。
 # 修改后最多 2 秒生效（下一次状态栏刷新），无需重启 Claude Code。
 
@@ -12,8 +13,9 @@
 #                         #   jewel  宝石色（深而纯）        glass  中性灰两档明暗交替
 #                         #   mono   单色深浅（主题紫）      pastel 粉彩亮块 + 深色字
 #                         #   tokyo-glass  B/C/D 融合：Tokyo Night 冷色 + 近背景玻璃胶囊 + 三级层级
-#                         # 并排预览（须在 iTerm 里直接运行）：bash ~/.claude/statusline-preview.sh [风格 ...]
+#                         # 并排预览（在 iTerm 里直接运行）：bash tools/preview.sh [风格 ...]
 # pill_chroma = 12        # 仅 tint：淡染彩度，0 = 所有胶囊同一底色；越大越有色（建议 ≤ 20）
+# status_page = on        # on | off：是否每分钟请求 status.claude.com；off = 零网络请求、不显示服务状态
 
 # ── 告警阈值（已用 %）──────────────────────────────────────────────────
 # warn_at = 50            # 额度已用 ≥ 此值才显示 5h 重置时间与 7d
@@ -29,7 +31,7 @@
 # 没有任何 drop 行的项永不丢弃；7d% / 中转站今日额度进入风险态时，其 drop 行自动失效。
 # 删掉本段所有 step 行，即恢复脚本内置的默认序列（与下面相同）。
 #
-# 永不丢弃（用户 2026-10-28 逐项裁定，按显示顺序；只会缩短）：
+# 永不丢弃（按显示顺序；只会缩短）：
 #   dir    目录          ccchat/docs/courses（窄屏可缩成最后一段 courses）
 #   git    git 分支       main（超过 24 字可缩成前 20 字 + …）
 #   gitst  git 状态      [+?]

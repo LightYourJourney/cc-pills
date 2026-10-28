@@ -19,7 +19,7 @@
 #   - stdout：每行一个 {"id": "<task id>", "content": "<行内容>"}，
 #     content 原样渲染（支持 ANSI）；不输出某 id = 该行保留默认渲染
 #
-# 字段格式（2026-08-07 从本机 claude.exe 二进制核实，版本随升级可能变化）
+# 字段格式（从 Claude Code 二进制核实，版本随升级可能变化）
 # ----------------------------------------------------------------------
 #   - startTime：epoch 毫秒（任务创建处 `startTime:Date.now()`）
 #   - tokenSamples：纯数字数组（每 tick 推入当时 tokenCount，环形缓冲上限

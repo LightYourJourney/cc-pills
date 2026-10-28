@@ -4,7 +4,7 @@
 #   用法：bash tools/preview.sh [风格 ...]      默认 cool jewel glass tokyo-glass
 #   环境：PREVIEW_COLS="160 100 70"（逐个宽度渲染）
 #         CC_PILLS_SRC=<目录>（要渲染的脚本所在目录；默认本仓库的 src/，即未安装的开发版）
-# 隔离（用户 2026-10-28 裁定「缓存目录可指定 + 假数据」）：设 CLAUDE_SL_TMP 为临时目录，色板 /
+# 隔离：设 CLAUDE_SL_TMP 为临时目录，色板 /
 # git / token / 状态 / 锁全部写在那里；token 数据直接写成假缓存（不扫真实 transcript，秒出结果，
 # 场景数据确定）；Claude 状态也写在临时目录里——不影响任何正在使用的会话。结束（含 Ctrl-C）
 # 时等后台刷新退出再整目录删除。此前借用共享的 /tmp/claude-sl-status.cache，播放告警场景时

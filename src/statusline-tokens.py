@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code 状态栏 token / 节奏 / 中转站账本助手（由 statusline-command.sh 的 --refresh 后台模式调用）。
+"""cc-pills token / 节奏 / 中转站账本助手（由 statusline-command.sh 的 --refresh 后台模式调用）。
 
 用法：statusline-tokens.py <transcript_path> <session_id> [key=value ...]
   cost=<美元>            stdin cost.total_cost_usd（订阅模式的等价价值；中转站无账本时的回落）
@@ -8,49 +8,44 @@
   sp=<已用%>,<resets_at>,<period>  网关花费限额（rate_limits.spend_limit；period = daily|weekly|monthly）
   relay=<cc-switch.db>   中转站模式：读 CC Switch 账本（见 4）
   th=<WARN_AT>,<BAD_AT>  告警阈值（与 bash 侧同源）
-环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 /tmp；预览工具用它隔离）
+环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 /tmp；预览与测试用它隔离）
 
-产出 stdin JSON 直接给不了的指标：
+设计原因与沿革见 docs/DECISIONS.md。产出 stdin JSON 直接给不了的指标：
+
   1. session 累计 总输入/输出 tokens：主 transcript + <sid>/subagents/*.jsonl +
-     <sid>/subagents/workflows/*/*.jsonl（与 CC Switch 的会话归属一致，用户 2026-10-28
-     裁定计入 subagent）；总输入 = input + cache 读 + cache 写。
-  2. 花费速率 $/h：对费用逐次采样做时间加权 EWMA（半衰期 600s，偏差校正同 Adam：
-     不校正时恒定 $12/h 跑满 20 分钟仍只显示 $8.8/h，2026-10-28 模拟实测）。
+     <sid>/subagents/workflows/*/*.jsonl（与 CC Switch 的会话归属一致，subagent 计入）；
+     总输入 = input + cache 读 + cache 写。
+  2. 花费速率 $/h：对费用逐次采样做时间加权 EWMA（半衰期 600s，偏差校正同 Adam——
+     不校正时恒定 $12/h 跑满 20 分钟只显示 $8.8/h）。
   3. 主对话 compact 次数（主 transcript 的 system/compact_boundary 且非 sidechain）。
-  4. 中转站会话花费 =【CC Switch 账本】+【尚未入账的尾部】（用户 2026-10-28 裁定）。
-     账本 = proxy_request_logs 中本会话的全部行，代理行（data_source='proxy'，上游
-     模型价 × 供应商倍率，实时）与会话日志行（'session_log'，CC Switch 每 10 分钟
-     回扫 transcript 补记直连请求，倍率恒为 1）两源互补——CC Switch 写会话日志前按
-     「四种 token 全等、2xx、±10 分钟」与代理行去重（usage_stats.rs
-     has_matching_proxy_usage_log）；本机 15 个两源并存会话实测残余重复 0。
-     尾部 = transcript 中 request_id「session:<message.id>」不在账本、且匹配不到代理行
-     的消息，用 CC Switch 的价格表与计价规则自算（calculator.rs：1h 缓存写入按 5m 单价
-     ×1.6；会话日志路径倍率 1），故显示值实时、且在 CC Switch 下一轮同步后与其用量页
-     一致。CC Switch 只保留约 30 天：早于库内最早记录的消息不计入尾部、直接移出未入账
-     集合（用户 2026-10-28 裁定「与用量页一致」；此前老会话重扫后会把已被清掉的消息
-     当未入账重新自算，同一会话花费取决于状态是否重建过）。
-     今日 = 本机今日见过的中转站会话的账本（created_at ≥ 本地零点）+ 本会话尾部。
-     $/h 的追踪器按来源（账本 / stdin）分 epoch；中转站模式下没追平或读库失败时
-     不再改喂 stdin 费用——两种口径共用一个追踪器，切换一次即虚报几百美元每小时
-     （2026-10-28 终审实测 $571/h，账本实际未动）。
-  5. 额度节奏（5h / 7d / 中转站日限额 / 网关花费限额）：速率取「窗口均速 = 已用 ÷ 窗口已过时长」与
-     「近期速率 = 已用量的 EWMA 斜率」中的较大者（用户裁定：偏保守），外推到重置时刻
-     得 proj 与预计用完倒计时 eta。分级「现状定色、预测只提醒」（用户 2026-10-28 裁定；
-     此前 proj ≥ 130% 即判 bad，5h 才用 36% 就整块标红）：
+  4. 中转站会话花费 =【CC Switch 账本】+【尚未入账的尾部】。
+     账本 = proxy_request_logs 中本会话的全部行。代理行（data_source='proxy'，上游模型价
+     × 供应商倍率，实时）与会话日志行（'session_log'，CC Switch 每 10 分钟回扫 transcript
+     补记直连请求，倍率恒为 1）两源互补——CC Switch 写会话日志前按「四种 token 全等、2xx、
+     ±10 分钟」与代理行去重（usage_stats.rs has_matching_proxy_usage_log）。
+     尾部 = transcript 中 request_id「session:<message.id>」不在账本、且匹配不到代理行的
+     消息，用 CC Switch 的价格表与计价规则自算（calculator.rs：1h 缓存写入按 5m 单价 ×1.6；
+     会话日志路径倍率 1），故显示值实时，且在 CC Switch 下一轮同步后与其用量页一致。
+     CC Switch 只保留约 30 天：早于库内最早记录的消息不计入尾部、直接移出未入账集合，
+     与用量页同口径（否则老会话一旦重建状态，会把已被清掉的消息当未入账重新自算）。
+     今日 = 今日见过的中转站会话的账本（created_at ≥ 本地零点）+ 本会话尾部。
+     $/h 的追踪器按来源（账本 / stdin）分 epoch；中转站模式下没追平或读库失败时不再改喂
+     stdin 费用——两种口径共用一个追踪器，切换一次即虚报几百美元每小时。
+  5. 额度节奏（5h / 7d / 中转站日限额 / 网关花费限额）：速率取「窗口均速 = 已用 ÷ 窗口已过
+     时长」与「近期速率 = 已用量的 EWMA 斜率」中的较大者（偏保守），外推到重置时刻得 proj
+     与预计用完倒计时 eta。分级「现状定色、预测只提醒」：
        bad  = eta < URGENT[窗口]（很快就要用完）：百分比与 out 都红
        high = 已用 ≥ th[1]：百分比红，out（若有）仍黄——out 按紧迫度单独定色
-              （用户 2026-10-28 裁定；此前 7d 86% 时 out 19h28m 也跟着标红）
        warn = proj ≥ 100%（按节奏会在重置前用完，仅提醒）：只有 out 黄
-     两种速率都不可得时只按已用 ≥ th[1] 判 high。已用 ≥ 100%（用尽）一律判 bad、用完
-     倒计时写「用尽」（用户 2026-10-28 裁定；此前用完那一刻反而从 bad 降成 high）。
+     两种速率都不可得时只按已用 ≥ th[1] 判 high。已用 ≥ 100%（用尽）一律判 bad、
+     用完倒计时写「用尽」。
      中转站日限额与网关日限额的窗口均速 = 今日已用 ÷ 自零点（或窗口起点）以来时长。
-     例外：7d 只用窗口均速，且窗口过满 1 天才外推——周窗口有昼夜节律，开窗头几小时
-     或近 3 小时的工作时段速率按 24h 连续外推一整周会系统性高估（实测：开窗 6.9h
-     用 30% 即被判「16 小时后用完」）。
+     例外：7d 只用窗口均速，且窗口过满 1 天才外推——周窗口有昼夜节律，开窗头几小时按
+     24h 连续外推一整周会系统性高估（实测：开窗 6.9h 用 30% 即被判「16 小时后用完」）。
 
   6. 会话级缓存命中率 = cache 读 ÷（input + cache 读 + cache 写），由 1 的累计量算出。
      不用 stdin 的 prompt_cache.hit_ratio：那是每个 Claude Code 进程各自的统计，
-     /restart 或 resume 后从零开始（2026-10-28 实测重启后 requests=1），读数不代表会话。
+     /restart 或 resume 后从零开始，读数不代表会话。
 
 输出单行、tab 分隔的十七段纯文本，不可得的段写 "-"（bash 侧 IFS=tab read 需占位）：
   总输入 输出 $/h compact次数 5h等级 5h用完倒计时 7d等级 7d用完倒计时 日等级 日用完倒计时
@@ -59,34 +54,26 @@
 （等级 ∈ ok / warn / high / bad，见 5）。transcript 未追平或任何异常时输出空——bash 侧
 保留旧缓存（其约束 10），表现为数字停在上一次的值，而不是隐藏。
 
-修订记录（2026-10-28）：① io 的 in 原只计未缓存 input；② fmt 在 999.5k~1M 显示
-「1000k」；③ 烧速由计费权重 tokens/min 改为 $/h；④ 状态版本判定被 EMPTY 自带的 v
-掩盖；⑤ 单片扫描导致 1.2GB transcript 约 74s 才追平；⑥ $/h 改 EWMA；⑦ 额度节奏迁入
-并加近期速率、7d 只用窗口均速；⑧ 参照 CC Switch 源码（v4.0.21）：计入 subagent
-transcript、去重改为「stop_reason 优先、其次 output 最大」、加尾部指纹检测原地改写、
-中转站花费改为账本 + 未入账尾部（此前只取代理行，漏掉直连请求）。
-
-⚠️ 估算值声明：这是客户端估算，不是账单权威值
-（见 docs/notes/客户端自报成本是估算不是账单.md）。
+⚠️ 估算值声明：这是客户端估算，不是账单权威值。
 
 工程约束（修改时必须保留）：
-  1. 本脚本跑在后台刷新进程里，不阻塞渲染，但仍可能被 abort 波及杀死——
-     按 MAX_CHUNK 分片解析、每片之后原子落盘（tmp + os.replace，临时文件名带 pid，断点
-     在状态文件），被杀只丢一片进度、绝不污染状态；单次调用在 TIME_BUDGET 内连读多片，
-     预算跨文件共用（进入下一个文件前也检查）。
+  1. 本脚本跑在后台刷新进程里，不阻塞渲染，但仍可能被 abort 波及杀死——按 MAX_CHUNK 分片
+     解析、每片之后原子落盘（tmp + os.replace，临时文件名带 pid，断点在状态文件），被杀
+     只丢一片进度、绝不污染状态；单次调用在 TIME_BUDGET 内连读多片，预算跨文件共用
+     （进入下一个文件前也检查）。
   2. 追平全部文件尾之前不输出：宁缺勿假，不显示爬升中的半截数字。
   3. 绝不向 stdout 输出错误信息；任何异常静默吞掉。
-  4. 同一 API 响应会以多行重复出现（每内容块一行），后写的行会修正 usage（首行可为
-     全 0 占位）。去重按 message.id（CC Switch session_usage.rs:831 同规则）：新行有
-     stop_reason 而旧行没有 → 替换；两者同有或同无 → 取 output 更大者。按差值修正
-     总量；pending 映射 FIFO 上限 PEND_KEEP，挤出的贡献冻结。
+  4. 同一 API 响应会以多行重复出现（每内容块一行），后写的行会修正 usage（首行可为全 0
+     占位）。去重按 message.id（CC Switch session_usage.rs:831 同规则）：新行有 stop_reason
+     而旧行没有 → 替换；两者同有或同无 → 取 output 更大者。按差值修正总量；pending 映射
+     FIFO 上限 PEND_KEEP，挤出的贡献冻结。
   5. 状态版本只认文件自身的 v：EMPTY 自带 v，先 update 再判版本恒为真。
-  6. 每个文件记录游标前 FP_BYTES 字节的 crc32；不符说明文件被原地改写（变短之外的
-     情形），整体重扫。已记账的文件消失（subagent 目录被清理）同样整体重扫——此前
-     persist() 对消失的文件取指纹会抛异常，助手从此每次都无输出（2026-10-28 终审）。
-  8. 预筛子串只用来跳过不相干的行：含 "compact_boundary" 的行先确认真是 compact 行
-     才跳过，否则照常累计 usage（tool_use 的 input 里出现这个词很常见，此前整行被丢）。
+  6. 每个文件记录游标前 FP_BYTES 字节的 crc32；不符说明文件被原地改写（变短之外的情形），
+     整体重扫。已记账的文件消失（subagent 目录被清理）同样整体重扫——persist() 对消失的
+     文件取指纹会抛异常，助手从此每次都无输出。
   7. 只读打开 CC Switch 数据库（mode=ro），且只在中转站模式下访问。
+  8. 预筛子串只用来跳过不相干的行：含 "compact_boundary" 的行先确认真是 compact 行才跳过，
+     否则照常累计 usage（tool_use 的 input 里出现这个词很常见）。
 """
 import calendar
 import glob

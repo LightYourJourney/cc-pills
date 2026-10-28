@@ -9,8 +9,8 @@
 写入缓存：首行 THEME=<请求值>/<pill_chroma>/<pill_style>/v<格式版本>，次行 NAME=<实际主题>，
 其余每行 KEY=R;G;B（W_ACC 例外，是字重 SGR）。bash 同步路径只读缓存、不做颜色计算：
   P_GIT / P_MODEL / P_CTX / P_Q5 / P_Q7 / P_USD / P_TAIL
-                   各组胶囊底色，由胶囊风格 STYLES 生成（用户 2026-10-28：七种风格做成配置项
-                   pill_style）；模型、尾段胶囊各有自己的键，具体颜色由风格决定
+                   各组胶囊底色，由胶囊风格 STYLES 生成（pill_style 可选）；模型、尾段胶囊各有
+                   自己的键，具体颜色由风格决定
   P_NEU            告警胶囊（cache / claude）底色 = 基础表面色（pastel 为模型胶囊色）
   T_NEU            主值文字（终端前景色；bash 侧加粗）
   T_MODEL          模型名（tokyo-glass 为冷蓝；其余风格 = T_NEU）
@@ -18,8 +18,8 @@
   T_TER            第三级统计值：hit / io / api（tokyo-glass 低于次值；其余风格 = T_SEC）
   L_CTX / L_QUOTA / L_Q7 / L_USD
                    各组标签色（ctx / 5h / 7d / 费用）：主题强调色混入前景色降饱和，刻意
-                   避开黄、红色相——那两种只留给告警（用户 2026-10-28 裁定「标签着色 +
-                   主次分层」）；风格带 label='pill' 时改取各自胶囊的色相，底与标签成对
+                   避开黄、红色相——那两种只留给告警；风格带 label='pill' 时改取各自
+                   胶囊的色相，底与标签成对
   T_DIR / T_GIT    目录、分支的淡主题色点缀
   T_WARN / T_BAD   语义色：提醒（黄）/ 危险（红），只用在需要注意的那一项文字上
   T_CRIT           强危险：已用 ≥ crit_at 或很快用完（tokyo-glass 为明显红；其余风格 = T_BAD）
@@ -30,18 +30,17 @@
      后者在 tmux 里也在）读当前 profile（ITERM_PROFILE 名，缺省取默认 profile）的 ANSI
      1–6 号色，与各主题标准终端色逐色 CIE76 ΔE 求和，取最小者；profile 分深浅色时按
      macOS 当前外观取对应一套。非 iTerm、或读 plist 出任何异常（缺键、损坏），回落
-     tokyonight——此前异常会让整个色板生成失败、状态栏一直无色（2026-10-28 终审）。
-  2. 基础表面色 = 主题官方表面色（SURFACE；Dracula 为 current-line #44475a，恰是本机 iTerm
-     Dracula 预设的 Selection Color），须与【profile 背景】和【主题标准背景】两者的
+     tokyonight——异常不能让整个色板生成失败，否则状态栏一直无色。
+  2. 基础表面色 = 主题官方表面色（SURFACE；Dracula 为 current-line #44475a，与 iTerm
+     Dracula 预设的 Selection Color 相同），须与【profile 背景】和【主题标准背景】两者的
      CIE76 ΔE 都 ≥ MIN_PILL_DE，否则逐步向中性字色提亮（上限 40%）。这道门槛只约束
-     基础表面色；各风格的组胶囊明度、彩度由风格定义（用户看过实渲染后选定），不再套
-     这道门槛（用户 2026-10-28 裁定「改文档、不改视觉」）。要对两种背景验收，是因为
-     iTerm 的透明度 / 模糊只提亮默认背景、胶囊底色不透明（2026-10-28 截图取样：背景
-     从 profile 的 #1e1f29 变成 #272a36）。
+     基础表面色；各风格的组胶囊明度、彩度由风格定义，不逐组套这道门槛（逐组提亮会抹平
+     风格的明暗节奏，见 docs/DECISIONS.md）。要对两种背景验收，是因为 iTerm 的透明度 /
+     模糊只提亮默认背景、胶囊底色不透明（实测背景从 profile 的 #1e1f29 变成 #272a36）。
   3. 字色从目标色出发逐步混白或混墨（取与底色对比度更高的一端），直到与「最难达标的
-     那块胶囊」的 WCAG 对比度达标：暗底浅字对最亮的胶囊、浅底墨字对最暗的胶囊；尾段
-     也在胶囊里，同样对胶囊校正。中灰底色（亮度约 0.10–0.35）上 7:1 数学上无解，此时
-     主值退到 MIN_CONTRAST（用户 2026-10-28 裁定，文档注明而不改视觉）。
+     那块胶囊」的 WCAG 对比度达标：浅字对最亮的胶囊、深字对最暗的胶囊；尾段也在胶囊里，
+     同样对胶囊校正。文字极性按胶囊实际明暗决定（不按终端底色：中灰底上胶囊可能比底色
+     更暗，浅字压在亮胶囊上只有 3.76）。中灰底色上 7:1 数学上无解，此时退到 MIN_CONTRAST。
 
 任何未预料的异常静默退出（不写缓存），bash 侧沿用旧色板或回落无色，并按 THEME_TTL 退避重试。
 """
@@ -63,7 +62,7 @@ PILL_STYLE = 'tint'  # 胶囊风格（argv[4] 可覆盖），见 STYLES
 HUES = {'indigo': '#6272a4', 'teal': '#50e3c2', 'purple': '#bd93f9', 'blue': '#6c8cff',
         'cyan': '#8be9fd', 'pink': '#ff79c6', 'green': '#50fa7b'}
 GROUPS = ('git', 'model', 'ctx', 'q5', 'q7', 'usd', 'tail')
-# 胶囊风格（用户 2026-10-28 在 iTerm 实渲染预览 A–F 后裁定全部做成配置项）。
+# 胶囊风格（先做了 A–F 六种，看完 iTerm 实渲染预览后全部保留为配置项）。
 # 每组 (色相, 明度, 彩度)：色相 = 'key' 取主题色板（THEMES 键）、HUES 名取固定色相、
 # None 取表面色自身的色相；明度 dark 风格为相对表面色明度的偏移（适配各主题），
 # light 风格为绝对值。label='pill' 时标签色取自己胶囊的色相，否则取主题组色。
@@ -73,7 +72,7 @@ GROUPS = ('git', 'model', 'ctx', 'q5', 'q7', 'usd', 'tail')
 #   glass  D 极简玻璃：纯中性灰两档明暗交替，颜色只在标签与告警上
 #   mono   E 单色深浅：只用主题紫，靠明暗区分
 #   pastel F 粉彩亮块：浅色马卡龙底 + 墨色字，Catppuccin / starship 气质
-#   tokyo-glass  B / C / D 融合（用户 2026-10-28 规格）：Tokyo Night 冷色 Token + 近背景
+#   tokyo-glass  B / C / D 融合：Tokyo Night 冷色 Token + 近背景
 #          的「玻璃」胶囊 + 三级信息层级，见 glass_tokens()
 STYLES = {
     'tint':   dict(label='theme', groups={'git': ('git', 0, None), 'model': (None, 0, 0),
@@ -170,14 +169,20 @@ def is_light(c):
 
 def legible(fg, bg, target):
     """fg 逐步混向对比度更高的一端（白或墨）直到与 bg 对比度达标（色相保持，只改明暗）。
-    达不到 target 时退到 MIN_CONTRAST（中灰底上 7:1 无解，见文档 3）；仍达不到则取端点。"""
-    end = INK if is_light(bg) else WHITE
-    for goal in (target, MIN_CONTRAST):
-        for p in range(0, 101, 4):
-            c = mix(end, fg, p)
-            if contrast(c, bg) >= goal:
-                return c
-    return end
+    达不到 target 时退到 MIN_CONTRAST（中灰底上 7:1 无解，见文档 3）；仍达不到则取端点。
+    首选端由「底色偏浅还是偏深」决定；若它连 MIN_CONTRAST 都达不到，换另一端再试一次
+    ——中灰底上胶囊被抬到偏亮、首选端却仍是白，墨色那端才达标（对比度矩阵测试发现）。"""
+    ends = [INK, WHITE] if is_light(bg) else [WHITE, INK]
+    for end in ends:
+        for goal in (target, MIN_CONTRAST):
+            for p in range(0, 101, 4):
+                c = mix(end, fg, p)
+                if contrast(c, bg) >= goal:
+                    return c
+        if contrast(end, bg) < MIN_CONTRAST:
+            continue                              # 这一端连下限都够不到，换另一端
+        return end
+    return max(ends, key=lambda e: contrast(e, bg))
 
 
 def lab2rgb(L, a, b):
@@ -249,9 +254,9 @@ TG_CM = 5.5          # 模型名：一级信息，但用色相而非亮度突出
 def glass_tokens(bgs, put):
     """bgs = 可能的终端背景（profile 背景、主题标准背景；iTerm 透明度会把前者提亮成后者）。"""
     # 浅色终端背景：胶囊改往暗处偏、文字对最暗的胶囊校正（此前一律往亮处偏，白底上
-    # 胶囊全被截成 #ffffff、与背景 ΔE 为 0——2026-10-28 终审）
+    # 胶囊全被截成 #ffffff、与背景 ΔE 为 0——对比度矩阵测试发现）
     # 深浅只看 profile 背景（bgs[0]）：内置五套主题的标准背景全是深色，浅色终端下它不代表
-    # 实际背景，不参与验收（否则浅底被误判成深底，2026-10-28 复测发现）
+    # 实际背景，不参与验收（否则浅底被误判成深底）
     lt = is_light(bgs[0])
     if lt:
         bgs = bgs[:1]
@@ -268,8 +273,12 @@ def glass_tokens(bgs, put):
     put('P_NEU', pills['neu'])
     for g in GROUPS:
         put('P_' + g.upper(), pills[g])
-    ref = (min if lt else max)(pills.values(), key=lum)   # 对最难达标的那块胶囊校正
-    fg, muted = (INK, rgb('#4c5374')) if lt else (rgb(TG['fg']), rgb(TG['fg_muted']))
+    # 文字极性按胶囊实际明暗定，而非按终端底色：中灰底（#808080 一类）上胶囊可能被推向
+    # 比底色更暗的一侧，此时浅字对最亮胶囊只有 3.76，必须改浅字为深字
+    light_text = min(contrast(WHITE, p) for p in pills.values()) >= \
+        min(contrast(INK, p) for p in pills.values())
+    ref = (max if light_text else min)(pills.values(), key=lum)   # 浅字对最亮的胶囊、深字对最暗的最难达标
+    fg, muted = (rgb(TG['fg']), rgb(TG['fg_muted'])) if light_text else (INK, rgb('#4c5374'))
     warn = legible(rgb(TG['amber']), ref, MIN_CONTRAST)
     soft_red = legible(mix(rgb(TG['red']), muted, 70), ref, MIN_CONTRAST)
     crit = legible(rgb(TG['red']), ref, MIN_CONTRAST)              # 保住饱和度，靠纯度 + 加粗区分于柔和红
@@ -329,7 +338,7 @@ def main():
         put = lambda k, c: lines.append(f'{k}=' + ';'.join(map(str, c)))
         lines += glass_tokens([bg, rgb(t['bg'])], put)
         return write(out, lines)
-    neu = term[2] if term else rgb(t['model'])        # 常态字 = 终端前景色（本机 #e6e6e6）
+    neu = term[2] if term else rgb(t['model'])        # 常态字 = 终端前景色
     pill, base = rgb(SURFACE[name]), rgb(SURFACE[name])
     lift = 0
     while min(math.dist(lab(pill), lab(bg)), math.dist(lab(pill), lab(rgb(t['bg'])))) < MIN_PILL_DE \

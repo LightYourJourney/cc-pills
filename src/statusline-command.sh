@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Claude Code 状态栏脚本（表面色胶囊单行 · 响应式 · 缓存渲染 + 后台刷新）
-# =====================================================================
+# cc-pills 主状态栏（表面色胶囊单行 · 响应式 · 缓存渲染 + 后台刷新）
+# =================================================================
 #
 # 渲染示例（去色；( ) 为胶囊圆角端帽）：
 #   宽  (ccchat  main [+?]) (Opus 5.5 high) (ctx 42% 419k ↻1) (5h 60% ↺2h26m out 1h42m)
@@ -10,105 +10,87 @@
 #   中转站：($3.21 $1.8/h) (今日 $23.40/$50 out 3h10m)；估算 $17.54*、下限 $0.42+
 #   告警胶囊：(cache 8m +275k) (claude major)
 #
-# 架构（2026-08-19 方案 C；2026-10-28 第五版）
-# --------------------------------------------
-# 同步路径（每次刷新执行，目标 <20ms；2026-10-28 实测中位约 18ms）：
+# 设计原因与沿革见 docs/DECISIONS.md；这里只写改代码必须遵守的契约。
+#
+# 架构
+# ----
+# 同步路径（每次刷新执行，目标 <20 ms）：
 #   stdin → 1 次 jq 提取全部字段 → 读缓存（配色 / git / token / 中转站 / claude 状态）
 #   → 按降级序列缩短 / 丢弃、放得下后按逆序回填 → 组装输出 → 脱钩后台刷新进程 → 退出。
 # 后台刷新（--refresh 模式，本脚本自调用；同会话同一时刻只跑一个，见约束 9）：
-#   （下列 /tmp 均指 $SLT = ${CLAUDE_SL_TMP:-/tmp}；预览工具设它隔离全部缓存）
+#   （下列 /tmp 均指 $SLT = ${CLAUDE_SL_TMP:-/tmp}；预览与测试设它隔离全部缓存）
 #     /tmp/claude-sl-theme-<终端键>.cache  （statusline-theme.py 产出的完整色板，首行
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     /tmp/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
 #                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
 #     /tmp/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十七段输出，见其文档）
 #     /tmp/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
-#   并发刷新幂等（同输入同输出 + mv 原子替换）；被 abort 杀掉的刷新进程由下一
-#   周期重试补上。输入（transcript 大小 / 费用 / 额度）都没变且距上次不足
-#   TOK_MIN_GAP 秒时跳过 python。
+#   并发刷新幂等（同输入同输出 + mv 原子替换）；被 abort 杀掉的刷新进程由下一周期重试补上。
+#   输入（transcript 大小 / 费用 / 额度）都没变且距上次不足 TOK_MIN_GAP 秒时跳过 python。
 #
-# 外观（第九版「统一表面色 + 标签着色 + 主次分层」，用户 2026-10-28 裁定）
-# ---------------------------------------------------------
-# 每组一个圆角胶囊（U+E0B6 / U+E0B4），组内各项以单个空格分隔。胶囊底色按组取
-# （pcolor：P_GIT / P_MODEL / P_CTX / P_Q5 / P_Q7 / P_USD / P_TAIL，告警胶囊用 P_NEU），
-# 具体颜色由风格决定；基础表面色 = 主题官方表面色（Dracula current-line #44475a，与本机
-# iTerm 的 Selection Color 相同）。区分靠文字三层：
+# 外观契约
+# --------
+# 每组一个圆角胶囊（U+E0B6 / U+E0B4），组内各项以单个空格分隔，组间一个空格。胶囊底色按组
+# 取（pcolor：P_GIT / P_MODEL / P_CTX / P_Q5 / P_Q7 / P_USD / P_TAIL，告警胶囊用 P_NEU），
+# 具体颜色由 PILL_STYLE 决定。区分靠文字三层：
 #   - 标签（ctx / 5h / 7d / 今日 / hit / api）用组色：ctx 绿、额度紫、费用青、尾段弱化；
-#     降饱和且避开黄红色相，彩度封顶在告警色的 75%，标签再多也不压过告警；
-#   - 主值（百分比）前景色加粗；会话费用用费用组色（字重 W_ACC：tokyo-glass 不加粗、
-#     其余风格加粗）；次值（ctx 量、↻、重置倒计时、$/h）灰，三级统计（hit、io、api）更弱；
-#   - 只有需要注意的那一项上语义色——提醒（out 预测、cache 将过期、ctx ≥ CTX_WARN）黄，
-#     危险（额度已用 ≥ BAD_AT、很快用完、cache 已冷、ctx ≥ CTX_BAD、Claude major）红且
-#     加粗；out 按紧迫度单独定色：已用 ≥ BAD_AT 只让百分比变红，很快用完 out 才红。
-# 胶囊底色按 PILL_STYLE 生成（用户 2026-10-28 看过 iTerm 实渲染预览后裁定六套全做成配置
-# 项）：tint 同明度淡染（默认）/ cool 冷色系 / jewel 宝石色 / glass 中性灰明暗交替 /
-# mono 单色深浅 / pastel 粉彩亮块配墨色字；另有 tokyo-glass（B/C/D 融合：Tokyo Night 冷色
-# Token、近背景玻璃胶囊、三级信息层级，模型冷蓝、费用降为二级、hit/io/api 降为三级，
-# 80–94% 柔和红、≥ CRIT_AT 或很快用完为强红）。
-# 沿革：更早每组一种底色、告警整块变色，同屏常有 4 个彩色胶囊喧宾夺主；第七版改中性底
-# 却按 14% 混入 profile 背景，iTerm 的透明度只提亮默认背景（实测 #1e1f29 → #272a36），
-# 胶囊几乎融进背景；第八版全部一种字色，相邻两项、相邻两胶囊都分不开。色板由
-# statusline-theme.py 运行时计算并做对比度验收；THEME=auto 时读 iTerm 当前 profile
-# 的 ANSI 色识别终端主题（本机为 iTerm 的 Dracula 预设）。非 truecolor 终端自动降为
-# 256 色（xterm 色块六档 + 24 级灰阶取最近）；无 Nerd Font 时设 GLYPHS=ascii（端帽改为
-# 带胶囊底色的空格，宽度不变）。
+#     降饱和且避开黄红色相，彩度封顶在告警色的 75%，标签再多也不压过告警。
+#   - 主值（百分比）前景色加粗；会话费用用费用组色（字重 W_ACC）；次值（ctx 量、↻、
+#     重置倒计时、$/h）灰；三级统计（hit、io、api）更弱。
+#   - 语义色只给需要注意的那一项：提醒（out 预测、cache 将过期、ctx ≥ CTX_WARN）黄；
+#     危险（额度已用 ≥ BAD_AT、很快用完、cache 已冷、ctx ≥ CTX_BAD、Claude major）红且加粗；
+#     out 按紧迫度单独定色：已用 ≥ BAD_AT 只让百分比变红，很快用完 out 才红。
+# 胶囊风格：tint（默认）/ cool / jewel / glass / mono / pastel / tokyo-glass，见
+# statusline-theme.py 的 STYLES。色板由 statusline-theme.py 运行时计算并做对比度验收；
+# THEME=auto 时读 iTerm 当前 profile 的 ANSI 色识别终端主题。
+# 非 truecolor 终端自动降为 256 色（xterm 色块六档 + 24 级灰阶取最近）；无 Nerd Font 时设
+# GLYPHS=ascii（端帽改为带胶囊底色的空格，宽度不变）。
 #
-# 费用口径（用户 2026-10-28 裁定「自动分模式」）
-# -----------------------------------------------
-#   模式判定（用户 2026-10-28 裁定）：stdin 有 5h / 7d 额度 → 订阅；否则设了非官方的
-#   ANTHROPIC_BASE_URL → 中转站；都没有 → 按订阅处理（订阅会话首个 API 响应之前还没有
-#   rate_limits，此前会被误判成中转站、显示 $x* 并去读 CC Switch 库）。
-#   - 订阅：显示 $x——Claude Code 按标价估算的【等价价值】，订阅用户并不为它付费
-#     （用户裁定不加 API≈ 前缀）。
-#   - 中转站：CC Switch 账本 + 尚未入账的尾部（实时），由
-#     statusline-tokens.py 计算——账本两源（代理行 / 会话日志行）互补、已由 CC Switch
-#     去重；尾部按 CC Switch 的价格表与计价规则自算，本会话 168 条消息逐条比对误差
-#     <1e-16。本会话有未计价消息（模型不在 CC Switch 价格表，实测会记成 $0）时显示
-#     「$x+」下限。另显示本机今日中转站花费；CC Switch 给当前供应商设了
-#     limit_daily_usd 时显示「今日 $x/$限额」并按节奏告警。
-#     （2026-10-28 更正：此前判断「两源重复记账、会话日志滞后 9 小时」均不成立——
-#     15 个两源并存会话残余重复实测为 0；会话日志每 10 分钟同步，「9 小时」是用户空闲。）
+# 费用口径
+# --------
+#   模式判定：stdin 有 5h / 7d 额度 → 订阅；否则设了非官方 ANTHROPIC_BASE_URL → 中转站；
+#   都没有 → 按订阅处理（订阅会话首个 API 响应之前还没有 rate_limits）。
+#   - 订阅：显示 $x——Claude Code 按标价估算的【等价价值】，订阅用户并不为它付费。
+#   - 中转站：CC Switch 账本 + 尚未入账的尾部（实时），由 statusline-tokens.py 计算。
+#     账本两源（代理行 / 会话日志行）互补、已由 CC Switch 去重；尾部按 CC Switch 的价格表
+#     与计价规则自算。有未计价消息（模型不在价格表）时显示「$x+」下限。另显示今日
+#     中转站花费；CC Switch 给当前供应商设了 limit_daily_usd 时显示「今日 $x/$限额」。
 #   - 拿不到 CC Switch 数据（未装 / 读库失败）：回落「$x*」（Claude Code 标价估算）。
-#   - 网关花费限额（rate_limits.spend_limit，用户 2026-10-28 裁定支持）：显示「今日 / 本周 /
-#     本月 $已用/$限额」（无美元时显示百分比），按节奏告警；存在时优先于 CC Switch 的日限额。
-#   标记一律用后缀 ASCII：≈ / ≥ 是歧义宽度字符，紧贴 $ 时字形挤在一起（用户截图反馈）。
+#   - 网关花费限额（rate_limits.spend_limit）：显示「今日 / 本周 / 本月 $已用/$限额」
+#     （无美元时显示百分比），按节奏告警；存在时优先于 CC Switch 的日限额。
+#   标记一律用后缀 ASCII：≈ / ≥ 是歧义宽度字符，紧贴 $ 时字形挤在一起。
 #
 # ⚠️ 估算值声明
 # -------------
 # ctx / 额度 / hit / io / 费用均为客户端估算值，不是账单权威值。任一字段缺失时对应项
-# 【整项隐藏】，绝不显示推算值或占位数字。字段口径（v2.1.311 实测 + 官方文档）：
+# 【整项隐藏】，绝不显示推算值或占位数字。字段口径：
 #   - ctx：context_window.used_percentage（已用；缺失时回退 100-remaining）；绝对值
-#     total_input_tokens 是「当前上下文」（= input + cache 读写，非累计）。不显示窗口
-#     大小（与百分比重复）。
+#     total_input_tokens 是「当前上下文」（= input + cache 读写，非累计）。不显示窗口大小。
 #   - 5h / 7d：rate_limits.five_hour / seven_day 的已用 %（账号级）+ resets_at 倒计时；
 #     节奏告警与「out 预计用完」由 statusline-tokens.py 计算（窗口均速与近期速率取大）。
 #     低信息量时隐藏：5h 的重置倒计时、以及整个 7d，只在已用 ≥ WARN_AT 或节奏告警时出现。
+#     已用 ≥ 100% 判最高级并显示「用尽」。
 #   - $/h：statusline-tokens.py 对费用做半衰期 10 分钟的 EWMA。
 #   - cache：prompt_cache.expires_at 倒计时（TTL 取 prompt_cache.ttl）。剩余 ≥ TTL/2
-#     时隐藏（活跃会话里永远在 59m 附近，无信息量）；TTL/6 ~ TTL/2 在尾段弱化显示；
-#     不足 TTL/6 升为黄色胶囊；expires_at 已过才判 cold（红），并附「+<recache_tokens_if_cold>」
-#     = 过期后下一轮要按 cache write 重写的 token 数。warm=false 而未到期不显示——官方
-#     说明里 warm=false 也包括「最近一次响应没报告缓存 token」（用户 2026-10-28 裁定）。
+#     时隐藏；TTL/6 ~ TTL/2 在尾段弱化显示；不足 TTL/6 升为黄色胶囊；expires_at 已过才判
+#     cold（红），并附「+<recache_tokens_if_cold>」= 过期后下一轮要按 cache write 重写的
+#     token 数。warm=false 而未到期不显示（它也包含「最近一次响应没报告缓存 token」）。
 #   - hit：会话级累计命中率，由 statusline-tokens.py 从 transcript 算出（含 subagent）；
 #     stdin 的 prompt_cache.hit_ratio 是每个进程各自的统计，重启后从零开始，仅作回落。
-#     misses 不显示（用户裁定为无效信息）。
 #   - ↑/↓：transcript 聚合的 session 累计 总输入（含缓存读写）/ 输出，含同会话 subagent。
-#   - 时长：只显示 api = cost.total_api_duration_ms（等待 API 的累计时间）。墙钟时长
-#     total_duration_ms 含离开的空闲时间，用户裁定不显示。
+#   - 时长：只显示 api = cost.total_api_duration_ms；墙钟时长含离开的空闲时间，不显示。
 #   - ↻：主对话 compact_boundary 次数，为 0 时隐藏。
-#   - claude：status.claude.com 总体 indicator，正常（none）时隐藏；不含中转站。minor /
-#     maintenance 只在尾段弱化显示（常见且多与编码无关，2026-10-28 那次是 Gmail 连接器），
-#     major / critical 才是红色告警。
+#   - claude：status.claude.com 总体 indicator，none 时隐藏；不含中转站。minor /
+#     maintenance 只在尾段弱化显示，major / critical 才是红色告警。status_page=off 时
+#     不请求、不显示。
 #
-# 响应式（$COLUMNS 由 Claude Code 注入；尺寸变化不触发刷新，靠 refreshInterval 兜底）
-# ------------------------------------------------------------------------------
-# 每项有从长到短的若干写法。超宽时按「降级序列」逐步执行（drop 丢弃 / shrink 换更短
-# 写法），放得下即停；没有 drop 步骤的项永不丢弃（用户 2026-10-28
-# 裁定；默认序列见「默认降级序列」，配置文件可整体替换）。额度进入风险态时其 drop 失效，
-# 免得只剩一个看不出属于谁的「out 1h42m」。预算 = COLUMNS − SAFE_MARGIN：界面在状态栏外
-# 另有内置边距（官方文档）。2026-10-28 用截图反推：COLUMNS=146 时 141 列内容 + 「…」
-# 即被截断，可用宽度为 COLUMNS − 4；歧义宽度字符（· ↑ 私用区字形）按 1 列计与截断点
-# 吻合，按 2 列计则应在约 120 列处截断，与截图不符。
+# 响应式
+# ------
+# 每项有从长到短的若干写法。超宽时按「降级序列」逐步执行（drop 丢弃 / shrink 换更短写法），
+# 放得下即停；没有 drop 步骤的项永不丢弃，默认序列见「默认降级序列」，配置文件可整体替换。
+# 额度进入风险态时其 drop 失效，免得只剩一个看不出属于谁的「out 1h42m」。
+# 预算 = COLUMNS − SAFE_MARGIN（界面在状态栏外另有内置边距，见 docs/DECISIONS.md）。
+# 宽度用 dw() 的显示宽度模型计算，不用 ${#s}。
 #
 # 工程约束（修改时必须保留）
 # --------------------------
@@ -116,14 +98,14 @@
 #   2. jq 或任何依赖缺失时静默降级，绝不向状态栏输出错误信息
 #   3. 末尾 `true` 保证退出码恒为 0（exit code ≠ 0 时输出会被整体丢弃）
 #   4. 缓存写入必须 tmp + mv 原子替换（写一半被杀不能污染缓存）
-#   5. 跨进程传字段用 tab 分隔 + 空字段占位符 "-"（IFS=tab 的 read 会吞
-#      连续 tab，无占位符会导致字段错位）
-#   6. 变量展开后紧跟多字节字符（· 等）必须写 ${var} 花括号——zh_CN.UTF-8
-#      下 bash 5.3 会把多字节首字节吞进变量名（实测 "$a·" 展开为空 + 半个 ·）
-#   7. 私用区字形（powerline / nerd font）一律写成 $'\xee..' 字节转义——
-#      2026-10-28 发现分支字形曾被编辑工具静默吞成空串
-#   8. 渲染与宽度计算全在当前 shell 内用全局变量完成，不可 $(...) 取值：子 shell
-#      改不到父 shell 的数组，且每次 fork 都是开销
+#   5. 跨进程传字段用 tab 分隔 + 空字段占位符 "-"（IFS=tab 的 read 会吞连续 tab，
+#      无占位符会导致字段错位）
+#   6. 变量展开后紧跟多字节字符（· 等）必须写 ${var} 花括号——zh_CN.UTF-8 下
+#      bash 5.3 会把多字节首字节吞进变量名
+#   7. 私用区字形（powerline / nerd font）一律写成 $'\xee..' 字节转义——编辑工具
+#      会静默吞掉裸字形
+#   8. 渲染与宽度计算全在当前 shell 内用全局变量完成，不可 $(...) 取值：子 shell 改不到
+#      父 shell 的数组，且每次 fork 都是开销
 #   9. 后台刷新按会话加 mkdir 锁（原子），超过 LOCK_STALE 秒视为残锁清除
 #  10. token 助手输出为空（未追平 / 异常）时保留旧缓存不覆盖，否则该项闪烁消失
 #  11. 色板缓存缺失或与 THEME 不符时整行无色输出，不在同步路径算颜色
@@ -135,17 +117,14 @@
 #      新版 bash 重跑，找不到则降级为最简行
 #  15. 配置文件只按白名单逐行解析，绝不 source（避免把配置当代码执行）
 #  16. 输出用 printf '%s'、转义序列用真实 ESC 字节拼接，外部文本（路径 / 分支 / 模型名）
-#      先剔除控制字符——2026-10-28 复核：此前 printf '%b' 会把目录名里的 \c 当「停止输出」、
-#      \033[41m 当真转义，整行被截断或被注入终端控制序列
+#      先剔除控制字符——printf '%b' 会把目录名里的 \c 当「停止输出」、\033[41m 当真转义
 #  17. 同步路径只允许 jq 一次外部进程，其余全用 bash 内建（cd -P / 参数展开 / read）；
 #      唯一例外：某目录首次渲染、还没有 git 缓存时同步跑一次 git_data（约 4 个进程）
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
 #
-# 维护约定（2026-08-19 更新）：设计类改动可走 statusline-setup agent；涉及
-# 测试或新建文件的改动走主会话 + 假 stdin JSON 实测（statusline-setup 仅有
-# Read+Edit，无法建文件也无法验证，见知识库 tools.md 2026-08-19 条目）。
-# 上一版备份：~/.claude/statusline-command.sh.bak.20261028（改版前原始版本）
+# 开发：bash run_tests.sh（隔离沙箱，不碰线上缓存）；安装：bash install.sh
+# 调试渲染：CLAUDE_SL_NO_REFRESH=1 bash install.sh 后手工喂 stdin（见 tests/_util.py）
 #
 
 # ── bash 版本守卫（约束 14）─────────────────────────────────────────────
@@ -167,7 +146,7 @@ SAFE_MARGIN=4            # 预留给界面内置边距的列数（截图反推�
 TRUNCATE_LENGTH=3        # 目录保留的末尾段数（starship truncation_length）
 WARN_AT=50               # 额度已用 ≥ 此值才显示 5h 重置时间与 7d（低于且无风险时隐藏）
 BAD_AT=80                # 额度已用 ≥ 此值 → 红
-CTX_WARN=70              # ctx 已用 ≥ 此值 → 黄（用户 2026-10-28 裁定，与额度阈值分开）
+CTX_WARN=70              # ctx 已用 ≥ 此值 → 黄（与额度阈值分开）
 CTX_BAD=90               # ctx 已用 ≥ 此值 → 红
 CRIT_AT=95               # ctx / 额度已用 ≥ 此值 → 强红（T_CRIT；只有 tokyo-glass 与红色有别）
 PILL_STYLE=tint          # 胶囊风格：tint cool jewel glass mono pastel tokyo-glass（见 statusline-theme.py STYLES）
@@ -181,16 +160,16 @@ TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒�
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 SLT=${CLAUDE_SL_TMP:-/tmp}   # 全部缓存 / 锁 / 状态文件的目录（预览工具设 CLAUDE_SL_TMP 隔离）
-GIT_TTL=5                # git 缓存刷新间隔（秒；用户 2026-10-28 裁定）；.git/HEAD 或 index 变了立即刷新
+GIT_TTL=5                # git 缓存刷新间隔（秒）；.git/HEAD 或 index 变了立即刷新
 CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 
-# ── 默认降级序列（用户 2026-10-28 裁定「降级序列」粒度）──────────────────
+# ── 默认降级序列（逐项裁定去留的产物，见 docs/DECISIONS.md）────────────────
 # 宽度不够时从前往后逐步执行，放得下即停。每步一个动作：
 #   drop <项>    丢弃该项            shrink <项>  换成下一种更短的写法（多级写法可出现多次）
 # 没有 drop 步骤的项永不丢弃（现为 dir git gitst model ctx ctxin q5 cache hit io）；
 # 额度（q7 / day）进入风险态时，其 drop 步骤自动失效。
 # 配置文件里写了任何 step 行，就整体替换这份默认序列。
-STEPS=(                                               # 用户 2026-10-28 逐项裁定去留
+STEPS=(                                               # 逐项裁定去留，见 docs/DECISIONS.md
   "drop api" "drop today" "drop claudem" "drop q7r" "shrink io" "drop q5r" "drop cachet"
   "drop comp" "drop recache" "shrink git" "shrink dir" "shrink hit" "drop q7" "drop rate" "shrink day"
   "shrink q5out" "shrink q7out" "shrink dout" "shrink q5" "shrink q7" "shrink spend" "shrink spout" "drop day" "drop spend" "drop cost"
@@ -446,7 +425,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     (if ($c.total_duration_ms | num) == null then "-" else ($c.total_duration_ms / 1000 | floor | dfmt) end),
     (if ($c.total_api_duration_ms | num) == null then "-" else ($c.total_api_duration_ms / 1000 | floor | dfmt) end),
     # cache 项："<剩余秒数> <TTL 秒数>"；expires_at 已过记作 "cold"；warm=false 而未到期、
-    # 未观察到缓存或缺 expires_at 为 "-"（用户 2026-10-28 裁定：只按过期时间判冷）
+    # 未观察到缓存或缺 expires_at 为 "-"（只按过期时间判冷）
     (if $p.caching_observed != true or ($p.expires_at | num) == null then "-"
      elif $p.expires_at <= $now then "cold"
      elif $p.warm != true then "-"
@@ -606,7 +585,7 @@ item() {
   NV[$id]=$k
 }
 E=$'\033'                # ESC 字节本身（约束 16）
-JOIN=" "                 # 组内分隔：单个空格（用户 2026-10-28 裁定；此前「 · 」每处多占 2 列）
+JOIN=" "                 # 组内分隔：单个空格（「 · 」每处多占 2 列）
 
 # 约束 13：显示宽度 → 全局 DW。先剔除本脚本用到的三字节窄符号（箭头、省略号、分支字形），
 # 余下每个三字节字符（CJK / 全角）多占一列；多字节差 = 字节数 − 字符数，三字节字符各贡献 2。
@@ -654,7 +633,7 @@ setlv() {
 
 # 按降级序列逐步执行，每步后复核宽度，放得下即停。不存在 / 已丢弃 / 已是最短写法 /
 # 风险态不可丢的项，对应步骤直接跳过。
-# 放得下之后回填（用户 2026-10-28 裁定）：后面某一步可能一次省出很多列（如缩短长模型名），
+# 放得下之后回填：后面某一步可能一次省出很多列（如缩短长模型名），
 # 前面那些牺牲就不必要了。从倒数第二步起逆序逐步撤销——越晚被牺牲的越重要、越先恢复——
 # 撤销后仍在预算内才保留；最后一步正是让它放得下的那一步，撤销必然超宽，不试。
 fit() {
@@ -724,7 +703,7 @@ paint() {
 }
 
 # 渲染：胶囊底色按组（pcolor），每一项按自己的角色上色（NEU 中性 / DIR、GIT 点缀 /
-# WARN、BAD 语义色，BAD 加粗；MUTED 弱化）。尾段也包进胶囊（用户 2026-10-28 裁定）。
+# WARN、BAD 语义色，BAD 加粗；MUTED 弱化）。尾段也包进胶囊。
 render() {
   local id pg="" pr="" t j
   out=""
@@ -772,7 +751,7 @@ pl() {
 al() { [ "$1" = bad ] && R=CRIT || R=WARN; }
 # risky <等级> [已用%]：有风险（会提前用完 / 已用 ≥ BAD_AT / 很快用完）→ 真
 risky() { case "$1" in warn|high|bad) return 0 ;; esac; [ -n "${2:-}" ] && [ "$2" -ge "$BAD_AT" ]; }
-# outtxt <用完倒计时> → 全局 OT：「用尽」原样（用户 2026-10-28 裁定），其余加 out 前缀
+# outtxt <用完倒计时> → 全局 OT：「用尽」原样，其余加 out 前缀
 outtxt() { case "$1" in '') OT="" ;; 用尽) OT="用尽" ;; *) OT="out $1" ;; esac; }
 
 # 环境
@@ -784,7 +763,7 @@ if [ -n "$branch" ]; then
     gs="${GLYPH_BRANCH}${b}…"
   fi
 fi
-# 目录与分支同一胶囊（用户 2026-10-28 裁定）；窄屏可缩成最后一段（同日裁定，仍永不丢弃）
+# 目录与分支同一胶囊；窄屏可缩成最后一段（仍永不丢弃）
 dshort=""; [ "${path##*/}" != "$path" ] && dshort=${path##*/}
 item dir   git DIR "$path" ${dshort:+"$dshort"}
 item git   git GIT "$g" ${gs:+"$gs"}
@@ -805,7 +784,7 @@ if [ -n "$ctx" ]; then
   case "$ctxlv" in bad) [ "$ctx" -ge "$CRIT_AT" ] && R=CRIT || R=BAD ;; warn) R=WARN ;; *) R=PRI ;; esac
   item ctx   ctx "$R" "ctx ${ctx}%" "ctx${ctx}%"; LB[ctx]=ctx
   item ctxin ctx SEC "$ctxin"
-  # compact 次数并入 ctx 胶囊、弱化（用户 2026-10-28 裁定：它解释 ctx 为何骤降，不是告警）
+  # compact 次数并入 ctx 胶囊、弱化（它解释 ctx 为何骤降，不是告警）
   [ -n "$comp" ] && [ "$comp" -gt 0 ] && item comp ctx SEC "↻${comp}"
 fi
 if [ -n "$q5" ]; then
@@ -845,7 +824,7 @@ elif [ -n "$costraw" ]; then
   else                       item cost usd ACC "${MONEY}*"; fi
   item rate usd SEC "$p_rate"
 fi
-# 网关花费限额 rate_limits.spend_limit（用户 2026-10-28 裁定支持）：今日 / 本周 / 本月 $已用/$限额，
+# 网关花费限额 rate_limits.spend_limit：今日 / 本周 / 本月 $已用/$限额，
 # 缺美元时显示百分比；着色与 5h / 7d 同规则，节奏由 statusline-tokens.py 按 period 窗口外推
 if [ -n "$sp" ]; then
   case "$spper" in daily) pn=今日 ;; weekly) pn=本周 ;; monthly) pn=本月 ;; *) pn=限额 ;; esac
@@ -890,6 +869,7 @@ render
 printf '%s' "$out"                     # 约束 16：%s 而非 %b，外部文本里的反斜杠不被解释
 
 # ── 脱钩后台刷新（慢段下一周期更新；abort 杀掉也无害，下轮重试）──────────
-( "$BASH" "$SELF" --refresh "$dir" "${tp:--}" "${sid:--}" "$mode" "${costraw:--}" "${q5arg:--}" "${q7arg:--}" "${sparg:--}" >/dev/null 2>&1 & ) 2>/dev/null
+[ -n "${CLAUDE_SL_NO_REFRESH:-}" ] || \
+( "$BASH" "$SELF" --refresh "$dir" "${tp:--}" "${sid:--}" "$mode" "${costraw:--}" "${q5arg:--}" "${q7arg:--}" "${sparg:--}" >/dev/null 2>&1 & ) 2>/dev/null   # 测试 / 预览设 CLAUDE_SL_NO_REFRESH=1：不派生后台刷新，结果确定、无残留进程
 
 true
