@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # 状态栏风格并排预览：用真实的 statusline-command.sh 渲染，须在 iTerm 等真彩终端里直接运行
 # （Claude Code 的 `!` 前缀不渲染颜色）。
-#   用法：bash ~/.claude/statusline-preview.sh [风格 ...]      默认 cool jewel glass tokyo-glass
+#   用法：bash tools/preview.sh [风格 ...]      默认 cool jewel glass tokyo-glass
 #   环境：PREVIEW_COLS="160 100 70"（逐个宽度渲染）
+#         CC_PILLS_SRC=<目录>（要渲染的脚本所在目录；默认本仓库的 src/，即未安装的开发版）
 # 隔离（用户 2026-10-28 裁定「缓存目录可指定 + 假数据」）：设 CLAUDE_SL_TMP 为临时目录，色板 /
 # git / token / 状态 / 锁全部写在那里；token 数据直接写成假缓存（不扫真实 transcript，秒出结果，
 # 场景数据确定）；Claude 状态也写在临时目录里——不影响任何正在使用的会话。结束（含 Ctrl-C）
 # 时等后台刷新退出再整目录删除。此前借用共享的 /tmp/claude-sl-status.cache，播放告警场景时
 # 所有会话都会看到伪造的「claude major」，被中断还会残留（2026-10-28 终审）。
 set -u
-CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+HERE=$(cd "$(dirname "$0")" && pwd)
+SRC=${CC_PILLS_SRC:-$HERE/../src}
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf"
 STYLES=("$@"); [ ${#STYLES[@]} -eq 0 ] && STYLES=(cool jewel glass tokyo-glass)
 COLS_LIST=${PREVIEW_COLS:-"160 100 70"}
@@ -48,7 +50,7 @@ done
 for st in "${STYLES[@]}"; do
   mkdir -p "$work/$st"
   { grep -v '^[[:space:]]*pill_style' "$CONF" 2>/dev/null; echo "pill_style = $st"; } > "$work/$st/claude-statusline.conf"
-  CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" bash "$CFG/statusline-command.sh" --refresh "$PWD" - "slpv-init" sub
+  CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" bash "$SRC/statusline-command.sh" --refresh "$PWD" - "slpv-init" sub
   for j in $(seq 0 $((i - 1))); do cp "$work/claude-sl-tok-slpv-$j.cache" "$work/$st/"; done
 done
 
@@ -61,7 +63,7 @@ for sc in "${SCENES[@]}"; do
     for st in "${STYLES[@]}"; do
       printf '%s\t%s\n' "$now" "$status" > "$work/$st/claude-sl-status.cache"
       printf '%s\n' "$now" > "$work/$st/claude-sl-status.try"   # 免后台刷新联网拉真实状态冲掉场景
-      line=$(CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" COLUMNS=$cols bash "$CFG/statusline-command.sh" < "$work/s$i.json")
+      line=$(CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" COLUMNS=$cols bash "$SRC/statusline-command.sh" < "$work/s$i.json")
       printf '  %-12s %s\n' "$st" "$line"
     done
   done

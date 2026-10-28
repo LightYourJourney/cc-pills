@@ -172,6 +172,7 @@ CTX_BAD=90               # ctx 已用 ≥ 此值 → 红
 CRIT_AT=95               # ctx / 额度已用 ≥ 此值 → 强红（T_CRIT；只有 tokyo-glass 与红色有别）
 PILL_STYLE=tint          # 胶囊风格：tint cool jewel glass mono pastel tokyo-glass（见 statusline-theme.py STYLES）
 PILL_CHROMA=12           # tint 风格的淡染彩度（0 = 所有胶囊同一底色）
+STATUS_PAGE=on           # on | off：是否定时请求 status.claude.com（off 时零网络请求、不显示服务状态）
 STATUS_TTL=60            # claude 状态页拉取间隔（秒）
 STATUS_STALE=600         # 状态缓存超过此秒数未更新 → 整项隐藏（宁缺勿假）
 STATUS_URL=https://status.claude.com/api/v2/status.json
@@ -212,6 +213,7 @@ if [ -r "$SL_CONF" ]; then
       ''|\#*) ;;
       theme)  case "$v" in auto|tokyonight|dracula|catppuccin|onedark|nord) THEME=$v ;; esac ;;
       glyphs) case "$v" in nerd|ascii) GLYPHS=$v ;; esac ;;
+      status_page) case "$v" in on|off) STATUS_PAGE=$v ;; esac ;;
       pill_style) case "$v" in tint|cool|jewel|glass|mono|pastel|tokyo-glass) PILL_STYLE=$v ;; esac ;;
       safe_margin|truncate_length|warn_at|bad_at|ctx_warn|ctx_bad|crit_at|pill_chroma)
         case "$v" in ''|*[!0-9]*) ;; *) v=$((10#$v)); case "$k" in   # 约束 18：08 不当八进制
@@ -229,7 +231,10 @@ if [ -r "$SL_CONF" ]; then
   [ "${#CONF_STEPS[@]}" -gt 0 ] && STEPS=("${CONF_STEPS[@]}")
 fi
 
-CFG=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+# 助手脚本（statusline-tokens.py / statusline-theme.py）与本脚本放在同一目录，按本脚本的
+# 绝对路径定位——不依赖 CLAUDE_CONFIG_DIR，也不怕被相对路径调用后 cd 走（后台刷新会 cd 到工作目录）
+SELF=${BASH_SOURCE[0]}; [ "${SELF#/}" = "$SELF" ] && SELF="$PWD/$SELF"
+HERE=${SELF%/*}
 if [ "${TERM_PROGRAM:-}" = iTerm.app ] || [ "${LC_TERMINAL:-}" = iTerm2 ]; then   # tmux 里也有 LC_TERMINAL
   PKEY="iterm-${ITERM_PROFILE:-default}"
 else
@@ -330,7 +335,7 @@ if [ "${1:-}" = "--refresh" ]; then
   case "$ft" in ''|*[!0-9]*) ft=0 ;; esac
   if { [ "$tline" != "$want" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
      && ! { [ "$tline" != "$want" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
-    python3 "${CFG}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
+    python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
     tline=""; [ -r "$THEME_CACHE" ] && read -r tline < "$THEME_CACHE"
     if [ "$tline" = "$want" ]; then rm -f "$failf" 2>/dev/null
     else printf '%s\n' "$now" > "$failf" 2>/dev/null; fi   # 失败退避：THEME_TTL 内不再每轮重跑
@@ -372,7 +377,7 @@ if [ "${1:-}" = "--refresh" ]; then
       [ "$q7arg" != "-" ] && args+=("q7=${q7arg}")
       [ "$sparg" != "-" ] && args+=("sp=${sparg}")
       [ "$relayarg" != "-" ] && args+=("relay=${relayarg}")
-      tok=$(CLAUDE_SL_TMP=$SLT python3 "${CFG}/statusline-tokens.py" "$tp" "$sid" "${args[@]}" 2>/dev/null)
+      tok=$(CLAUDE_SL_TMP=$SLT python3 "${HERE}/statusline-tokens.py" "$tp" "$sid" "${args[@]}" 2>/dev/null)
       if [ -n "$tok" ]; then                    # 约束 10
         tmp2="${SLT}/.claude-sl-tok-${skey}.$$"
         printf '%s\n' "$tok" > "$tmp2" 2>/dev/null && mv -f "$tmp2" "${SLT}/claude-sl-tok-${skey}.cache" 2>/dev/null
@@ -385,7 +390,7 @@ if [ "${1:-}" = "--refresh" ]; then
   try=${SLT}/claude-sl-status.try
   last=0; [ -r "$try" ] && read -r last < "$try"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ $((now - last)) -ge "$STATUS_TTL" ]; then
+  if [ "$STATUS_PAGE" = on ] && [ $((now - last)) -ge "$STATUS_TTL" ]; then
     printf '%s\n' "$now" > "$try.$$" 2>/dev/null && mv -f "$try.$$" "$try" 2>/dev/null
     ind=$(curl -s -m 4 "$STATUS_URL" 2>/dev/null | jq -r '.status.indicator // empty' 2>/dev/null)
     if [ -n "$ind" ]; then
@@ -552,7 +557,7 @@ case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 
 # ── claude 状态缓存（过期即隐藏）─────────────────────────────────────────
 st_ind=""
-if [ -r "${SLT}/claude-sl-status.cache" ]; then
+if [ "$STATUS_PAGE" = on ] && [ -r "${SLT}/claude-sl-status.cache" ]; then
   IFS=$'\t' read -r st_ts st_ind < "${SLT}/claude-sl-status.cache"
   case "$st_ts" in ''|*[!0-9]*) st_ind="" ;; *) [ $((now - st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
 fi
@@ -885,6 +890,6 @@ render
 printf '%s' "$out"                     # 约束 16：%s 而非 %b，外部文本里的反斜杠不被解释
 
 # ── 脱钩后台刷新（慢段下一周期更新；abort 杀掉也无害，下轮重试）──────────
-( "$BASH" "${BASH_SOURCE[0]}" --refresh "$dir" "${tp:--}" "${sid:--}" "$mode" "${costraw:--}" "${q5arg:--}" "${q7arg:--}" "${sparg:--}" >/dev/null 2>&1 & ) 2>/dev/null
+( "$BASH" "$SELF" --refresh "$dir" "${tp:--}" "${sid:--}" "$mode" "${costraw:--}" "${q5arg:--}" "${q7arg:--}" "${sparg:--}" >/dev/null 2>&1 & ) 2>/dev/null
 
 true
