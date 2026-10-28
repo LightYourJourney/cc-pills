@@ -47,6 +47,9 @@ class Base(unittest.TestCase):
     def run_tok(self, tp, sid, *args):
         return subprocess.run([sys.executable, PATH, tp, sid, *args], capture_output=True, text=True, env=self.env)
 
+    def fields(self, stdout):
+        return stdout.rstrip('\n').split('\t')
+
     def state(self, sid):
         with open(os.path.join(self.d, f'claude-statusline-{sid}.json')) as f:
             return json.load(f)
@@ -63,7 +66,7 @@ class Counting(Base):
     def test_dedup_stop_reason_then_larger_output(self):
         tp = self.write('a.jsonl', [line('m1', 10, 5, None), line('m1', 10, 300, 'end_turn'),
                                     line('m1', 10, 100, None), line('m2', 20, 40, 'end_turn')])
-        out = self.run_tok(tp, 'c1').stdout.split('\t')
+        out = self.fields(self.run_tok(tp, 'c1').stdout)
         self.assertEqual([out[IDX['in']], out[IDX['out']]], ['30', '340'])
 
     def test_compact_substring_does_not_drop_usage(self):
@@ -71,23 +74,23 @@ class Counting(Base):
             line('m1', 10, 300, 'tool_use', extra={'type': 'tool_use', 'name': 'Grep',
                                                    'input': {'pattern': 'compact_boundary'}}),
             json.dumps({'type': 'system', 'subtype': 'compact_boundary'})])
-        out = self.run_tok(tp, 'c2').stdout.split('\t')
+        out = self.fields(self.run_tok(tp, 'c2').stdout)
         self.assertEqual((out[IDX['in']], out[IDX['out']], out[IDX['comp']]), ('10', '300', '1'))
 
     def test_deleted_subagent_triggers_rescan(self):
         tp = self.write('c.jsonl', [line('m1', 10, 5, 'end_turn')])
         sub = self.write('c/subagents/agent-x.jsonl', [line('s1', 7, 3, 'end_turn')])
-        o = self.run_tok(tp, 'c3').stdout.split('\t')
+        o = self.fields(self.run_tok(tp, 'c3').stdout)
         self.assertEqual([o[IDX['in']], o[IDX['out']]], ['17', '8'])
         os.remove(sub)
         r = self.run_tok(tp, 'c3')
-        o = r.stdout.split('\t')
+        o = self.fields(r.stdout)
         self.assertEqual([o[IDX['in']], o[IDX['out']]], ['10', '5'])
         self.assertEqual(r.stderr, '')
 
     def test_eighteen_fields(self):
         tp = self.write('d.jsonl', [line('m1', 1, 1, 'end_turn')])
-        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), len(FIELDS))
+        self.assertEqual(len(self.fields(self.run_tok(tp, 'c4').stdout)), len(FIELDS))
 
     def test_message_count_by_id_changes(self):
         """同一 id 的多行只计一次；id 连续变化逐个计；subagent 也计入。"""
@@ -95,15 +98,18 @@ class Counting(Base):
                                     line('a', 10, 5, 'end_turn'), line('b', 10, 1, 'end_turn'),
                                     line('c', 10, 1, 'end_turn')])
         self.write('m/subagents/agent-1.jsonl', [line('s1', 1, 1, 'end_turn')])
-        out = self.run_tok(tp, 'c7').stdout.rstrip('\n').split('\t')
+        out = self.fields(self.run_tok(tp, 'c7').stdout)
         self.assertEqual(out[IDX['msgs']], '4', '主对话 3 条（a 的三行只算一次）+ subagent 1 条')
 
     def test_old_state_version_rescans_message_count(self):
         """状态版本升级后必须整体重扫，否则消息数只从升级那一刻起算（线上曾显示 1）。"""
         tp = self.write('v.jsonl', [line('a', 1, 1, 'end_turn'), line('b', 1, 1, 'end_turn')])
+        off = os.path.getsize(tp)
         with open(os.path.join(self.d, 'claude-statusline-v1.json'), 'w') as f:
-            json.dump({'v': 7, 'files': {tp: {'off': os.path.getsize(tp), 'fp': 0}}}, f)
-        self.assertEqual(self.run_tok(tp, 'v1').stdout.rstrip('\n').split('\t')[IDX['msgs']], '2')
+            # 指纹必须写对：fp 不符也会触发重扫，会掩盖「版本检查失效」
+            json.dump({'v': self.t.STATE_V - 1,
+                       'files': {tp: {'off': off, 'fp': self.t.tail_fp(tp, off)}}}, f)
+        self.assertEqual(self.fields(self.run_tok(tp, 'v1').stdout)[IDX['msgs']], '2')
 
     def test_time_budget_shared_across_files(self):
         tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
@@ -137,13 +143,17 @@ class Trackers(Base):
         self.assertAlmostEqual(self.t.rate(st, 'cost', 2200) * 3600, 12, delta=0.5)
 
     def test_cost_half_life_is_1200s(self):
-        """半衰期 600s → 1200s（DECISIONS：把单笔大请求的跳变压到 $7）：衰减 1200s 恰好减半。"""
+        """半衰期 600s → 1200s（DECISIONS：把单笔大请求的跳变压到 $7）。
+
+        $12/h 稳态后小幅回落，1200s 后再读是 $4/h（600s 会读到 $2.4/h）——只用公开的
+        track / rate，不碰内部状态。
+        """
+        rate_per_h, drop, ramp = 12.0, 0.98, 1200
         st = {'trk': {}}
-        for k in range(0, 1201, 10):
-            self.t.track(st, 'cost', 12 * k / 3600, 1000 + k, epoch='stdin')
-        ew = st['trk']['cost']['ew']
-        self.t.track(st, 'cost', st['trk']['cost']['lv'] * 0.98, 3400, epoch='stdin')
-        self.assertAlmostEqual(st['trk']['cost']['ew'] / ew, 0.5, delta=0.01)
+        for k in range(0, ramp + 1, 10):
+            self.t.track(st, 'cost', rate_per_h * k / 3600, 1000 + k, epoch='stdin')
+        self.t.track(st, 'cost', rate_per_h * ramp / 3600 * drop, 1000 + ramp + 1200, epoch='stdin')
+        self.assertAlmostEqual(self.t.rate(st, 'cost', 1000 + ramp + 1200) * 3600, 4.0, delta=0.1)
 
 
 class Pace(Base):
@@ -163,10 +173,10 @@ class Pace(Base):
     def test_spend_limit_fields(self):
         tp = self.write('f.jsonl', [line('m1', 1, 1, 'end_turn')])
         now = int(time.time())
-        out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},daily').stdout.rstrip('\n').split('\t')
+        out = self.fields(self.run_tok(tp, 'c6', f'sp=60,{now + 40000},daily').stdout)
         self.assertEqual(out[IDX['splv']], 'warn')
         self.assertNotEqual(out[IDX['spout']], '-')
-        out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout.rstrip('\n').split('\t')
+        out = self.fields(self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout)
         self.assertEqual([out[IDX['splv']], out[IDX['spout']]], ['-', '-'])
 
 
@@ -193,7 +203,7 @@ class Relay(Base):
         ts = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
         tp = self.write('g.jsonl', [line('mold', 1000000, 0, 'end_turn', ts=ts(now - 86400 * 40)),
                                     line('mnew', 1000, 100, 'end_turn', ts=ts(now - 60))])
-        out = self.run_tok(tp, 'r1', f'relay={db}', 'cost=10').stdout.split('\t')
+        out = self.fields(self.run_tok(tp, 'r1', f'relay={db}', 'cost=10').stdout)
         self.assertAlmostEqual(float(out[IDX['rcost']]), 30 + (1000 * 5 + 100 * 25) / 1e6, places=6,
                                msg='早于库内最早记录的消息不应再自算')
         st = self.state('r1')
@@ -219,7 +229,7 @@ class Relay(Base):
         c.commit()
         c.close()
         tp = self.write('i.jsonl', [line('m1', 1, 1, 'end_turn')])
-        out = self.run_tok(tp, 'r3', f'relay={db}').stdout.split('\t')
+        out = self.fields(self.run_tok(tp, 'r3', f'relay={db}').stdout)
         # 今日 = 本会话账本 0 + 无头 Claude 2.5 + 本会话尾部 0.00003（四位小数下不可见），Codex 的 9 排除
         self.assertAlmostEqual(float(out[IDX['rtoday']]), 2.5, places=4)
 
@@ -237,7 +247,7 @@ class Relay(Base):
         ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))
         tp = self.write('h.jsonl', [line('mprox', 2000, 200, 'end_turn', ts=ts),
                                     line('mcodex', 3000, 300, 'end_turn', ts=ts)])
-        out = self.run_tok(tp, 'r2', f'relay={db}').stdout.split('\t')
+        out = self.fields(self.run_tok(tp, 'r2', f'relay={db}').stdout)
         self.assertAlmostEqual(float(out[IDX['rcost']]), 0.5 + (3000 * 5 + 300 * 25) / 1e6, places=6)
 
     def test_pricing_candidates(self):
@@ -247,9 +257,19 @@ class Relay(Base):
         self.assertEqual(c('unknown'), [])
 
 
-class Protocol(unittest.TestCase):
-    def test_preview_fake_tokens_have_eighteen_fields(self):
-        """preview.sh 的假 token 缓存必须同为 18 段——曾停在 17 段，预览里永远看不到消息数。"""
+# FIELDS 里各段在 bash 侧对应的变量名（顺序由 FIELDS 决定，见下一个用例）
+BASH_NAMES = {'in': 't_in', 'out': 't_out', 'rate': 'p_rate', 'comp': 'comp',
+              'q5lv': 'q5lv', 'q5out': 'q5out', 'q7lv': 'q7lv', 'q7out': 'q7out',
+              'dlv': 'dlv', 'dout': 'dout', 'rcost': 'r_cost', 'runpriced': 'r_unpriced',
+              'rtoday': 'r_today', 'rlimit': 'r_limit', 'hit': 't_hit',
+              'splv': 'splv', 'spout': 'spout', 'msgs': 'msgs'}
+
+
+class TokenProtocol(unittest.TestCase):
+    """18 段 token 缓存的跨语言契约：生产者、bash 消费者与预览假数据必须同数同序。"""
+
+    def test_preview_fake_tokens_match_protocol(self):
+        """preview.sh 的假缓存必须同为 18 段、末段真的是消息数——曾停在 17 段，预览里看不到 m517。"""
         with open(os.path.join(REPO, 'tools', 'preview.sh')) as f:
             src = f.read()
         block = re.search(r'^SCENES=\((.*?)^\)', src, re.S | re.M).group(1)
@@ -258,6 +278,17 @@ class Protocol(unittest.TestCase):
         for line in scenes:
             tok = line.split('|')[-1]
             self.assertEqual(tok.count('${T}') + 1, len(FIELDS), line.strip())
+            last = tok.rsplit('${T}', 1)[-1].strip().strip('"')
+            self.assertNotEqual(last, '-', f'末段应是消息数，不是占位：{line.strip()}')
+
+    def test_bash_reads_fields_in_order(self):
+        """bash 侧的 IFS=tab read 必须按 FIELDS 的顺序取变量，字段重排时这里先红。"""
+        with open(os.path.join(SRC, 'statusline-command.sh')) as f:
+            src = f.read()
+        m = re.search(r"IFS=\$'\\t' read -r (t_in .*?) < \"\$\{SLT\}/claude-sl-tok-", src, re.S)
+        self.assertIsNotNone(m, '没找到 bash 侧的 token 缓存 read 列表')
+        got = re.sub(r'\\\s*\n', ' ', m.group(1)).split()
+        self.assertEqual(got, [BASH_NAMES[f] for f in FIELDS], 'bash read 的字段顺序必须与 FIELDS 一致')
 
 
 if __name__ == '__main__':

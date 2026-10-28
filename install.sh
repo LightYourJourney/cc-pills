@@ -37,8 +37,14 @@ check_deps() {
   for c in bash jq python3 git; do
     command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖：$c" >&2; miss=1; }
   done
-  local v=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))
-  [ "$v" -ge 402 ] || { echo "需要 bash ≥ 4.2（当前 ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}）；macOS 自带 3.2 请装 Homebrew bash" >&2; miss=1; }
+  # curl 只在 status_page = on 时用到（见 README），缺了只提示，不拦安装
+  command -v curl >/dev/null 2>&1 || \
+    echo "提示：未找到 curl；status_page = on（默认）时状态页不可用，可设 status_page = off" >&2
+  local major=${BASH_VERSINFO[0]} minor=${BASH_VERSINFO[1]}
+  if [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 2 ]; }; then
+    echo "需要 bash ≥ 4.2（当前 $major.$minor）；macOS 自带 3.2 请装 Homebrew bash" >&2
+    miss=1
+  fi
   return "$miss"
 }
 

@@ -112,6 +112,9 @@ RESET_DROP = 0.5              # 追踪值回落超过一半才视为重置；小
 EMPTY = {'v': STATE_V, 'files': {}, 'in': 0, 'out': 0, 'cw': 0, 'cr': 0,
          'comp': 0, 'pend': [], 'trk': {}, 'unl': {}}
 KEYS = ('in', 'out', 'cw', 'cr')
+# 输出字段顺序：bash 的 IFS=tab read、tests/_util.py、tools/preview.sh 都以它为准
+FIELDS = ('in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
+          'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs')
 
 
 def fmt(n):
@@ -546,10 +549,11 @@ def main():
         return                                 # 未追平不出数（约束 2）
     r = rate(st, 'cost', now) if (relay or cost is not None) else None
     rate_s = fmt_usd(r * 3600) if r is not None else '-'
-    out = [fmt(st['in'] + st['cw'] + st['cr']), fmt(st['out']), rate_s, str(st['comp'])]
+    d = {'in': fmt(st['in'] + st['cw'] + st['cr']), 'out': fmt(st['out']),
+         'rate': rate_s, 'comp': str(st['comp'])}
     for k in ('q5', 'q7'):
         if k not in quota or quota[k][1] <= now:
-            out += ['-', '-']
+            d[k + 'lv'] = d[k + 'out'] = '-'
             continue
         used, resets = quota[k]
         win, minel, recent = WINDOW[k]
@@ -557,32 +561,33 @@ def main():
         el = win - left
         rates = [x for x in (used / el if el >= minel and used > 0 else None,
                              rate(st, k, now) if recent else None) if x is not None]
-        out += list(pace(used, 100, left, rates, th, URGENT[k]))
+        d[k + 'lv'], d[k + 'out'] = pace(used, 100, left, rates, th, URGENT[k])
     if relay and relay[3]:
         el = now - midnight                    # 窗口均速 = 今日已用 ÷ 自零点以来时长（文档 5）
         rates = [x for x in (relay[2] / el if el >= 1800 and relay[2] > 0 else None,
                              rate(st, 'day', now), r) if x is not None]
-        out += list(pace(relay[2], relay[3], midnight + 86400 - now, rates, th, URGENT['day']))
+        d['dlv'], d['dout'] = pace(relay[2], relay[3], midnight + 86400 - now, rates, th,
+                                   URGENT['day'])
     else:
-        out += ['-', '-']
+        d['dlv'] = d['dout'] = '-'
     if relay:
-        out += [f'{relay[0]:.4f}', str(relay[1]), f'{relay[2]:.4f}',
-                f'{relay[3]:.4f}' if relay[3] else '-']
+        d['rcost'], d['runpriced'] = f'{relay[0]:.4f}', str(relay[1])
+        d['rtoday'], d['rlimit'] = f'{relay[2]:.4f}', f'{relay[3]:.4f}' if relay[3] else '-'
     else:
-        out += ['-', '-', '-', '-']
+        d['rcost'] = d['runpriced'] = d['rtoday'] = d['rlimit'] = '-'
     tin = st['in'] + st['cw'] + st['cr']
-    out.append(f"{st['cr'] / tin * 100:.1f}" if tin else '-')
+    d['hit'] = f"{st['cr'] / tin * 100:.1f}" if tin else '-'
     if sp and sp[1] > now:                     # 网关花费限额（百分比口径，cap = 100）
         win, minel, recent = SP_WINDOW[sp[2]]
         left = min(sp[1] - now, win)
         el = win - left
         rates = [x for x in (sp[0] / el if el >= minel and sp[0] > 0 else None,
                              rate(st, 'sp', now) if recent else None) if x is not None]
-        out += list(pace(sp[0], 100, left, rates, th, URGENT['sp']))
+        d['splv'], d['spout'] = pace(sp[0], 100, left, rates, th, URGENT['sp'])
     else:
-        out += ['-', '-']
-    out.append(str(sum(fs.get('msgs', 0) for fs in st['files'].values())))   # 消息数（见 1 的计数）
-    print('\t'.join(out))
+        d['splv'] = d['spout'] = '-'
+    d['msgs'] = str(sum(fs.get('msgs', 0) for fs in st['files'].values()))   # 消息数（见 1 的计数）
+    print('\t'.join(d[f] for f in FIELDS))
 
 
 if __name__ == '__main__':

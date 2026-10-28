@@ -4,7 +4,6 @@
 白 / 浅灰 / 中灰 / 深灰 / 近黑五种底 × 七种胶囊风格；色相用 Tokyo Night ANSI，
 主题自动识别应选中 tokyonight。
 """
-import importlib.util
 import math
 import os
 import plistlib
@@ -14,10 +13,10 @@ import sys
 import tempfile
 import unittest
 
-from _util import SRC, STYLES
+from _util import SRC, STYLES, THEME as theme
 
 PATH = os.path.join(SRC, 'statusline-theme.py')
-THEMES = ('tokyonight', 'dracula', 'catppuccin', 'onedark', 'nord')
+THEMES = tuple(theme.THEMES)
 ANSI = ('#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff')
 # (背景, 前景)：真实终端里浅底配深字、深底配浅字
 PROFILES = (('#ffffff', '#1e1e1e'), ('#f5f5f5', '#2b2b2b'), ('#c8c8c8', '#202020'),
@@ -28,9 +27,11 @@ MIN_TEXT = 4.5      # 二级 / 三级文字（除 T_DIM）的最低对比度
 MIN_DIM = 2.0       # T_DIM（分隔符）只求可辨
 MIN_PILL_DE = 12    # 基础表面色与终端背景的最小可辨距离（docs/DECISIONS.md 的硬下限）
 
-spec = importlib.util.spec_from_file_location('ccptheme', PATH)
-theme = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(theme)
+
+def style_surface(st):
+    """该风格的 P_NEU 是否由风格自己定义：'light'（pastel）/ 'tokens'（tokyo-glass）/ None。"""
+    s = theme.STYLES[st]
+    return 'light' if s.get('light') else 'tokens' if s.get('tokens') else None
 
 
 def rgb(s):
@@ -92,18 +93,28 @@ class ContrastMatrix(unittest.TestCase):
         self.assertFalse(bad, f'{len(bad)} 处文字对比不足：\n' + '\n'.join(bad[:10]))
 
     def test_base_pill_distinguishable(self):
+        """DECISIONS：MIN_PILL_DE = 12 只约束基础表面色；pastel 的 P_NEU 是模型组胶囊，由风格定义。
+
+        tokyo-glass 的胶囊由 TG_MIN_DE 约束（贴近背景的玻璃质感），同样要覆盖。
+        """
         self.assertEqual(theme.MIN_PILL_DE, MIN_PILL_DE, 'DECISIONS 规定 12，常量被改低时这条要一起改')
         bad = []
         for bg, fg in PROFILES:
             home = make_home(bg, fg)
             for st in STYLES:
-                if theme.STYLES[st].get('light') or theme.STYLES[st].get('tokens'):
-                    continue          # 这两种风格的 P_NEU 由风格定义，不受 MIN_PILL_DE 约束
-                kv, _ = palette(home, st)
+                own = style_surface(st)
+                if own == 'light':
+                    continue          # P_NEU 是模型组胶囊，由风格定义
+                kv, lines = palette(home, st)
+                name = next(l.split('=', 1)[1] for l in lines if l.startswith('NAME='))
+                bgs = [rgb(bg)]
+                if own != 'tokens' or not theme.is_light(rgb(bg)):
+                    bgs.append(rgb(theme.THEMES[name]['bg']))   # 主题标准背景也要可辨
                 base = level(kv['P_NEU'])
-                de = math.dist(theme.lab(base), theme.lab(rgb(bg)))
-                if de < MIN_PILL_DE:
-                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {MIN_PILL_DE}')
+                de = min(math.dist(theme.lab(base), theme.lab(b)) for b in bgs)
+                floor = theme.TG_MIN_DE if own == 'tokens' else MIN_PILL_DE
+                if de < floor:
+                    bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {floor}')
         self.assertFalse(bad, '\n'.join(bad))
 
     def test_light_terminal_pills_do_not_collapse(self):

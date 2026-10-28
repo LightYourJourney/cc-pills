@@ -9,6 +9,7 @@
   - 工作目录是沙箱里新建的 git 仓库 demo（分支 main）
   - 时间相关字段都取 now + 「整分钟再加 30 秒」的偏移，运行跨秒也不改变显示的分钟数
 """
+import importlib.util
 import json
 import os
 import re
@@ -23,7 +24,19 @@ SRC = os.path.join(REPO, 'src')
 SCRIPT = os.path.join(SRC, 'statusline-command.sh')
 EXAMPLE_CONF = os.path.join(REPO, 'config', 'claude-statusline.conf.example')
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
-STYLES = ('tint', 'cool', 'jewel', 'glass', 'mono', 'pastel', 'tokyo-glass')
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# 风格表与输出字段顺序直接取自被测模块：新增风格 / 字段会自动进入测试
+THEME = _load('ccptheme', os.path.join(SRC, 'statusline-theme.py'))
+STYLES = tuple(THEME.STYLES)
+TOKENS = _load('sltokens', os.path.join(SRC, 'statusline-tokens.py'))
 
 
 def utf8_locale():
@@ -47,8 +60,7 @@ def width(s):
     return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in strip(s))
 
 
-FIELDS = ['in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
-          'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs']
+FIELDS = list(TOKENS.FIELDS)
 IDX = {k: i for i, k in enumerate(FIELDS)}
 
 

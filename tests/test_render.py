@@ -12,6 +12,7 @@ from _util import STYLES, Sandbox, color_of, strip, width
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'golden', 'render.json')
 WIDTHS = (220, 120, 80)
+SAFE = 4            # SAFE_MARGIN：可用宽度 = COLUMNS − 4（docs/DECISIONS.md）
 
 
 def scenarios(sb):
@@ -79,10 +80,10 @@ class WidthProperty(unittest.TestCase):
             for name, d, env in each_scenario(sb):
                 for c in range(30, 221, 5):
                     o = sb.render(d, c, env=env)
-                    if width(o) > c - 4:
+                    if width(o) > c - SAFE:
                         # 现场渲染最小形态：只缩小倒计时跨分钟造成的误判窗口（两次渲染仍可能跨秒）
                         minimal = sb.render(d, 12, env=env)
-                        self.assertEqual(o, minimal, f'{name} C={c}：宽 {width(o)} 超预算 {c - 4}，但还能降级')
+                        self.assertEqual(o, minimal, f'{name} C={c}：宽 {width(o)} 超预算 {c - SAFE}，但还能降级')
 
     def test_backfill_leaves_little_slack(self):
         """回填：有降级时剩余空间应小于任何一项可恢复内容（实测各场景 ≤ 7 列；无回填的旧版 100 列时余 16 列）。
@@ -95,8 +96,8 @@ class WidthProperty(unittest.TestCase):
                 for c in range(40, 221, 4):
                     o = sb.render(d, c, env=env)
                     # 用宽度而不是文本判断「是否降级」：倒计时跨分钟会改文本、通常不改宽度
-                    if width(o) < full_w and width(o) <= c - 4:
-                        self.assertLessEqual(c - 4 - width(o), 10, f'{name} C={c}：降级后还空着 {c - 4 - width(o)} 列')
+                    if width(o) < full_w and width(o) <= c - SAFE:
+                        self.assertLessEqual(c - SAFE - width(o), 10, f'{name} C={c}：降级后还空着 {c - SAFE - width(o)} 列')
 
     def test_backfill_restores_by_priority(self):
         """后降级的（优先级高的）先恢复：110 列时完整模型名回来，低优先级的额度间距仍是紧凑写法。"""
@@ -242,7 +243,7 @@ class Semantics(unittest.TestCase):
             sb.write_tok('mc', **{'in': '172M'}, out='1M', rate='$8.4/h', hit='98.4', msgs='517')
             o = strip(sb.render(d, 220))
             self.assertIn('m517', o)
-            tail = o.split('')[-1]          # 最后一个胶囊 = 尾段
+            tail = o.split(o[0])[-1]        # 左端帽取自渲染结果本身（与脚本的 PL_LCAP 同源）
             self.assertIn('m517', tail, '消息数应在尾段胶囊里')
 
     def test_third_party_model_abbreviation(self):
