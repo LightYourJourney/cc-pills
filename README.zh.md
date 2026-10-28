@@ -2,6 +2,8 @@
 
 Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对「算不出来的东西」保持诚实。
 
+[![tests](https://github.com/LightYourJourney/cc-pills/actions/workflows/tests.yml/badge.svg)](https://github.com/LightYourJourney/cc-pills/actions/workflows/tests.yml)
+
 > 非官方项目，与 Anthropic 无关。「Claude」是 Anthropic, PBC 的商标。
 
 ```

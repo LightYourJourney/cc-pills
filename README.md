@@ -3,6 +3,8 @@
 A single-line, pill-styled status line for [Claude Code](https://claude.com/claude-code) —
 responsive, cached, and honest about what it cannot know.
 
+[![tests](https://github.com/LightYourJourney/cc-pills/actions/workflows/tests.yml/badge.svg)](https://github.com/LightYourJourney/cc-pills/actions/workflows/tests.yml)
+
 > Not affiliated with Anthropic. "Claude" is a trademark of Anthropic, PBC.
 
 ```
