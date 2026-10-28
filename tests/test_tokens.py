@@ -95,6 +95,13 @@ class Counting(Base):
         out = self.run_tok(tp, 'c7').stdout.rstrip('\n').split('\t')
         self.assertEqual(out[17], '4', '主对话 3 条（a 的三行只算一次）+ subagent 1 条')
 
+    def test_old_state_version_rescans_message_count(self):
+        """状态版本升级后必须整体重扫，否则消息数只从升级那一刻起算（线上曾显示 1）。"""
+        tp = self.write('v.jsonl', [line('a', 1, 1, 'end_turn'), line('b', 1, 1, 'end_turn')])
+        with open(os.path.join(self.d, 'claude-statusline-v1.json'), 'w') as f:
+            json.dump({'v': 7, 'files': {tp: {'off': os.path.getsize(tp), 'fp': 0}}}, f)
+        self.assertEqual(self.run_tok(tp, 'v1').stdout.rstrip('\n').split('\t')[17], '2')
+
     def test_time_budget_shared_across_files(self):
         tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
         for i in range(6):

@@ -92,7 +92,7 @@ MAX_CHUNK = 32 * 1024 * 1024  # 每片解析字节数（每片之后落盘一次
 TIME_BUDGET = 1.0             # 单次调用连读分片的时间预算（秒）
 PEND_KEEP = 4096              # 去重 pending 映射的 FIFO 上限（见约束 4；全部文件共用一个映射）
 FP_BYTES = 64                 # 尾部指纹字节数（约束 6）
-STATE_V = 7                   # 状态结构版本；不一致即重扫（v7：多文件、指纹、未入账集合）
+STATE_V = 8                   # 状态结构版本；不一致即重扫（v8：每文件消息数 lc/mc；v7：多文件、指纹、未入账集合）
 PROXY_DEDUP_WINDOW = 600      # 与 CC Switch SESSION_PROXY_DEDUP_WINDOW_SECONDS 一致
 PROXY_SETTLE = 900            # 消息发出超过此秒数仍匹配不到代理行，不再反复查
 
