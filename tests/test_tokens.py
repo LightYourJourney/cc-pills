@@ -179,6 +179,22 @@ class Relay(Base):
         self.assertEqual(st['trk']['cost']['ep'], 'ledger')
         self.assertLess(st['trk']['cost']['lv'], 100)
 
+    def test_today_counts_headless_claude_not_codex(self):
+        """今日按 app_type 统计：没渲染过状态栏的 Claude 会话（无头）也计入，Codex 不计。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        c = sqlite3.connect(db)
+        c.execute("insert into proxy_request_logs values('h1', 'headless-sid', 'claude', 'session_log', 200, ?, 10, 1, 0, 0, '2.5')",
+                  (now - 120,))
+        c.execute("insert into proxy_request_logs values('c1', 'codex-sid', 'codex', 'codex_session', 200, ?, 10, 1, 0, 0, '9')",
+                  (now - 120,))
+        c.commit()
+        c.close()
+        tp = self.write('i.jsonl', [line('m1', 1, 1, 'end_turn')])
+        out = self.run_tok(tp, 'r3', f'relay={db}').stdout.split('\t')
+        # 今日 = 本会话账本 0 + 无头 Claude 2.5 + 本会话尾部（m1 无价格 → 不计），Codex 的 9 排除
+        self.assertAlmostEqual(float(out[12]), 2.5, places=6)
+
     def test_proxy_rows_dedup_only_claude(self):
         """代理已记账的消息不重复自算；Codex 的同 token 行不能顶替 Claude 消息。"""
         now = int(time.time())

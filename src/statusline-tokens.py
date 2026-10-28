@@ -28,7 +28,8 @@
      会话日志路径倍率 1），故显示值实时，且在 CC Switch 下一轮同步后与其用量页一致。
      CC Switch 只保留约 30 天：早于库内最早记录的消息不计入尾部、直接移出未入账集合，
      与用量页同口径（否则老会话一旦重建状态，会把已被清掉的消息当未入账重新自算）。
-     今日 = 今日见过的中转站会话的账本（created_at ≥ 本地零点）+ 本会话尾部。
+     今日 = 本地零点以来全部 Claude 行的账本（app_type 过滤，含无头会话）+ 本会话尾部；
+     Codex 等其它 app_type 不计。
      $/h 的追踪器按来源（账本 / stdin）分 epoch；中转站模式下没追平或读库失败时不再改喂
      stdin 费用——两种口径共用一个追踪器，切换一次即虚报几百美元每小时。
   5. 额度节奏（5h / 7d / 中转站日限额 / 网关花费限额）：速率取「窗口均速 = 已用 ÷ 窗口已过
@@ -357,18 +358,12 @@ def relay_ledger(db, sid, st, now, midnight):
             c = msg_cost(p, e)
             tail += c
             tail_today += c if e[6] >= midnight else 0
-        lst = f'{TMP}/claude-sl-relay-sessions-{int(midnight)}.list'
-        try:
-            seen = open(lst).read().split()
-        except OSError:
-            seen = []
-        if sid not in seen:
-            with open(lst, 'a') as f:
-                f.write(sid + '\n')
-            seen.append(sid)
+        # 今日 = 本机零点以来全部 Claude 行（含会话日志与代理两源）。按 app_type 过滤而不是
+        # 「渲染过状态栏的会话」：claude -p 等无头会话从不渲染，靠会话列表会把它们的花费
+        # 永久漏掉（2026-10-28 实测漏了一个 $0.28 的会话）。
         today = conn.execute(
-            'SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM proxy_request_logs WHERE created_at >= ? '
-            'AND session_id IN (%s)' % ','.join('?' * len(seen)), [int(midnight)] + seen).fetchone()[0]
+            "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM proxy_request_logs "
+            "WHERE created_at >= ? AND app_type = 'claude'", (int(midnight),)).fetchone()[0]
         lim = conn.execute("SELECT limit_daily_usd FROM providers WHERE app_type = 'claude' "
                            'AND is_current = 1 LIMIT 1').fetchone()
         try:
