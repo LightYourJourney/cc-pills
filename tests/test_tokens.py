@@ -1,0 +1,207 @@
+"""statusline-tokens.py 单元测试：计数去重、追踪器、节奏分级、花费限额、中转站对账。"""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+from _util import SRC
+
+PATH = os.path.join(SRC, 'statusline-tokens.py')
+
+
+def load():
+    spec = importlib.util.spec_from_file_location('sltokens', PATH)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def line(mid, inp, out, stop, ts='2026-10-28T06:00:00Z', extra=None):
+    m = {'id': mid, 'model': 'claude-opus-5-5', 'stop_reason': stop,
+         'usage': {'input_tokens': inp, 'output_tokens': out,
+                   'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}}
+    if extra:
+        m['content'] = [extra]
+    return json.dumps({'type': 'assistant', 'timestamp': ts, 'message': m})
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix='ccpills-tok-')
+        self.env = dict(os.environ, CLAUDE_SL_TMP=self.d)
+        self.t = load()
+        self.t.TMP = self.d
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def run_tok(self, tp, sid, *args):
+        return subprocess.run([sys.executable, PATH, tp, sid, *args], capture_output=True, text=True, env=self.env)
+
+    def state(self, sid):
+        with open(os.path.join(self.d, f'claude-statusline-{sid}.json')) as f:
+            return json.load(f)
+
+    def write(self, name, lines):
+        p = os.path.join(self.d, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        return p
+
+
+class Counting(Base):
+    def test_dedup_stop_reason_then_larger_output(self):
+        tp = self.write('a.jsonl', [line('m1', 10, 5, None), line('m1', 10, 300, 'end_turn'),
+                                    line('m1', 10, 100, None), line('m2', 20, 40, 'end_turn')])
+        out = self.run_tok(tp, 'c1').stdout.split('\t')
+        self.assertEqual(out[:2], ['30', '340'])
+
+    def test_compact_substring_does_not_drop_usage(self):
+        tp = self.write('b.jsonl', [
+            line('m1', 10, 300, 'tool_use', extra={'type': 'tool_use', 'name': 'Grep',
+                                                   'input': {'pattern': 'compact_boundary'}}),
+            json.dumps({'type': 'system', 'subtype': 'compact_boundary'})])
+        out = self.run_tok(tp, 'c2').stdout.split('\t')
+        self.assertEqual((out[0], out[1], out[3]), ('10', '300', '1'))
+
+    def test_deleted_subagent_triggers_rescan(self):
+        tp = self.write('c.jsonl', [line('m1', 10, 5, 'end_turn')])
+        sub = self.write('c/subagents/agent-x.jsonl', [line('s1', 7, 3, 'end_turn')])
+        self.assertEqual(self.run_tok(tp, 'c3').stdout.split('\t')[:2], ['17', '8'])
+        os.remove(sub)
+        r = self.run_tok(tp, 'c3')
+        self.assertEqual(r.stdout.split('\t')[:2], ['10', '5'])
+        self.assertEqual(r.stderr, '')
+
+    def test_seventeen_fields(self):
+        tp = self.write('d.jsonl', [line('m1', 1, 1, 'end_turn')])
+        self.assertEqual(len(self.run_tok(tp, 'c4').stdout.rstrip('\n').split('\t')), 17)
+
+    def test_time_budget_shared_across_files(self):
+        tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
+        for i in range(6):
+            self.write(f'e/subagents/agent-{i}.jsonl', [line(f's{i}', 1, 1, 'end_turn')])
+        orig = self.t.scan_chunk
+
+        def slow(*a, **k):
+            time.sleep(0.4)
+            return orig(*a, **k)
+        self.t.scan_chunk = slow
+        sys.argv = ['x', tp, 'c5']
+        t0 = time.time()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.t.main()
+        self.assertLess(time.time() - t0, 1.9)
+
+
+class Trackers(Base):
+    def test_small_drop_decays_rate(self):
+        st = {'trk': {}}
+        for k in range(0, 1801, 60):
+            self.t.track(st, 'cost', 10 + 30 * k / 3600, 1000 + k, epoch='stdin')
+        self.t.track(st, 'cost', st['trk']['cost']['lv'] * 0.98, 10000, epoch='stdin')
+        self.assertLess(self.t.rate(st, 'cost', 10000) * 3600, 1)
+
+    def test_bias_correction_warms_to_true_rate(self):
+        st = {'trk': {}}
+        for k in range(0, 1201, 10):
+            self.t.track(st, 'cost', 12 * k / 3600, 1000 + k, epoch='stdin')
+        self.assertAlmostEqual(self.t.rate(st, 'cost', 2200) * 3600, 12, delta=0.5)
+
+
+class Pace(Base):
+    def test_levels(self):
+        p, th = self.t.pace, [50, 80]
+        self.assertEqual(p(36, 100, 13020, [64 / 8820], th, 1800)[0], 'warn')
+        self.assertEqual(p(70, 100, 7200, [30 / 1200], th, 1800)[0], 'bad')
+        self.assertEqual(p(82, 100, 7200, [1 / 3600], th, 1800), ('high', '-'))
+        self.assertEqual(p(40, 100, 9000, [40 / 9000], th, 1800), ('ok', '-'))
+        self.assertEqual(p(85, 100, 9000, [], th, 1800), ('high', '-'))
+
+    def test_exhausted_and_zero_cap(self):
+        self.assertEqual(self.t.pace(100, 100, 3600, [0.01], [50, 80], 1800), ('bad', '用尽'))
+        self.assertEqual(self.t.pace(104, 100, 3600, [], [50, 80], 1800), ('bad', '用尽'))
+        self.assertEqual(self.t.pace(5, 0, 100, [1], [50, 80], 1800), ('ok', '-'))
+
+    def test_spend_limit_fields(self):
+        tp = self.write('f.jsonl', [line('m1', 1, 1, 'end_turn')])
+        now = int(time.time())
+        out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},daily').stdout.rstrip('\n').split('\t')
+        self.assertEqual(out[15], 'warn')
+        self.assertNotEqual(out[16], '-')
+        out = self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout.rstrip('\n').split('\t')
+        self.assertEqual(out[15:], ['-', '-'])
+
+
+class Relay(Base):
+    def make_db(self, now):
+        db = os.path.join(self.d, 'cc.db')
+        c = sqlite3.connect(db)
+        c.execute('create table proxy_request_logs(request_id text, session_id text, app_type text, '
+                  'data_source text, status_code int, created_at int, input_tokens int, output_tokens int, '
+                  'cache_read_tokens int, cache_creation_tokens int, total_cost_usd text)')
+        c.execute('create table model_pricing(model_id text, input_cost_per_million real, output_cost_per_million real, '
+                  'cache_read_cost_per_million real, cache_creation_cost_per_million real)')
+        c.execute("insert into model_pricing values('claude-opus-5-5', 5, 25, 0.5, 6.25)")
+        c.execute('create table providers(app_type text, is_current int, limit_daily_usd text)')
+        c.execute("insert into proxy_request_logs values('session:old', 'r1', 'claude', 'session_log', 200, ?, 1, 1, 0, 0, '30')",
+                  (now - 86400 * 5,))
+        c.commit()
+        c.close()
+        return db
+
+    def test_ledger_plus_tail_and_retention(self):
+        now = int(time.time())
+        db = self.make_db(now)
+        ts = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
+        tp = self.write('g.jsonl', [line('mold', 1000000, 0, 'end_turn', ts=ts(now - 86400 * 40)),
+                                    line('mnew', 1000, 100, 'end_turn', ts=ts(now - 60))])
+        out = self.run_tok(tp, 'r1', f'relay={db}', 'cost=10').stdout.split('\t')
+        self.assertAlmostEqual(float(out[10]), 30 + (1000 * 5 + 100 * 25) / 1e6, places=6,
+                               msg='早于库内最早记录的消息不应再自算')
+        st = self.state('r1')
+        self.assertEqual(st['trk']['cost']['ep'], 'ledger')
+        # 读库失败时不把 stdin 费用喂进追踪器
+        os.rename(db, db + '.bak')
+        with open(db, 'w') as f:
+            f.write('not a db')
+        self.run_tok(tp, 'r1', f'relay={db}', 'cost=999')
+        st = self.state('r1')
+        self.assertEqual(st['trk']['cost']['ep'], 'ledger')
+        self.assertLess(st['trk']['cost']['lv'], 100)
+
+    def test_proxy_rows_dedup_only_claude(self):
+        """代理已记账的消息不重复自算；Codex 的同 token 行不能顶替 Claude 消息。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        c = sqlite3.connect(db)
+        c.execute("insert into proxy_request_logs values('p1', 'r2', 'claude', NULL, 200, ?, 2000, 200, 0, 0, '0.5')",
+                  (now - 60,))
+        c.execute("insert into proxy_request_logs values('p2', 'cx', 'codex', 'proxy', 200, ?, 3000, 300, 0, 0, '9')",
+                  (now - 60,))
+        c.commit()
+        c.close()
+        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))
+        tp = self.write('h.jsonl', [line('mprox', 2000, 200, 'end_turn', ts=ts),
+                                    line('mcodex', 3000, 300, 'end_turn', ts=ts)])
+        out = self.run_tok(tp, 'r2', f'relay={db}').stdout.split('\t')
+        self.assertAlmostEqual(float(out[10]), 0.5 + (3000 * 5 + 300 * 25) / 1e6, places=6)
+
+    def test_pricing_candidates(self):
+        c = self.t.pricing_candidates
+        self.assertIn('claude-opus-5-5', c('anthropic/claude-opus-5-5-20261001[1m]'))
+        self.assertIn('claude-sonnet-5-5', c('Claude-Sonnet-5-5@20261001'))
+        self.assertEqual(c('unknown'), [])
+
+
+if __name__ == '__main__':
+    unittest.main()
