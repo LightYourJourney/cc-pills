@@ -48,8 +48,9 @@ cd cc-pills
 bash install.sh --with-subagent --with-conf
 ```
 
-`install.sh` copies the four scripts into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` and prints
-whether `settings.json` already points at them. If it does not, add:
+`install.sh` copies the scripts into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` (the panel
+script only with `--with-subagent`) and prints whether `statusLine` and
+`subagentStatusLine` already point at them. If they do not, add:
 
 ```json
 "statusLine": { "type": "command",
@@ -103,7 +104,7 @@ install.sh  run_tests.sh
 
 ```bash
 bash run_tests.sh              # ~1.5–5 min depending on load, fully isolated (no live caches, no network)
-bash run_tests.sh tokens       # one module: render / tokens / theme
+bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install
 UPDATE_GOLDEN=1 bash run_tests.sh   # after an intentional rendering change
 ```
 

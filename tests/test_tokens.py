@@ -412,5 +412,23 @@ class TokenProtocol(unittest.TestCase):
         self.assertEqual(got, [BASH_NAMES[f] for f in FIELDS], 'bash read 的字段顺序必须与 FIELDS 一致')
 
 
+class ConfigProtocol(unittest.TestCase):
+    """示例配置与脚本内置默认序列的契约：默认不冻结、注释里的顺序与 STEPS 一致。"""
+
+    def test_example_has_no_active_steps_and_matches_default(self):
+        with open(os.path.join(SRC, 'statusline-command.sh')) as f:
+            src = f.read()
+        block = re.search(r'^STEPS=\((.*?)^\)', src, re.S | re.M).group(1)
+        default = re.findall(r'"(\w+) (\w+)"', block)
+        with open(os.path.join(REPO, 'config', 'claude-statusline.conf.example')) as f:
+            conf = f.read()
+        active = re.findall(r'^\s*step\s*=\s*(\w+)\s+(\w+)', conf, re.M)
+        self.assertEqual(active, [], '示例配置有 active step，会冻结用户拿到的默认序列')
+        commented = re.findall(r'^\s*#\s*step\s*=\s*(\w+)\s+(\w+)', conf, re.M)
+        self.assertEqual(commented, default, '注释里的默认序列与脚本 STEPS 不一致')
+        ids = re.search(r'^ITEM_IDS="(.*?)"', src, re.S | re.M).group(1).split()
+        self.assertEqual([i for _, i in default if i not in ids], [], 'STEPS 用了 ITEM_IDS 之外的项')
+
+
 if __name__ == '__main__':
     unittest.main()

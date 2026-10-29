@@ -118,6 +118,14 @@
   变新时立即重算，不等 TTL。
 - **`status_page` 开关**：默认 `on`（每分钟请求 status.claude.com）；`off` 时零网络请求、
   不显示服务状态。给不需要外部请求、或在隔离环境里跑的人用。
+- **示例配置不固化默认序列**（10-29）：示例里的 36 条 `step` 全部注释，脚本在没有
+  `step` 行时使用内置 `STEPS`；只要写一行 `step` 就整体替换（既有行为）。`--with-conf`
+  复制的是注释版，因此未来的默认调整会继续生效；注释里的顺序由
+  `tests/test_tokens.py::ConfigProtocol` 与 `STEPS` 对齐。
+- **安装器覆盖两个 settings 键**（10-29）：install / check 同时检查 `statusLine` 与
+  `subagentStatusLine`；命令必须指向已安装副本（或使用 `${CLAUDE_CONFIG_DIR...}` 的
+  官方写法），只是文件名相同、路径不明的命令也按 rc=1 报出。uninstall 删除脚本后只
+  警告仍指向已删除文件的键，不自动改用户 settings。
 - **面板共享状态加锁**（10-29）：状态文件被本机所有会话共享，读-改-写全程持同一把
   `mkdir` 锁，锁内**重新读取**后再合并；抢锁超过 1s 就放弃本次写回（宁少一帧速率，
   也不覆盖别家条目）。残锁 5s 后清除。状态文件默认带 uid（
@@ -144,8 +152,8 @@
 | 3 | token 缓存无年龄校验，后台持续失败时旧值无限期展示 | P2 | 本阶段修复 |
 | 4 | 日限额用全局今日 ÷ 当前供应商限额，口径不可比 | P1 | 本阶段修复 |
 | 5 | `/tmp` 缓存 0644、无所有者校验、缓存字段可注入转义 | P2（共享主机 P1） | 本阶段修复 |
-| 6 | `--with-conf` 把默认降级序列固化进用户配置 | P2 | 待修复 |
-| 7 | install/check/uninstall 只处理 `statusLine`，漏 `subagentStatusLine` | P2 | 待修复 |
+| 6 | `--with-conf` 把默认降级序列固化进用户配置 | P2 | 本阶段修复 |
+| 7 | install/check/uninstall 只处理 `statusLine`，漏 `subagentStatusLine` | P2 | 本阶段修复 |
 | 8 | 面板脚本 / install / 陈旧 / 供应商维度 / 权限均无测试 | P2 | 待修复 |
 
 复核时用 `bash run_tests.sh`；单项 `bash run_tests.sh tokens` 等。审查期间的复现脚本留在

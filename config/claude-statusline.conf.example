@@ -1,5 +1,5 @@
-# cc-pills 配置（由已安装的 statusline-command.sh 读取；默认位置
-# ${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-command.sh，配置本体在 ~/.config/claude-statusline.conf）
+# cc-pills 配置（由已安装的 statusline-command.sh 读取）
+# 位置：${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf
 # 格式：键 = 值；# 开头为注释。只认下面列出的键，值不合法会被忽略。
 # 修改后最多 2 秒生效（下一次状态栏刷新），无需重启 Claude Code。
 
@@ -24,12 +24,15 @@
 # ctx_bad = 90            # 上下文已用 ≥ 此值 → 红
 # crit_at = 95            # 上下文 / 额度已用 ≥ 此值 → 强红（只有 tokyo-glass 与普通红有别）
 
-# ── 降级序列 ────────────────────────────────────────────────────────────
+# ── 降级序列（默认值，全部注释）──────────────────────────────────────────
+# 下面是脚本内置的默认序列，只作参考。默认不写任何 step 行——脚本直接使用内置序列，
+# 未来的默认调整也能自动生效。一旦取消注释任何一行 step，就**整体替换**默认序列
+#（不是追加），所以自定义时要保留所有想生效的步骤。
 # 终端宽度不够时，从上往下逐步执行，放得下就停。越靠上越先牺牲——调顺序就是挪行。
 #   step = drop <项>      丢弃该项
 #   step = shrink <项>    换成下一种更短的写法（有多级写法的项可以写多次）
-# 没有任何 drop 行的项永不丢弃；7d% / 中转站今日额度进入风险态时，其 drop 行自动失效。
-# 删掉本段所有 step 行，即恢复脚本内置的默认序列（与下面相同）。
+# 没有任何 drop 行的项永不丢弃；5h / 7d / 中转站日限额 / 网关花费限额进入风险态时，
+# 其 drop 行自动失效。
 #
 # 永不丢弃（按显示顺序；只会缩短）：
 #   dir    目录          ccchat/docs/courses（窄屏可缩成最后一段 courses）
@@ -45,39 +48,39 @@
 #
 # 可丢弃（按优先级：从最先丢到最后丢；shrink 行穿插其间）：
 #      动作            项          例子                              出现条件
-step = drop    api      # API 时长    api 1h05m                         一直
-step = drop    msgs     # 消息数      m142                              一直
-step = drop    today    # 中转站今日  $23.40                            中转站且未设日限额
-step = drop    claudem  # 状态页 minor claude minor                     状态页有 minor / maintenance 事件
-step = drop    q7r      # 7d 重置     ↺2d0h                             7d 出现时
-step = shrink  io       # 累计 token  ↑74M ↓421k → ↑74M                 （永不丢弃，只缩短）
-step = drop    q5r      # 5h 重置     ↺3h36m                            5h 已用 ≥50% 或有风险
-step = drop    cachet   # cache 倒计时 cache 24m                        剩余不足 TTL 一半（未到告警）
-step = drop    comp     # compact 次数 ↻2                               本会话 compact ≥1 次
-step = drop    recache  # 重写 token  +566k                             cache 告警时
-step = shrink  git      # 分支名      超过 24 字时缩成前 20 字 + …       （永不丢弃，只缩短）
-step = shrink  dir      # 目录        ccchat/docs/courses → courses       （永不丢弃，只缩短）
-step = shrink  hit      # 命中率      hit 98.6% → 99%                   （永不丢弃，只缩短）
-step = drop    q7       # 7d 已用     7d 60%                            7d 已用 ≥50%（有风险时不可丢）
-step = drop    rate     # 花费速率    $24/h                             预热 2 分钟后
-step = shrink  q5out    # 5h 预计用完 out 1h21m → !                     会在重置前用完
-step = shrink  q7out    # 7d 预计用完 out 19h17m → !
-step = shrink  dout     # 日限额用完  out 3h10m → !
-step = shrink  q5       # 5h 已用     5h 36% → 5h36%                    （永不丢弃，只缩短）
-step = shrink  q7       # 7d 已用     7d 85% → 7d85%
-step = shrink  spend    # 网关花费限额 本周 $23/$50 → $23/$50          网关设了花费限额（rate_limits.spend_limit）
-step = shrink  spout    # 花费限额用完 out 3h10m → !
-step = drop    day      # 中转站今日  $23/$50                           （有风险时不可丢）
-step = drop    spend    # 网关花费限额 $23/$50                          （有风险时不可丢）
-step = drop    cost     # 会话费用    $27.35 / $3.21+ / $17.69*         一直
-step = shrink  claude   # 服务故障    claude major → major              状态页 major / critical
-step = drop    claude   # 服务故障    major
-step = drop    dout     # 日限额用完  !
-step = drop    spout    # 花费限额用完 !
-step = drop    q7out    # 7d 预计用完 !
-step = drop    q5out    # 5h 预计用完 !
-step = shrink  ctx      # ctx 已用    ctx 56% → ctx56%                  （永不丢弃，只缩短）
-step = shrink  cache    # cache 告警  cache 8m → c8m                    （永不丢弃，只缩短）
-step = shrink  model    # 模型        Claude Opus 5.5 (1M context) high → Opus 5.5 high（永不丢弃，只缩短）
-step = shrink  model    # 模型        Opus 5.5 high → O5.5 high
-step = shrink  model    # 模型        O5.5 high → O5.5·H
+# step = drop    api      # API 时长    api 1h05m                         一直
+# step = drop    msgs     # 消息数      m142                              一直
+# step = drop    today    # 中转站今日  $23.40                            中转站且未设日限额
+# step = drop    claudem  # 状态页 minor claude minor                     状态页有 minor / maintenance 事件
+# step = drop    q7r      # 7d 重置     ↺2d0h                             7d 出现时
+# step = shrink  io       # 累计 token  ↑74M ↓421k → ↑74M                 （永不丢弃，只缩短）
+# step = drop    q5r      # 5h 重置     ↺3h36m                            5h 已用 ≥50% 或有风险
+# step = drop    cachet   # cache 倒计时 cache 24m                        剩余不足 TTL 一半（未到告警）
+# step = drop    comp     # compact 次数 ↻2                               本会话 compact ≥1 次
+# step = drop    recache  # 重写 token  +566k                             cache 告警时
+# step = shrink  git      # 分支名      超过 24 字时缩成前 20 字 + …       （永不丢弃，只缩短）
+# step = shrink  dir      # 目录        ccchat/docs/courses → courses       （永不丢弃，只缩短）
+# step = shrink  hit      # 命中率      hit 98.6% → 99%                   （永不丢弃，只缩短）
+# step = drop    q7       # 7d 已用     7d 60%                            7d 已用 ≥50%（有风险时不可丢）
+# step = drop    rate     # 花费速率    $24/h                             预热 2 分钟后
+# step = shrink  q5out    # 5h 预计用完 out 1h21m → !                     会在重置前用完
+# step = shrink  q7out    # 7d 预计用完 out 19h17m → !
+# step = shrink  dout     # 日限额用完  out 3h10m → !
+# step = shrink  q5       # 5h 已用     5h 36% → 5h36%                    （永不丢弃，只缩短）
+# step = shrink  q7       # 7d 已用     7d 85% → 7d85%
+# step = shrink  spend    # 网关花费限额 本周 $23/$50 → $23/$50          网关设了花费限额（rate_limits.spend_limit）
+# step = shrink  spout    # 花费限额用完 out 3h10m → !
+# step = drop    day      # 中转站今日  $23/$50                           （有风险时不可丢）
+# step = drop    spend    # 网关花费限额 $23/$50                          （有风险时不可丢）
+# step = drop    cost     # 会话费用    $27.35 / $3.21+ / $17.69*         一直
+# step = shrink  claude   # 服务故障    claude major → major              状态页 major / critical
+# step = drop    claude   # 服务故障    major
+# step = drop    dout     # 日限额用完  !
+# step = drop    spout    # 花费限额用完 !
+# step = drop    q7out    # 7d 预计用完 !
+# step = drop    q5out    # 5h 预计用完 !
+# step = shrink  ctx      # ctx 已用    ctx 56% → ctx56%                  （永不丢弃，只缩短）
+# step = shrink  cache    # cache 告警  cache 8m → c8m                    （永不丢弃，只缩短）
+# step = shrink  model    # 模型        Claude Opus 5.5 (1M context) high → Opus 5.5 high（永不丢弃，只缩短）
+# step = shrink  model    # 模型        Opus 5.5 high → O5.5 high
+# step = shrink  model    # 模型        O5.5 high → O5.5·H

@@ -43,8 +43,9 @@ cd cc-pills
 bash install.sh --with-subagent --with-conf
 ```
 
-`install.sh` 把四个脚本复制到 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`，并告诉你
-`settings.json` 是否已指向它们。没有的话加上：
+`install.sh` 把脚本复制到 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`（面板脚本仅在
+`--with-subagent` 时），并告诉你 `settings.json` 的 `statusLine` 与
+`subagentStatusLine` 是否已指向它们。没有的话加上：
 
 ```json
 "statusLine": { "type": "command",
@@ -96,7 +97,7 @@ install.sh  run_tests.sh
 
 ```bash
 bash run_tests.sh              # 约 1.5–5 分钟（随负载），全隔离（不读线上缓存、不联网）
-bash run_tests.sh tokens       # 单模块：render / tokens / theme
+bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install
 UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
 ```
 
