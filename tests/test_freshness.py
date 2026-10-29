@@ -79,6 +79,19 @@ class Freshness(unittest.TestCase):
             with open(ts) as f:
                 self.assertLess(abs(now - int(f.read().strip())), 60)
 
+    def test_refresh_backfills_ts_from_cache_mtime(self):
+        """升级迁移来的旧缓存没有 .ts：刷新要按缓存 mtime 补一个，否则会永久按新鲜展示。"""
+        with Sandbox(conf_extra='status_page = off') as sb:
+            sb.write_tok('legacy', **{'in': '172M'}, msgs='517')
+            f = os.path.join(sb.tmp, 'claude-sl-tok-legacy.cache')
+            old = time.time() - 10 * 86400
+            os.utime(f, (old, old))
+            subprocess.run(['bash', SCRIPT, '--refresh', sb.repo, '-', 'legacy', 'sub'],
+                           env=sb.env, capture_output=True)
+            self.assertTrue(os.path.isfile(f + '.ts'), '刷新没有为无 .ts 的旧缓存补时间戳')
+            o = strip(sb.render(sb.stdin('legacy', q5=20)))
+            self.assertNotIn('m517', o, '旧缓存的 mtime 已超时，仍被当作新鲜值展示')
+
     def test_soon_exhausted_stays_red(self):
         """bad 但 out 是真实倒计时（不是「用尽」）：设计上仍应变红，不能被护栏误伤。"""
         with Sandbox() as sb:

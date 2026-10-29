@@ -337,6 +337,15 @@ if [ "${1:-}" = "--refresh" ]; then
         mv -f "$src" "$dst" 2>/dev/null && chmod 600 "$dst" 2>/dev/null
     done
   fi
+  # 升级迁移来的旧 token 缓存没有 .ts：用缓存自身的 mtime 补一个（一次）。否则同步
+  # 路径会一直按「无时间戳 = 新鲜」展示，长期失效时等于没修。
+  tokf0="${SLT}/claude-sl-tok-${skey}.cache"
+  if cache_ok "$tokf0" && [ ! -e "${tokf0}.ts" ]; then
+    m=$(mtime "$tokf0"); m=${m:-$now}
+    tsmf=$(mktemp "${SLT}/.claude-sl-tokts-${skey}.XXXXXX" 2>/dev/null)
+    [ -n "$tsmf" ] && printf '%s\n' "$m" > "$tsmf" 2>/dev/null \
+      && mv -f "$tsmf" "${tokf0}.ts" 2>/dev/null || rm -f "$tsmf" 2>/dev/null
+  fi
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
   if ! mkdir "$lock" 2>/dev/null; then
