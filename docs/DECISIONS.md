@@ -61,6 +61,9 @@
   只剩一个看不出属于谁的「out 1h42m」。
 - `misses` 不显示（无效信息）；墙钟时长不显示（含空闲时间），只显示 `api` 累计时长。
 - ctx 阈值 70 / 90 与额度阈值 50 / 80 分开：ctx 是「快满了该压缩」，额度是「用得多了」。
+- **面板 ctx 显式标「剩」**（10-29）：主栏 ctx 是**已用**（70 / 90 告警），面板由
+  tokenCount / contextWindowSize 算出的是**剩余**（<20% ⚠）。两者同叫 ctx 会误读，
+  面板改为 `ctx 剩 N%`；数值与阈值不变，不改主栏语义。
 
 ## 费用口径
 
@@ -147,14 +150,17 @@
 
 | # | 发现 | 等级 | 状态 |
 |---|---|---|---|
-| 1 | 主栏 ctx = 已用，面板 ctx = 剩余，同名标签易误读 | P2 | 待修复 |
+| 1 | 主栏 ctx = 已用，面板 ctx = 剩余，同名标签易误读 | P2 | 本阶段修复 |
 | 2 | 面板共享状态无锁，并发读改写丢失更新 | P2 | 本阶段修复 |
 | 3 | token 缓存无年龄校验，后台持续失败时旧值无限期展示 | P2 | 本阶段修复 |
 | 4 | 日限额用全局今日 ÷ 当前供应商限额，口径不可比 | P1 | 本阶段修复 |
 | 5 | `/tmp` 缓存 0644、无所有者校验、缓存字段可注入转义 | P2（共享主机 P1） | 本阶段修复 |
 | 6 | `--with-conf` 把默认降级序列固化进用户配置 | P2 | 本阶段修复 |
 | 7 | install/check/uninstall 只处理 `statusLine`，漏 `subagentStatusLine` | P2 | 本阶段修复 |
-| 8 | 面板脚本 / install / 陈旧 / 供应商维度 / 权限均无测试 | P2 | 待修复 |
+| 8 | 面板脚本 / install / 陈旧 / 供应商维度 / 权限均无测试 | P2 | 本阶段修复 |
 
-复核时用 `bash run_tests.sh`；单项 `bash run_tests.sh tokens` 等。审查期间的复现脚本留在
+8 项均已修复。新增测试模块：`test_cache`（权限 / 注入）、`test_subagent`（并发 / ctx
+语义）、`test_freshness`（时效 / 跨窗口）、`test_install`（两个 settings 键）；`test_tokens`
+补了供应商日限额与配置契约；CI 增加 shell / Python 语法检查。复核时用
+`bash run_tests.sh`；单项 `bash run_tests.sh tokens` 等。审查期间的复现脚本留在
 `/tmp/ccpills-audit/`（仓库外），未纳入版本库。

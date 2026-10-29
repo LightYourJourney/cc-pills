@@ -78,6 +78,19 @@ class SubagentState(unittest.TestCase):
         mode = stat.S_IMODE(os.stat(st).st_mode)
         self.assertEqual(mode, 0o600, f'状态文件模式是 {oct(mode)}，应为 0600')
 
+    def test_ctx_label_is_remaining(self):
+        """主栏 ctx 是已用；面板数值是剩余——必须显式标「剩」，否则同名字会误读。"""
+        p = os.path.join(self.d, 'in-ctx.json')
+        with open(p, 'w') as f:
+            json.dump({'columns': 120, 'tasks': [{
+                'id': 'c', 'status': 'running', 'description': 'd', 'label': 'd',
+                'model': 'm', 'tokenCount': 250000, 'contextWindowSize': 1000000}]}, f)
+        st = os.path.join(self.d, 'ctx.json')
+        with open(p) as f:
+            out = subprocess.run(['bash', SCRIPT], stdin=f, capture_output=True, text=True,
+                                 env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st)).stdout
+        self.assertIn('ctx 剩75%', out)
+
     def test_default_state_path_is_per_user(self):
         tmp = os.path.join(self.d, 'T')
         os.makedirs(tmp, mode=0o700)

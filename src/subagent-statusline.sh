@@ -4,7 +4,7 @@
 # ================================
 #
 # 渲染 agent 面板中每个 subagent 行，替代默认的「name · description · tokens」：
-#   graphify 提取 chunk 1/9  — opus-5 · tok 145k ↑480/s · ctx 85% · 4m04s
+#   graphify 提取 chunk 1/9  — opus-5 · tok 145k ↑480/s · ctx 剩85% · 4m04s
 #   └─任务标签（按宽截断）      └─模型  └─已用token+自测速率 └─其上下文剩余 └─运行时长
 #
 # ⚠️ 纯文本输出：官方文档称面板支持 ANSI 颜色，但实测（2026-08-07）转义码被
@@ -81,8 +81,8 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
            | if . < 0 then 0 else . end)
      else null end) as $pct
   | (if $pct == null then null
-     elif $pct < 20 then "ctx \($pct)%⚠"
-     else "ctx \($pct)%" end) as $ctxS
+     elif $pct < 20 then "ctx 剩\($pct)%⚠"
+     else "ctx 剩\($pct)%" end) as $ctxS
 
   # ── 运行时长（startTime 为 epoch 毫秒；非 running/pending 不显示）────
   | (if $live and ((.startTime // null) | type == "number") and (.startTime > 1e12)
