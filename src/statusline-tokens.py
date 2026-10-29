@@ -8,7 +8,8 @@
   sp=<已用%>,<resets_at>,<period>  网关花费限额（rate_limits.spend_limit；period = daily|weekly|monthly）
   relay=<cc-switch.db>   中转站模式：读 CC Switch 账本（见 4）
   th=<WARN_AT>,<BAD_AT>  告警阈值（与 bash 侧同源）
-环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 /tmp；预览与测试用它隔离）
+环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 ${TMPDIR:-/tmp}/claude-sl-<uid>；
+预览与测试用它隔离）
 
 设计原因与沿革见 docs/DECISIONS.md。产出 stdin JSON 直接给不了的指标：
 
@@ -360,7 +361,8 @@ def current_provider(conn):
 
     与 CC Switch 4.x 的 check_provider_limits 同源：限额写在 providers.meta 的
     limitDailyUsd（旧库只有 limit_daily_usd 列）。没有或不止一个 is_current 时返回
-    (None, None)——供应商归属不可靠，额度项必须隐藏，不能拿未知当 0。
+    (None, None)——供应商归属不可靠，额度项必须隐藏，不能拿未知当 0。meta 存在但
+    解析失败 / 不是对象，同样按未知处理，不回落旧列（上游已经不读那一列）。
     """
     try:
         rows = conn.execute(
@@ -382,10 +384,13 @@ def current_provider(conn):
             m = json.loads(meta)
         except Exception:
             m = None
-        if isinstance(m, dict) and 'limitDailyUsd' in m:
-            has_meta = True                     # 明确写了就以它为准，坏了也不回落到旧列
-            lim = _limit_usd(m.get('limitDailyUsd'))
-    if not has_meta:
+        if isinstance(m, dict):
+            if 'limitDailyUsd' in m:            # 明确写了就以它为准，值坏了也不回落到旧列
+                has_meta = True
+                lim = _limit_usd(m.get('limitDailyUsd'))
+        else:
+            has_meta = True                     # meta 坏了：未知，不回落旧列
+    if not has_meta:                            # 旧库没有 meta / meta 是空对象
         lim = _limit_usd(col)
     return pid, lim
 
@@ -403,7 +408,10 @@ def provider_today(conn, pid, midnight, day):
             "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM usage_daily_rollups "
             "WHERE provider_id = ? AND app_type = 'claude' AND date = ?",
             (pid, day)).fetchone()[0]
-    except sqlite3.OperationalError:            # 旧库没有汇总表：今日不会被汇总，按 0 处理
+    except sqlite3.OperationalError as e:
+        # 只有「旧库没有汇总表」可以按 0；锁 / 列漂移等是未知，交给上层隐藏限额。
+        if 'no such table: usage_daily_rollups' not in str(e):
+            raise
         roll = 0.0
     return float(detail) + float(roll)
 
@@ -457,7 +465,8 @@ def relay_ledger(db, sid, st, now, midnight):
         # 今日费用分三个口径（见文档 4）：
         #   global = 全部 Claude 明细 + 本会话尾部（无日限额时显示）
         #   cur    = 当前供应商可归属（proxy 明细 + 当日 rollup；日限额的分子）
-        #   unattr = global - cur（其它供应商、'_session' 会话日志、尚未入账的尾部）
+        #   unattr = global - cur（其它供应商、'_session' 会话日志、尚未入账的尾部；
+        #            由调用方按差值得到，不单独回传）
         day = time.strftime('%Y-%m-%d', time.localtime(now))   # 本地日期，与 rollup.date 同口径
         try:
             pid, lim = current_provider(conn)
@@ -473,7 +482,6 @@ def relay_ledger(db, sid, st, now, midnight):
             'unpriced': int(unpriced),
             'today_global': today_global,
             'today_cur': cur,
-            'today_unattr': today_global - (cur or 0.0),
             'limit': lim,
             'provider_id': pid,
         }

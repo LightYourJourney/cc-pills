@@ -24,7 +24,7 @@ for a in "$@"; do
     --check) MODE=check ;;
     --uninstall) MODE=uninstall ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -u$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数：$a（--help 看用法）" >&2; exit 2 ;;
   esac
 done
@@ -60,8 +60,13 @@ points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 �
   case "$1" in
     *"$3/$2"*)                  return 0 ;;          # 指向已安装副本
     *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;        # 建议写法：运行时展开到同一目录
-    *"$2"*)                     return 2 ;;          # 只是文件名相同，路径不明
   esac
+  if [ "$3" = "$HOME/.claude" ]; then
+    case "$1" in
+      *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;;   # 默认目录的等价写法
+    esac
+  fi
+  case "$1" in *"$2"*) return 2 ;; esac              # 只是文件名相同，路径不明
   return 1
 }
 

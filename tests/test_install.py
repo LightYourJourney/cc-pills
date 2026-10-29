@@ -27,12 +27,14 @@ class Install(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
 
-    def run_sh(self, *args, settings=None):
+    def run_sh(self, *args, settings=None, env=None):
+        e = env or self.env
         if settings is not None:
-            with open(os.path.join(self.dest, 'settings.json'), 'w') as f:
+            dest = e.get('CLAUDE_CONFIG_DIR', self.dest)
+            with open(os.path.join(dest, 'settings.json'), 'w') as f:
                 json.dump(settings, f)
         return subprocess.run(['bash', INSTALL, *args], capture_output=True,
-                              text=True, env=self.env)
+                              text=True, env=e)
 
     def cmds(self, sub=True):
         out = {'statusLine': {'type': 'command',
@@ -94,6 +96,26 @@ class Install(unittest.TestCase):
         r = self.run_sh('--uninstall')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('仍指向已删除', r.stderr)
+
+    def test_help_includes_full_header(self):
+        r = self.run_sh('--help')
+        self.assertEqual(r.returncode, 0)
+        for s in ('--with-subagent', '--with-conf', '--check', '--uninstall', '覆盖前把旧副本'):
+            self.assertIn(s, r.stdout)
+        self.assertNotIn('set -u', r.stdout)
+
+    def test_check_accepts_home_shortcuts(self):
+        """$HOME/.claude/... 与 ~/.claude/... 在默认 DEST 下是等价写法，不能误判。"""
+        home_dest = os.path.join(self.d, '.claude')
+        os.makedirs(home_dest, exist_ok=True)
+        env = dict(self.env, HOME=self.d, CLAUDE_CONFIG_DIR=home_dest)
+        self.assertEqual(self.run_sh('--with-subagent', env=env).returncode, 0)
+        s = {'statusLine': {'type': 'command',
+                            'command': 'bash "$HOME/.claude/statusline-command.sh"'},
+             'subagentStatusLine': {'type': 'command',
+                                    'command': 'bash "~/.claude/subagent-statusline.sh"'}}
+        r = self.run_sh('--check', settings=s, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_with_conf_does_not_freeze_default_steps(self):
         r = self.run_sh('--with-conf')

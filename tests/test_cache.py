@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from _util import SCRIPT, tok_line
@@ -71,6 +72,34 @@ class DefaultDir(CacheBase):
         self.assertEqual(stat.S_IMODE(st.st_mode), 0o700)
         self.assertEqual(st.st_uid, os.getuid())
 
+    def test_legacy_tmp_files_are_migrated(self):
+        """旧版写在共享 /tmp 的本会话文件要迁入私有目录（唯一名字，跑完清理）。"""
+        sid = f'ccpills-mig-{os.getpid()}-{time.time_ns()}'
+        names = (f'claude-sl-tok-{sid}.cache', f'claude-sl-skip-{sid}',
+                 f'claude-statusline-{sid}.json')
+        paths = [os.path.join('/tmp', n) for n in names]
+
+        def cleanup():
+            for p in paths:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        self.addCleanup(cleanup)
+        with open(paths[0], 'w') as f:
+            f.write(tok_line(**{'in': '30M'}, msgs='1'))
+        with open(paths[1], 'w') as f:
+            f.write('sig\t1\n')
+        with open(paths[2], 'w') as f:
+            f.write('{"v":9}')
+        r = subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
+                           env=self.env, capture_output=True)
+        self.assertEqual(r.returncode, 0)
+        p = self.private()
+        for n in names:
+            self.assertTrue(os.path.isfile(os.path.join(p, n)), f'{n} 未迁移')
+            self.assertFalse(os.path.exists(os.path.join('/tmp', n)), f'/tmp/{n} 仍在')
+
 
 class Modes(CacheBase):
     def test_cache_files_are_owner_only(self):
@@ -95,6 +124,19 @@ class ContentSafety(CacheBase):
         out = self.render('inj', {'CLAUDE_SL_TMP': slt})
         self.assertNotIn('\x1b]52;', out, '缓存内容里的 OSC 序列进入了状态栏')
         self.assertIn('↑30M', out, '合法内容不应被整段丢弃')
+
+    def test_cache_owned_by_other_user_is_ignored(self):
+        """用 root 拥有的 /etc/passwd 做符号链接目标，验证 -O 跨用户拒读。"""
+        if not os.path.exists('/etc/passwd'):
+            self.skipTest('/etc/passwd 不存在')
+        if os.stat('/etc/passwd').st_uid == os.getuid():
+            self.skipTest('以 root 运行，无法构造跨用户场景')
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        os.symlink('/etc/passwd', os.path.join(slt, 'claude-sl-tok-own.cache'))
+        out = self.render('own', {'CLAUDE_SL_TMP': slt})
+        self.assertIn('ctx 42%', out)
+        self.assertNotIn('↑', out, '别人拥有的同名缓存被当成 token 缓存读取了')
 
     def test_theme_cache_rejects_non_numeric_values(self):
         slt = os.path.join(self.d, 'slt')

@@ -223,9 +223,9 @@ class Relay(Base):
         db = self.make_db(now)
         c = sqlite3.connect(db)
         c.execute("insert into proxy_request_logs values('h1', 'headless-sid', '_session', 'claude', 'session_log', "
-                  "200, ?, 10, 1, 0, 0, '2.5')", (now - 120,))
+                  "200, ?, 10, 1, 0, 0, '2.5')", (now,))
         c.execute("insert into proxy_request_logs values('c1', 'codex-sid', 'codex-provider', 'codex', 'codex_session', "
-                  "200, ?, 10, 1, 0, 0, '9')", (now - 120,))
+                  "200, ?, 10, 1, 0, 0, '9')", (now,))
         c.commit()
         c.close()
         tp = self.write('i.jsonl', [line('m1', 1, 1, 'end_turn')])
@@ -285,12 +285,13 @@ class DailyLimit(Base):
                   (1 if 'A' in current else 0, a_col, a_meta))
         c.execute("insert into providers values('B','claude',?,?,?)",
                   (1 if 'B' in current else 0, b_col, b_meta))
+        # 用 now 而不是 now-1h：刚过本地零点时，减一小时会落到昨天，测试会误判「今日」
         c.execute("insert into proxy_request_logs values('a1','other','A','claude','proxy',200,?,0,0,0,0,'30')",
-                  (now - 3600,))
+                  (now,))
         c.execute("insert into proxy_request_logs values('b1','sess','B','claude','proxy',200,?,0,0,0,0,'5')",
-                  (now - 1800,))
+                  (now,))
         c.execute("insert into proxy_request_logs values('s1','direct','_session','claude','session_log',200,?,0,0,0,0,'7')",
-                  (now - 900,))
+                  (now,))
         if rollup:
             c.execute('create table usage_daily_rollups(date text, app_type text, provider_id text, '
                       'total_cost_usd text)')
@@ -336,6 +337,24 @@ class DailyLimit(Base):
         out2 = self.fields(self.run_tok(tp, 'l5', f'relay={db2}').stdout)
         self.assertEqual(out2[IDX['rlimit']], '-', 'meta 明确写了非法值时不回落到旧列')
         self.assertEqual(out2[IDX['dlv']], '-')
+        for i, bad in enumerate(('not json', '[]', 'null')):
+            db3 = self.provider_db(now, b_meta=bad, b_col='50')
+            out3 = self.fields(self.run_tok(tp, f'l5b{i}', f'relay={db3}').stdout)
+            self.assertEqual(out3[IDX['rlimit']], '-', f'meta={bad!r} 时不应回落旧列')
+
+    def test_limit_hidden_on_rollup_schema_drift(self):
+        """汇总表存在但列漂移 = 未知，不能当 0（否则限额分子偏小、预测错误）。"""
+        now = int(time.time())
+        db = self.provider_db(now)
+        c = sqlite3.connect(db)
+        c.execute('create table usage_daily_rollups(date text, provider_id text)')  # 缺 total_cost_usd
+        c.commit()
+        c.close()
+        tp = self.write('lim7.jsonl', [])
+        out = self.fields(self.run_tok(tp, 'l8', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rlimit']], '-')
+        self.assertEqual(out[IDX['dlv']], '-')
+        self.assertEqual(out[IDX['rtoday']], '42.0000')
 
     def test_limit_includes_rollup_excludes_tail(self):
         """日限额分子含 usage_daily_rollups；不含尚未入账的尾部（尾部将记为 _session）。"""
@@ -375,7 +394,8 @@ class DailyLimit(Base):
         r = self.t.relay_ledger(db, 'nobody', {'unl': {}}, now, midnight)
         self.assertAlmostEqual(r['today_global'], 42.0, places=6)
         self.assertAlmostEqual(r['today_cur'], 5.0, places=6)
-        self.assertAlmostEqual(r['today_unattr'], 37.0, places=6)
+        self.assertAlmostEqual(r['today_global'] - r['today_cur'], 37.0, places=6,
+                               msg='不可归属 = 全局 - 当前供应商（其它供应商 + _session + 尾部）')
 
 
 # FIELDS 里各段在 bash 侧对应的变量名（顺序由 FIELDS 决定，见下一个用例）

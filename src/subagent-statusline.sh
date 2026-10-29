@@ -54,7 +54,7 @@ umask 077                                    # 状态文件只给本人读写
 STATE="${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-${UID:-0}.json}"
 
 # 残锁判定：lock 目录的 mtime（BSD / GNU stat 顺序同主脚本，不能反）
-if [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
+if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
   mtime() { /usr/bin/stat -f %m "$1" 2>/dev/null; }
 else
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
