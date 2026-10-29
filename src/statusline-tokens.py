@@ -69,7 +69,7 @@
 
 工程约束（修改时必须保留）：
   1. 本脚本跑在后台刷新进程里，不阻塞渲染，但仍可能被 abort 波及杀死——按 MAX_CHUNK 分片
-     解析、每片之后原子落盘（tmp + os.replace，临时文件名带 pid，断点在状态文件），被杀
+     解析、每片之后原子落盘（mkstemp + os.replace，0600，断点在状态文件），被杀
      只丢一片进度、绝不污染状态；单次调用在 TIME_BUDGET 内连读多片，预算跨文件共用
      （进入下一个文件前也检查）。
   2. 追平全部文件尾之前不输出：宁缺勿假，不显示爬升中的半截数字。
@@ -93,6 +93,7 @@ import math
 import os
 import sqlite3
 import sys
+import tempfile
 import time
 import zlib
 
@@ -114,7 +115,9 @@ SP_WINDOW = {'daily': (86400, 1800, True), 'weekly': (604800, 86400, False),
 # 预计用完倒计时短于此值即判 bad（「很快用完」）
 URGENT = {'q5': 1800, 'q7': 21600, 'day': 3600, 'sp': 3600}
 EXHAUSTED = '用尽'            # 已用 ≥ 100% 时的「用完倒计时」段
-TMP = os.environ.get('CLAUDE_SL_TMP') or '/tmp'
+# 与 bash 侧同源：显式 CLAUDE_SL_TMP，否则每用户私有目录（不再默认写共享 /tmp）
+TMP = os.environ.get('CLAUDE_SL_TMP') or os.path.join(
+    os.environ.get('TMPDIR') or '/tmp', f'claude-sl-{os.getuid()}')
 RESET_DROP = 0.5              # 追踪值回落超过一半才视为重置；小幅回落（重启后费用重算）只更新基准
 
 EMPTY = {'v': STATE_V, 'files': {}, 'in': 0, 'out': 0, 'cw': 0, 'cr': 0,
@@ -241,13 +244,24 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
 
 
 def save(state_path, st):
+    """原子写；mkstemp 保证临时文件 0600 且不会跟随预置的符号链接。"""
+    tmp = None
     try:
-        tmp = f'{state_path}.{os.getpid()}.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
+        d = os.path.dirname(state_path) or '.'
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(state_path) + '.', text=True)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(st, f)
         os.replace(tmp, state_path)
+        tmp = None
     except Exception:
         pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # ── CC Switch 查价（移植自 usage_stats.rs find_model_pricing_row）──────────

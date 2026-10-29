@@ -49,6 +49,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import tempfile
 
 MIN_PILL_DE = 12     # 胶囊底与 profile 背景、主题标准背景的最小 CIE76 ΔE
 # 各主题官方表面色（胶囊底）
@@ -392,10 +393,21 @@ def main():
 
 
 def write(out, lines):
-    tmp = f'{out}.{os.getpid()}'
-    with open(tmp, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp, out)
+    """原子写；mkstemp 保证临时文件 0600 且不会跟随预置的符号链接。"""
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(out) or '.',
+                                   prefix='.' + os.path.basename(out) + '.', text=True)
+        with os.fdopen(fd, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.replace(tmp, out)
+        tmp = None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 if __name__ == '__main__':

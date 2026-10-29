@@ -7,6 +7,6 @@
 #   UPDATE_GOLDEN=1 bash run_tests.sh   重新生成渲染金样（有意改动渲染结果时）
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/tests" || exit 1
-mods=(test_render test_tokens test_theme)
+mods=(test_render test_tokens test_theme test_cache)
 if [ $# -gt 0 ]; then mods=(); for m in "$@"; do mods+=("test_$m"); done; fi
 python3 -m unittest "${mods[@]}"

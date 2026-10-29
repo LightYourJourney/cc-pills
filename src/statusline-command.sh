@@ -18,13 +18,14 @@
 #   stdin → 1 次 jq 提取全部字段 → 读缓存（配色 / git / token / 中转站 / claude 状态）
 #   → 按降级序列缩短 / 丢弃、放得下后按逆序回填 → 组装输出 → 脱钩后台刷新进程 → 退出。
 # 后台刷新（--refresh 模式，本脚本自调用；同会话同一时刻只跑一个，见约束 9）：
-#   （下列 /tmp 均指 $SLT = ${CLAUDE_SL_TMP:-/tmp}；预览与测试设它隔离全部缓存）
-#     /tmp/claude-sl-theme-<终端键>.cache  （statusline-theme.py 产出的完整色板，首行
+#   （下列文件都在 $SLT：默认 ${TMPDIR:-/tmp}/claude-sl-<uid>（0700，只读本人）；
+#     预览 / 测试用 CLAUDE_SL_TMP 指定隔离目录。旧版写在 /tmp 的本会话文件在首次刷新时迁入）
+#     $SLT/claude-sl-theme-<终端键>.cache  （statusline-theme.py 产出的完整色板，首行
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
-#     /tmp/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
+#     $SLT/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
 #                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
-#     /tmp/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档）
-#     /tmp/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
+#     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档）
+#     $SLT/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
 #   并发刷新幂等（同输入同输出 + mv 原子替换）；被 abort 杀掉的刷新进程由下一周期重试补上。
 #   输入（transcript 大小 / 费用 / 额度）都没变且距上次不足 TOK_MIN_GAP 秒时跳过 python。
 #
@@ -144,6 +145,10 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ 
   exit 0
 fi
 
+# 缓存 / 锁 / 状态文件按不可信磁盘数据对待：只给本人读写（0600 / 0700）。
+# 后台临时文件另用 mktemp（O_EXCL），防止共享 /tmp 里的符号链接预置。
+umask 077
+
 # ── 可调参数 ────────────────────────────────────────────────────────────
 THEME=auto               # auto | tokyonight | dracula | catppuccin | onedark | nord
 GLYPHS=nerd              # nerd | ascii（终端字体没有 Nerd Font 时用 ascii）
@@ -164,7 +169,14 @@ THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
-SLT=${CLAUDE_SL_TMP:-/tmp}   # 全部缓存 / 锁 / 状态文件的目录（预览工具设 CLAUDE_SL_TMP 隔离）
+# 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
+# 否则用每用户私有目录 $TMPDIR/claude-sl-<uid>（0700），不再落到共享 /tmp。
+if [ -n "${CLAUDE_SL_TMP:-}" ]; then
+  SLT=$CLAUDE_SL_TMP; SLT_OK=1
+else
+  SLT=${TMPDIR:-/tmp}/claude-sl-${UID:-0}; SLT_OK=0
+  [ -d "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+fi
 GIT_TTL=5                # git 缓存刷新间隔（秒）；.git/HEAD 或 index 变了立即刷新
 CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 
@@ -243,6 +255,8 @@ else
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi
+# 缓存读取前确认：可读且属于当前用户。跨用户预置的同名文件一律不读（-O 是内建，不 fork）。
+cache_ok() { [ -r "$1" ] && [ -O "$1" ]; }
 
 # 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
@@ -301,6 +315,24 @@ if [ "${1:-}" = "--refresh" ]; then
   dir=${2:-}; tp=${3:-}; sid=${4:-}; mode=${5:-sub}; costraw=${6:--}; q5arg=${7:--}; q7arg=${8:--}; sparg=${9:--}
   now=${EPOCHSECONDS:-$(date +%s)}
   skey=${sid//\//_}; skey=${skey// /_}
+  # 私有缓存目录：默认位置不存在则创建（0700）；已存在但不是我们的就整轮放弃写缓存。
+  # 显式 CLAUDE_SL_TMP 也要求目录存在且属于本人（预览 / 测试会自己建好）。
+  if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT_OK" != 1 ]; then
+    mkdir -m 700 "$SLT" 2>/dev/null
+    [ -d "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+  fi
+  [ "$SLT_OK" = 1 ] && [ -d "$SLT" ] && [ -O "$SLT" ] || exit 0
+  [ -z "${CLAUDE_SL_TMP:-}" ] && chmod 700 "$SLT" 2>/dev/null
+  # 旧版本把缓存写在共享 /tmp：把本会话的 token / 跳过标记 / 状态迁到私有目录，
+  # 避免整段重扫。只搬自己的普通文件（非符号链接），目标已存在则不覆盖。
+  if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT" != "/tmp" ] && [ -d /tmp ]; then
+    sbase=${sid##*/}
+    for f in "claude-sl-tok-${skey}.cache" "claude-sl-skip-${skey}" "claude-statusline-${sbase}.json"; do
+      src="/tmp/$f"; dst="$SLT/$f"
+      [ ! -e "$dst" ] && [ -f "$src" ] && [ ! -L "$src" ] && [ -O "$src" ] &&
+        mv -f "$src" "$dst" 2>/dev/null && chmod 600 "$dst" 2>/dev/null
+    done
+  fi
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
   if ! mkdir "$lock" 2>/dev/null; then
@@ -311,18 +343,22 @@ if [ "${1:-}" = "--refresh" ]; then
   trap 'rmdir "$lock" 2>/dev/null' EXIT
 
   # 色板：缺失 / THEME、PILL_CHROMA 或 PILL_STYLE 改过 / 超过 THEME_TTL 时重算
-  tline=""; [ -r "$THEME_CACHE" ] && read -r tline < "$THEME_CACHE"
+  tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
   tm=$(mtime "$THEME_CACHE"); tage=$(( now - ${tm:-0} ))
   # 首行带格式版本 v$PALETTE_V：旧版脚本生成的缓存首行不符，立即重算而不等 THEME_TTL
   want="THEME=${THEME}/${PILL_CHROMA}/${PILL_STYLE}/v${PALETTE_V}"
-  failf="${THEME_CACHE}.fail"; ft=0; [ -r "$failf" ] && read -r ft < "$failf"
+  failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; esac
   if { [ "$tline" != "$want" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
      && ! { [ "$tline" != "$want" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
     python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
-    tline=""; [ -r "$THEME_CACHE" ] && read -r tline < "$THEME_CACHE"
+    tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
     if [ "$tline" = "$want" ]; then rm -f "$failf" 2>/dev/null
-    else printf '%s\n' "$now" > "$failf" 2>/dev/null; fi   # 失败退避：THEME_TTL 内不再每轮重跑
+    else  # 失败退避：THEME_TTL 内不再每轮重跑
+      tmp=$(mktemp "${SLT}/.claude-sl-theme-fail.XXXXXX" 2>/dev/null) &&
+        printf '%s\n' "$now" > "$tmp" 2>/dev/null && mv -f "$tmp" "$failf" 2>/dev/null ||
+        rm -f "$tmp" 2>/dev/null
+    fi
   fi
 
   [ -n "$dir" ] && cd "$dir" 2>/dev/null
@@ -331,7 +367,7 @@ if [ "${1:-}" = "--refresh" ]; then
   # git status 约 34 ms，每 2 秒一次是后台刷新里最贵的一项）。worktree 的 .git 是文件，只按 TTL。
   # 缓存第 4 段是写入时刻（免 stat fork 取 mtime）；HEAD / index 新旧用内建 -nt 比较。
   gc="${SLT}/claude-sl-git-${key}.cache"; need=1
-  if [ -r "$gc" ]; then
+  if cache_ok "$gc"; then
     groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
     case "$gts" in ''|*[!0-9]*) gts=0 ;; esac
     if [ $((now - gts)) -lt "$GIT_TTL" ]; then
@@ -340,8 +376,10 @@ if [ "${1:-}" = "--refresh" ]; then
     fi
   fi
   if [ "$need" = 1 ]; then
-    tmp="${SLT}/.claude-sl-git-${key}.$$"
-    { git_data; printf '\t%s' "$now"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$gc" 2>/dev/null
+    tmp=$(mktemp "${SLT}/.claude-sl-git-${key}.XXXXXX" 2>/dev/null)
+    if [ -n "$tmp" ]; then
+      { git_data; printf '\t%s' "$now"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$gc" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    fi
   fi
 
   relayarg="-"
@@ -352,7 +390,7 @@ if [ "${1:-}" = "--refresh" ]; then
     sig="$(fsize "$tp")|${costraw}|${q5arg}|${q7arg}|${sparg}|${relayarg}"
     skipf="${SLT}/claude-sl-skip-${skey}"
     lsig=""; lts=0
-    [ -r "$skipf" ] && IFS=$'\t' read -r lsig lts < "$skipf"
+    cache_ok "$skipf" && IFS=$'\t' read -r lsig lts < "$skipf"
     case "$lts" in ''|*[!0-9]*) lts=0 ;; esac
     if [ "$sig" != "$lsig" ] || [ $((now - lts)) -ge "$TOK_MIN_GAP" ]; then
       args=("th=${WARN_AT},${BAD_AT}")
@@ -363,23 +401,31 @@ if [ "${1:-}" = "--refresh" ]; then
       [ "$relayarg" != "-" ] && args+=("relay=${relayarg}")
       tok=$(CLAUDE_SL_TMP=$SLT python3 "${HERE}/statusline-tokens.py" "$tp" "$sid" "${args[@]}" 2>/dev/null)
       if [ -n "$tok" ]; then                    # 约束 10
-        tmp2="${SLT}/.claude-sl-tok-${skey}.$$"
-        printf '%s\n' "$tok" > "$tmp2" 2>/dev/null && mv -f "$tmp2" "${SLT}/claude-sl-tok-${skey}.cache" 2>/dev/null
-        printf '%s\t%s\n' "$sig" "$now" > "$skipf.$$" 2>/dev/null && mv -f "$skipf.$$" "$skipf" 2>/dev/null
+        tmp2=$(mktemp "${SLT}/.claude-sl-tok-${skey}.XXXXXX" 2>/dev/null)
+        if [ -n "$tmp2" ] && printf '%s\n' "$tok" > "$tmp2" 2>/dev/null \
+           && mv -f "$tmp2" "${SLT}/claude-sl-tok-${skey}.cache" 2>/dev/null; then
+          stmp=$(mktemp "${SLT}/.claude-sl-skip-${skey}.XXXXXX" 2>/dev/null)
+          [ -n "$stmp" ] && printf '%s\t%s\n' "$sig" "$now" > "$stmp" 2>/dev/null \
+            && mv -f "$stmp" "$skipf" 2>/dev/null || rm -f "$stmp" 2>/dev/null
+        else
+          rm -f "$tmp2" 2>/dev/null
+        fi
       fi
     fi
   fi
 
   # claude 状态页：先写尝试时刻再拉取（多会话并发时最多重复一次，幂等）
   try=${SLT}/claude-sl-status.try
-  last=0; [ -r "$try" ] && read -r last < "$try"
+  last=0; cache_ok "$try" && read -r last < "$try"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   if [ "$STATUS_PAGE" = on ] && [ $((now - last)) -ge "$STATUS_TTL" ]; then
-    printf '%s\n' "$now" > "$try.$$" 2>/dev/null && mv -f "$try.$$" "$try" 2>/dev/null
+    ttmp=$(mktemp "${SLT}/.claude-sl-status-try.XXXXXX" 2>/dev/null)
+    [ -n "$ttmp" ] && printf '%s\n' "$now" > "$ttmp" 2>/dev/null && mv -f "$ttmp" "$try" 2>/dev/null || rm -f "$ttmp" 2>/dev/null
     ind=$(curl -s -m 4 "$STATUS_URL" 2>/dev/null | jq -r '.status.indicator // empty' 2>/dev/null)
     if [ -n "$ind" ]; then
-      printf '%s\t%s\n' "$now" "$ind" > "${SLT}/.claude-sl-status.$$" 2>/dev/null &&
-        mv -f "${SLT}/.claude-sl-status.$$" "${SLT}/claude-sl-status.cache" 2>/dev/null
+      stmp=$(mktemp "${SLT}/.claude-sl-status.XXXXXX" 2>/dev/null)
+      [ -n "$stmp" ] && printf '%s\t%s\n' "$now" "$ind" > "$stmp" 2>/dev/null &&
+        mv -f "$stmp" "${SLT}/claude-sl-status.cache" 2>/dev/null || rm -f "$stmp" 2>/dev/null
     fi
   fi
   exit 0
@@ -467,11 +513,12 @@ fi
 
 # ── 色板缓存（约束 11）→ SGR 片段：truecolor "2;R;G;B"，否则 256 色 "5;N" ──
 NC=1; cache_theme=""
-if [ -r "$THEME_CACHE" ]; then
+if [ "$SLT_OK" = 1 ] && cache_ok "$THEME_CACHE"; then
   while IFS='=' read -r k v; do
     case "$k" in
       THEME)   cache_theme=$v ;;                    # 不可直接赋给 THEME：会覆盖脚本设定
-      P_*|T_*|L_*|W_*) printf -v "$k" '%s' "$v" ;;      # W_ = 字重 SGR，不经 sgr 换算
+      P_*|T_*|L_*|W_*)                              # W_ = 字重 SGR，不经 sgr 换算
+        case "$v" in ''|*[!0-9\;]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # 只认 R;G;B / 字重
     esac
   done < "$THEME_CACHE"
   # 只改了 pill_chroma / pill_style 时先沿用旧色板（后台按首行不符重算），免得闪一次无色
@@ -515,13 +562,14 @@ dir=$PWD                                 # cd -P 后 PWD 即物理路径（约�
 # ── git 段：优先读缓存，缺失时同步回退（首次/换目录后的那一轮）──────────
 pathkey "$dir"; key=$PK
 gitcache="${SLT}/claude-sl-git-${key}.cache"
-if [ -r "$gitcache" ]; then
+if [ "$SLT_OK" = 1 ] && cache_ok "$gitcache"; then
   IFS=$'\t' read -r repo_root branch gstatus _ < "$gitcache"     # 第 4 段为写入时刻
 else
   IFS=$'\t' read -r repo_root branch gstatus <<< "$(git_data)"
 fi
 [ "$repo_root" = "-" ] && repo_root=""
 branch=${branch//[[:cntrl:]]/}; model=${model//[[:cntrl:]]/}; eff=${eff//[[:cntrl:]]/}   # 约束 16
+gstatus=${gstatus//[[:cntrl:]]/}
 [ "$branch" = "-" ] && branch=""
 [ "$gstatus" = "-" ] && gstatus=""
 
@@ -529,19 +577,20 @@ branch=${branch//[[:cntrl:]]/}; model=${model//[[:cntrl:]]/}; eff=${eff//[[:cntr
 skey=${sid//\//_}; skey=${skey// /_}
 t_in="" t_out="" p_rate="" comp="" q5lv="" q5out="" q7lv="" q7out="" dlv="" dout=""
 r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout="" msgs=""
-if [ -n "$sid" ] && [ -r "${SLT}/claude-sl-tok-${skey}.cache" ]; then
+if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "${SLT}/claude-sl-tok-${skey}.cache"; then
   IFS=$'\t' read -r t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout \
     r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "${SLT}/claude-sl-tok-${skey}.cache"
 fi
 for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout msgs; do
   [ "${!v}" = "-" ] && printf -v "$v" ''
+  printf -v "$v" '%s' "${!v//[[:cntrl:]]/}"       # 约束 16：缓存内容同样不可信
 done
 [ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
 case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 
 # ── claude 状态缓存（过期即隐藏）─────────────────────────────────────────
 st_ind=""
-if [ "$STATUS_PAGE" = on ] && [ -r "${SLT}/claude-sl-status.cache" ]; then
+if [ "$STATUS_PAGE" = on ] && [ "$SLT_OK" = 1 ] && cache_ok "${SLT}/claude-sl-status.cache"; then
   IFS=$'\t' read -r st_ts st_ind < "${SLT}/claude-sl-status.cache"
   case "$st_ts" in ''|*[!0-9]*) st_ind="" ;; *) [ $((now - st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
 fi

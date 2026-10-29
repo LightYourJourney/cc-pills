@@ -11,9 +11,15 @@
 - **08-19 方案 C**：同步路径只读缓存 + 后台刷新算慢的（git / transcript / 配色 / 状态页）。
   当时的目标是 <20 ms；10-28 实测中位约 18–22 ms（视降级步数）。
 - 同步路径只允许一次 jq；宽度计算与组装全在 bash 内建完成（约束 17）。
-- **状态文件带版本**：`/tmp/claude-statusline-<sid>.json` 只认文件自身的 `v`；与 `STATE_V`
+- **状态文件带版本**：`$SLT/claude-statusline-<sid>.json` 只认文件自身的 `v`；与 `STATE_V`
   不符即整体重扫（分片、后台），旧结构不会被当成新结构读。v9 把每文件消息数键改为
   `last_id` / `msgs`。
+- **缓存目录私有化**（10-29）：默认 `${TMPDIR:-/tmp}/claude-sl-<uid>`（0700），文件 0600；
+  读取前用 bash 内建 `-O` 校验所有者，跨用户预置的同名文件一律不读；临时文件用 `mktemp`
+  （O_EXCL），Python 侧用 `mkstemp`。旧版 `/tmp` 的本会话 token / 状态 / 跳过标记在首次
+  刷新时迁入私有目录。缓存内容按不可信数据处理：token 字段剔除控制字符，色板值只接受
+  数字与分号，git 状态也剔除控制字符。显式 `CLAUDE_SL_TMP`（预览 / 测试）由调用方负责
+  隔离；旧 `/tmp` 里的历史文件不自动删除（过渡期残留，由系统清理或用户手工删）。
 - **18 段 token 缓存的字段顺序以 `statusline-tokens.py` 的 `FIELDS` 为准**：生产者按字段名
   填、按 `FIELDS` 输出；bash 的 `IFS=tab read`、测试与 `tools/preview.sh` 的假数据由
   `tests/test_tokens.py` 的契约测试守护。改顺序只动 `FIELDS` 与 `BASH_NAMES`。
@@ -127,7 +133,7 @@
 | 2 | 面板共享状态无锁，并发读改写丢失更新 | P2 | 待修复 |
 | 3 | token 缓存无年龄校验，后台持续失败时旧值无限期展示 | P2 | 待修复 |
 | 4 | 日限额用全局今日 ÷ 当前供应商限额，口径不可比 | P1 | 本阶段修复 |
-| 5 | `/tmp` 缓存 0644、无所有者校验、缓存字段可注入转义 | P2（共享主机 P1） | 待修复 |
+| 5 | `/tmp` 缓存 0644、无所有者校验、缓存字段可注入转义 | P2（共享主机 P1） | 本阶段修复 |
 | 6 | `--with-conf` 把默认降级序列固化进用户配置 | P2 | 待修复 |
 | 7 | install/check/uninstall 只处理 `statusLine`，漏 `subagentStatusLine` | P2 | 待修复 |
 | 8 | 面板脚本 / install / 陈旧 / 供应商维度 / 权限均无测试 | P2 | 待修复 |
