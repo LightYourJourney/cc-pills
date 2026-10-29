@@ -184,15 +184,15 @@ class Relay(Base):
     def make_db(self, now):
         db = os.path.join(self.d, 'cc.db')
         c = sqlite3.connect(db)
-        c.execute('create table proxy_request_logs(request_id text, session_id text, app_type text, '
-                  'data_source text, status_code int, created_at int, input_tokens int, output_tokens int, '
-                  'cache_read_tokens int, cache_creation_tokens int, total_cost_usd text)')
+        c.execute('create table proxy_request_logs(request_id text, session_id text, provider_id text, '
+                  'app_type text, data_source text, status_code int, created_at int, input_tokens int, '
+                  'output_tokens int, cache_read_tokens int, cache_creation_tokens int, total_cost_usd text)')
         c.execute('create table model_pricing(model_id text, input_cost_per_million real, output_cost_per_million real, '
                   'cache_read_cost_per_million real, cache_creation_cost_per_million real)')
         c.execute("insert into model_pricing values('claude-opus-5-5', 5, 25, 0.5, 6.25)")
-        c.execute('create table providers(app_type text, is_current int, limit_daily_usd text)')
-        c.execute("insert into proxy_request_logs values('session:old', 'r1', 'claude', 'session_log', 200, ?, 1, 1, 0, 0, '30')",
-                  (now - 86400 * 5,))
+        c.execute('create table providers(id text, app_type text, is_current int, limit_daily_usd text, meta text)')
+        c.execute("insert into proxy_request_logs values('session:old', 'r1', '_session', 'claude', 'session_log', "
+                  "200, ?, 1, 1, 0, 0, '30')", (now - 86400 * 5,))
         c.commit()
         c.close()
         return db
@@ -222,10 +222,10 @@ class Relay(Base):
         now = int(time.time())
         db = self.make_db(now)
         c = sqlite3.connect(db)
-        c.execute("insert into proxy_request_logs values('h1', 'headless-sid', 'claude', 'session_log', 200, ?, 10, 1, 0, 0, '2.5')",
-                  (now - 120,))
-        c.execute("insert into proxy_request_logs values('c1', 'codex-sid', 'codex', 'codex_session', 200, ?, 10, 1, 0, 0, '9')",
-                  (now - 120,))
+        c.execute("insert into proxy_request_logs values('h1', 'headless-sid', '_session', 'claude', 'session_log', "
+                  "200, ?, 10, 1, 0, 0, '2.5')", (now - 120,))
+        c.execute("insert into proxy_request_logs values('c1', 'codex-sid', 'codex-provider', 'codex', 'codex_session', "
+                  "200, ?, 10, 1, 0, 0, '9')", (now - 120,))
         c.commit()
         c.close()
         tp = self.write('i.jsonl', [line('m1', 1, 1, 'end_turn')])
@@ -238,9 +238,9 @@ class Relay(Base):
         now = int(time.time())
         db = self.make_db(now)
         c = sqlite3.connect(db)
-        c.execute("insert into proxy_request_logs values('p1', 'r2', 'claude', NULL, 200, ?, 2000, 200, 0, 0, '0.5')",
+        c.execute("insert into proxy_request_logs values('p1', 'r2', 'B', 'claude', NULL, 200, ?, 2000, 200, 0, 0, '0.5')",
                   (now - 60,))
-        c.execute("insert into proxy_request_logs values('p2', 'cx', 'codex', 'proxy', 200, ?, 3000, 300, 0, 0, '9')",
+        c.execute("insert into proxy_request_logs values('p2', 'cx', 'codex-provider', 'codex', 'proxy', 200, ?, 3000, 300, 0, 0, '9')",
                   (now - 60,))
         c.commit()
         c.close()
@@ -255,6 +255,127 @@ class Relay(Base):
         self.assertIn('claude-opus-5-5', c('anthropic/claude-opus-5-5-20261001[1m]'))
         self.assertIn('claude-sonnet-5-5', c('Claude-Sonnet-5-5@20261001'))
         self.assertEqual(c('unknown'), [])
+
+
+class DailyLimit(Base):
+    """日限额口径：与 CC Switch check_provider_limits 一致——只算当前供应商可归属的行。
+
+    上游 v4.0.21：限额在 providers.meta.limitDailyUsd（旧库只有 limit_daily_usd 列）；
+    今日 = proxy_request_logs + usage_daily_rollups 中 provider_id=当前供应商 的行。
+    provider_id='_session' 是会话日志的哨兵，无法归属供应商，上游也不把它算进限额。
+    全局今日（无日限额时显示）仍是全部 Claude 行 + 本会话尾部。
+    """
+
+    def provider_db(self, now, current=('B',), a_meta=None, b_meta='{"limitDailyUsd":"50"}',
+                    a_col='', b_col='', rollup=0.0):
+        fd, db = tempfile.mkstemp(dir=self.d, prefix='lim-', suffix='.db')
+        os.close(fd)
+        c = sqlite3.connect(db)
+        c.execute('create table proxy_request_logs(request_id text primary key, session_id text, '
+                  'provider_id text, app_type text, data_source text, status_code int, created_at int, '
+                  'input_tokens int, output_tokens int, cache_read_tokens int, cache_creation_tokens int, '
+                  'total_cost_usd text)')
+        c.execute('create table model_pricing(model_id text, input_cost_per_million real, '
+                  'output_cost_per_million real, cache_read_cost_per_million real, '
+                  'cache_creation_cost_per_million real)')
+        c.execute("insert into model_pricing values('claude-opus-5-5', 5, 25, 0.5, 6.25)")
+        c.execute('create table providers(id text, app_type text, is_current int, '
+                  'limit_daily_usd text, meta text)')
+        c.execute("insert into providers values('A','claude',?,?,?)",
+                  (1 if 'A' in current else 0, a_col, a_meta))
+        c.execute("insert into providers values('B','claude',?,?,?)",
+                  (1 if 'B' in current else 0, b_col, b_meta))
+        c.execute("insert into proxy_request_logs values('a1','other','A','claude','proxy',200,?,0,0,0,0,'30')",
+                  (now - 3600,))
+        c.execute("insert into proxy_request_logs values('b1','sess','B','claude','proxy',200,?,0,0,0,0,'5')",
+                  (now - 1800,))
+        c.execute("insert into proxy_request_logs values('s1','direct','_session','claude','session_log',200,?,0,0,0,0,'7')",
+                  (now - 900,))
+        if rollup:
+            c.execute('create table usage_daily_rollups(date text, app_type text, provider_id text, '
+                      'total_cost_usd text)')
+            c.execute("insert into usage_daily_rollups values(?, 'claude', 'B', ?)",
+                      (time.strftime('%Y-%m-%d', time.localtime(now)), str(rollup)))
+        c.commit()
+        c.close()
+        return db
+
+    def test_limit_uses_current_provider_only(self):
+        """当前供应商 B 今日 $5；全局今日 $42（A $30 + B $5 + _session $7）。"""
+        now = int(time.time())
+        db = self.provider_db(now)
+        tp = self.write('lim1.jsonl', [])
+        out = self.fields(self.run_tok(tp, 'l1', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rtoday']], '5.0000', '日限额分子只能是当前供应商可归属费用')
+        self.assertEqual(out[IDX['rlimit']], '50.0000')
+        # 无日限额时 today 项回到全局口径（DECISIONS「今日花费」）
+        db2 = self.provider_db(now, b_meta='{}')
+        tp2 = self.write('lim2.jsonl', [])
+        out2 = self.fields(self.run_tok(tp2, 'l2', f'relay={db2}').stdout)
+        self.assertEqual(out2[IDX['rtoday']], '42.0000')
+        self.assertEqual(out2[IDX['rlimit']], '-')
+
+    def test_limit_meta_wins_over_legacy_column(self):
+        now = int(time.time())
+        db = self.provider_db(now, b_meta='{"limitDailyUsd":"50"}', b_col='60')
+        tp = self.write('lim3.jsonl', [])
+        out = self.fields(self.run_tok(tp, 'l3', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rlimit']], '50.0000')
+
+    def test_limit_hidden_when_unknown(self):
+        """多个 current / 限额值损坏：不猜、不显示、不外推。未知不能当 0。"""
+        now = int(time.time())
+        db = self.provider_db(now, current=('A', 'B'), b_meta='{}', a_col='20', b_col='50')
+        tp = self.write('lim4.jsonl', [])
+        out = self.fields(self.run_tok(tp, 'l4', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rlimit']], '-')
+        self.assertEqual(out[IDX['dlv']], '-')
+        self.assertEqual(out[IDX['dout']], '-')
+        self.assertEqual(out[IDX['rtoday']], '42.0000')
+        db2 = self.provider_db(now, b_meta='{"limitDailyUsd":"abc"}', b_col='50')
+        out2 = self.fields(self.run_tok(tp, 'l5', f'relay={db2}').stdout)
+        self.assertEqual(out2[IDX['rlimit']], '-', 'meta 明确写了非法值时不回落到旧列')
+        self.assertEqual(out2[IDX['dlv']], '-')
+
+    def test_limit_includes_rollup_excludes_tail(self):
+        """日限额分子含 usage_daily_rollups；不含尚未入账的尾部（尾部将记为 _session）。"""
+        now = int(time.time())
+        db = self.provider_db(now, rollup=2.0)
+        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+        tp = self.write('lim5.jsonl', [line('mt', 1000, 100, 'end_turn', ts=ts)])
+        out = self.fields(self.run_tok(tp, 'l6', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rtoday']], '7.0000', 'B 的 $5 + rollup $2；尾部不计入限额分子')
+        self.assertAlmostEqual(float(out[IDX['rcost']]), (1000 * 5 + 100 * 25) / 1e6, places=6)
+
+    def test_day_tracker_resets_on_provider_switch(self):
+        now = int(time.time())
+        db = self.provider_db(now, a_meta='{"limitDailyUsd":"20"}',
+                              b_meta='{"limitDailyUsd":"50"}')
+        tp = self.write('lim6.jsonl', [])
+        out1 = self.fields(self.run_tok(tp, 'l7', f'relay={db}').stdout)
+        self.assertEqual((out1[IDX['rtoday']], out1[IDX['rlimit']]), ('5.0000', '50.0000'))
+        ep1 = self.state('l7')['trk']['day']['ep']
+        self.assertTrue(str(ep1).endswith(':B'))
+        c = sqlite3.connect(db)
+        c.execute("update providers set is_current = (id = 'A')")
+        c.commit()
+        c.close()
+        out2 = self.fields(self.run_tok(tp, 'l7', f'relay={db}').stdout)
+        self.assertEqual((out2[IDX['rtoday']], out2[IDX['rlimit']]), ('30.0000', '20.0000'))
+        ep2 = self.state('l7')['trk']['day']['ep']
+        self.assertTrue(str(ep2).endswith(':A'))
+        self.assertNotEqual(ep1, ep2, '切换供应商必须重置日速率追踪，不能把两家的速率混在一起')
+
+    def test_ledger_distinguishes_global_cur_unattr(self):
+        """返回值必须同时保留三个口径，供展示层选择；unattr 不能悄悄并进 cur。"""
+        now = int(time.time())
+        db = self.provider_db(now)
+        lt = time.localtime(now)
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        r = self.t.relay_ledger(db, 'nobody', {'unl': {}}, now, midnight)
+        self.assertAlmostEqual(r['today_global'], 42.0, places=6)
+        self.assertAlmostEqual(r['today_cur'], 5.0, places=6)
+        self.assertAlmostEqual(r['today_unattr'], 37.0, places=6)
 
 
 # FIELDS 里各段在 bash 侧对应的变量名（顺序由 FIELDS 决定，见下一个用例）

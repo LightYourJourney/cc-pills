@@ -54,8 +54,10 @@
 #   - 中转站：CC Switch 账本 + 尚未入账的尾部（实时），由 statusline-tokens.py 计算。
 #     账本两源（代理行 / 会话日志行）互补、已由 CC Switch 去重；尾部按 CC Switch 的价格表
 #     与计价规则自算。有未计价消息（模型不在价格表）时显示「$x+」下限。另显示今日
-#     中转站花费（无标签，紧跟在会话费用之后）；CC Switch 给当前供应商设了
-#     limit_daily_usd 时显示「$x/$限额」。
+#     中转站花费（无标签，紧跟在会话费用之后）；CC Switch 给当前供应商设了日限额
+#     （providers.meta.limitDailyUsd，旧库回落 limit_daily_usd 列）时显示「$x/$限额」。
+#     限额的分子只算当前供应商可归属的今日费用（provider_id=它 的 proxy 行 + 当日
+#     rollup），不含 '_session' 的会话日志与未入账尾部；供应商无法唯一确定时整项隐藏。
 #   - 拿不到 CC Switch 数据（未装 / 读库失败）：回落「$x*」（Claude Code 标价估算）。
 #   - 网关花费限额（rate_limits.spend_limit）：显示「今日 / 本周 / 本月 $已用/$限额」
 #     （无美元时显示百分比），按节奏告警；存在时优先于 CC Switch 的日限额。

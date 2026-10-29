@@ -30,8 +30,15 @@
      会话日志路径倍率 1），故显示值实时，且在 CC Switch 下一轮同步后与其用量页一致。
      CC Switch 只保留约 30 天：早于库内最早记录的消息不计入尾部、直接移出未入账集合，
      与用量页同口径（否则老会话一旦重建状态，会把已被清掉的消息当未入账重新自算）。
-     今日 = 本地零点以来全部 Claude 行的账本（app_type 过滤，含无头会话）+ 本会话尾部；
-     Codex 等其它 app_type 不计。
+     今日分三个口径（2026-10-29 与 CC Switch 4.0.21 check_provider_limits 对齐）：
+       global = 本地零点以来全部 Claude 明细（含无头会话）+ 本会话尾部；Codex 不计。
+                没有日限额时，today 项显示它。
+       cur    = 当前供应商可归属 = provider_id=当前供应商 的 proxy 明细 + 当日 rollup。
+                有日限额时，日限额项与「out」用它做分子（上游同口径）。
+       unattr = global - cur = 其它供应商 + provider_id='_session' 的会话日志 + 尾部。
+     '_session' 是 CC Switch 给会话日志的哨兵（session_usage.rs），无法可靠归属供应商；
+     上游的日限额检查同样不把它算进任何供应商。没有 / 多个 is_current 或限额值无效时
+     隐藏日限额项与预测——未知不能当 0。供应商切换时 day 追踪器按 provider_id 重置。
      $/h 的追踪器按来源（账本 / stdin）分 epoch；中转站模式下没追平或读库失败时不再改喂
      stdin 费用——两种口径共用一个追踪器，切换一次即虚报几百美元每小时。
   5. 额度节奏（5h / 7d / 中转站日限额 / 网关花费限额）：速率取「窗口均速 = 已用 ÷ 窗口已过
@@ -42,7 +49,8 @@
        warn = proj ≥ 100%（按节奏会在重置前用完，仅提醒）：只有 out 黄
      两种速率都不可得时只按已用 ≥ th[1] 判 high。已用 ≥ 100%（用尽）一律判 bad、
      用完倒计时写「用尽」。
-     中转站日限额与网关日限额的窗口均速 = 今日已用 ÷ 自零点（或窗口起点）以来时长。
+     中转站日限额的窗口均速 = 当前供应商可归属今日 ÷ 自零点以来时长；网关日限额仍用
+     网关上报的百分比。日限额的速率不并本会话 $/h（可能来自其它供应商 / '_session'）。
      例外：7d 只用窗口均速，且窗口过满 1 天才外推——周窗口有昼夜节律，开窗头几小时按
      24h 连续外推一整周会系统性高估（实测：开窗 6.9h 用 30% 即被判「16 小时后用完」）。
 
@@ -323,8 +331,71 @@ def msg_cost(p, e):
     return (inp * p[0] + out * p[1] + cr * p[2] + ((cw - cw1) + cw1 * 1.6) * p[3]) / 1e6
 
 
+def _limit_usd(v):
+    """限额字符串 → 正数；空 / 非数字 / 0 与负数视为未设置（不猜）。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
+
+
+def current_provider(conn):
+    """→ (provider_id, 日限额 USD 或 None)。
+
+    与 CC Switch 4.x 的 check_provider_limits 同源：限额写在 providers.meta 的
+    limitDailyUsd（旧库只有 limit_daily_usd 列）。没有或不止一个 is_current 时返回
+    (None, None)——供应商归属不可靠，额度项必须隐藏，不能拿未知当 0。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT id, limit_daily_usd, meta FROM providers "
+            "WHERE app_type = 'claude' AND is_current = 1").fetchall()
+    except sqlite3.OperationalError:            # 旧库没有 meta 列
+        try:
+            rows = conn.execute(
+                "SELECT id, limit_daily_usd, NULL FROM providers "
+                "WHERE app_type = 'claude' AND is_current = 1").fetchall()
+        except sqlite3.OperationalError:
+            return None, None
+    if len(rows) != 1:
+        return None, None
+    pid, col, meta = rows[0]
+    lim, has_meta = None, False
+    if meta:
+        try:
+            m = json.loads(meta)
+        except Exception:
+            m = None
+        if isinstance(m, dict) and 'limitDailyUsd' in m:
+            has_meta = True                     # 明确写了就以它为准，坏了也不回落到旧列
+            lim = _limit_usd(m.get('limitDailyUsd'))
+    if not has_meta:
+        lim = _limit_usd(col)
+    return pid, lim
+
+
+def provider_today(conn, pid, midnight, day):
+    """当前供应商今日可归属费用 = 明细行 + 当日 rollup（与上游 check_provider_limits 同口径）。
+    明细按 provider_id 精确过滤；provider_id='_session' 的会话日志不可归属，天然不在内。"""
+    detail = conn.execute(
+        "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM proxy_request_logs "
+        "WHERE provider_id = ? AND app_type = 'claude' AND created_at >= ?",
+        (pid, int(midnight))).fetchone()[0]
+    roll = 0.0
+    try:
+        roll = conn.execute(
+            "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM usage_daily_rollups "
+            "WHERE provider_id = ? AND app_type = 'claude' AND date = ?",
+            (pid, day)).fetchone()[0]
+    except sqlite3.OperationalError:            # 旧库没有汇总表：今日不会被汇总，按 0 处理
+        roll = 0.0
+    return float(detail) + float(roll)
+
+
 def relay_ledger(db, sid, st, now, midnight):
-    """→ (会话花费, 未计价消息数, 今日, 日限额或 None)；同时把已入账消息移出 st['unl']。"""
+    """→ dict（会话花费 / 未计价数 / 全局今日 / 当前供应商今日 / 日限额 / 供应商 id），
+    同时把已入账消息移出 st['unl']。"""
     conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=1)   # 约束 7
     try:
         unl = st['unl']
@@ -368,19 +439,29 @@ def relay_ledger(db, sid, st, now, midnight):
             c = msg_cost(p, e)
             tail += c
             tail_today += c if e[6] >= midnight else 0
-        # 今日 = 本机零点以来全部 Claude 行（含会话日志与代理两源）。按 app_type 过滤而不是
-        # 「渲染过状态栏的会话」：claude -p 等无头会话从不渲染，靠会话列表会把它们的花费
-        # 永久漏掉（2026-10-28 实测漏了一个 $0.28 的会话）。
-        today = conn.execute(
+        # 今日费用分三个口径（见文档 4）：
+        #   global = 全部 Claude 明细 + 本会话尾部（无日限额时显示）
+        #   cur    = 当前供应商可归属（proxy 明细 + 当日 rollup；日限额的分子）
+        #   unattr = global - cur（其它供应商、'_session' 会话日志、尚未入账的尾部）
+        day = time.strftime('%Y-%m-%d', time.localtime(now))   # 本地日期，与 rollup.date 同口径
+        try:
+            pid, lim = current_provider(conn)
+            cur = provider_today(conn, pid, midnight, day) if (pid and lim is not None) else None
+        except sqlite3.OperationalError:           # 无法可靠归属：隐藏限额，不拿未知当 0
+            pid, lim, cur = None, None, None
+        today_all = conn.execute(
             "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM proxy_request_logs "
             "WHERE created_at >= ? AND app_type = 'claude'", (int(midnight),)).fetchone()[0]
-        lim = conn.execute("SELECT limit_daily_usd FROM providers WHERE app_type = 'claude' "
-                           'AND is_current = 1 LIMIT 1').fetchone()
-        try:
-            lim = float(lim[0]) if lim and lim[0] not in (None, '') else None
-        except ValueError:
-            lim = None
-        return cost + tail, int(unpriced), today + tail_today, lim
+        today_global = today_all + tail_today
+        return {
+            'cost': cost + tail,
+            'unpriced': int(unpriced),
+            'today_global': today_global,
+            'today_cur': cur,
+            'today_unattr': today_global - (cur or 0.0),
+            'limit': lim,
+            'provider_id': pid,
+        }
     finally:
         conn.close()
 
@@ -522,9 +603,11 @@ def main():
         except Exception:
             relay = None
     if relay:
-        track(st, 'cost', relay[0], now, epoch='ledger')   # 中转站：$/h 跟账本走（见文档 4）
-        if relay[3]:
-            track(st, 'day', relay[2], now, epoch=midnight)
+        track(st, 'cost', relay['cost'], now, epoch='ledger')   # 中转站：$/h 跟账本走（见文档 4）
+        if relay['limit'] is not None and relay['today_cur'] is not None:
+            # 供应商切换 = 新窗口：epoch 带上 provider_id，避免把两家的速率混在一起
+            track(st, 'day', relay['today_cur'], now,
+                  epoch=f"{int(midnight)}:{relay['provider_id']}")
     elif cost is not None and not db:          # 中转站模式下不改喂 stdin 费用（口径不同）
         track(st, 'cost', cost, now, epoch='stdin')
     spv = kv.get('sp', '').split(',')
@@ -562,17 +645,21 @@ def main():
         rates = [x for x in (used / el if el >= minel and used > 0 else None,
                              rate(st, k, now) if recent else None) if x is not None]
         d[k + 'lv'], d[k + 'out'] = pace(used, 100, left, rates, th, URGENT[k])
-    if relay and relay[3]:
-        el = now - midnight                    # 窗口均速 = 今日已用 ÷ 自零点以来时长（文档 5）
-        rates = [x for x in (relay[2] / el if el >= 1800 and relay[2] > 0 else None,
-                             rate(st, 'day', now), r) if x is not None]
-        d['dlv'], d['dout'] = pace(relay[2], relay[3], midnight + 86400 - now, rates, th,
-                                   URGENT['day'])
+    if relay and relay['limit'] is not None and relay['today_cur'] is not None:
+        used, cap = relay['today_cur'], relay['limit']
+        el = now - midnight                    # 窗口均速 = 供应商今日已用 ÷ 自零点以来时长（文档 5）
+        # 不并本会话 $/h：它可能来自其它供应商或 '_session'，与当前供应商限额不是同一总体
+        rates = [x for x in (used / el if el >= 1800 and used > 0 else None,
+                             rate(st, 'day', now)) if x is not None]
+        d['dlv'], d['dout'] = pace(used, cap, midnight + 86400 - now, rates, th, URGENT['day'])
     else:
         d['dlv'] = d['dout'] = '-'
     if relay:
-        d['rcost'], d['runpriced'] = f'{relay[0]:.4f}', str(relay[1])
-        d['rtoday'], d['rlimit'] = f'{relay[2]:.4f}', f'{relay[3]:.4f}' if relay[3] else '-'
+        d['rcost'], d['runpriced'] = f"{relay['cost']:.4f}", str(relay['unpriced'])
+        cur_ok = relay['limit'] is not None and relay['today_cur'] is not None
+        shown = relay['today_cur'] if cur_ok else relay['today_global']
+        d['rtoday'] = f'{shown:.4f}'
+        d['rlimit'] = f"{relay['limit']:.4f}" if relay['limit'] is not None else '-'
     else:
         d['rcost'] = d['runpriced'] = d['rtoday'] = d['rlimit'] = '-'
     tin = st['in'] + st['cw'] + st['cr']

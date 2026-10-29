@@ -62,6 +62,15 @@
 - **「今日花费」按 `app_type = 'claude'` 直查数据库**，不再依赖「渲染过状态栏的会话」列表：
   `claude -p` 等无头会话从不渲染，靠列表会把它们的花费永久漏掉（实测漏了一个 $0.28
   的会话）。Codex 等其它 app_type 不计入，需要看合计时去 CC Switch 用量页。
+- **中转站日限额按「当前供应商可归属」口径**（10-29，上游核实）：CC Switch v4.0.21 的
+  `check_provider_limits`（`src-tauri/src/services/usage_stats.rs`）把今日用量算成
+  `proxy_request_logs` + `usage_daily_rollups` 中 `provider_id = 当前供应商` 的和；限额读
+  `providers.meta.limitDailyUsd`（旧库的 `limit_daily_usd` 列已不被上游读取）。
+  `provider_id = '_session'` 是会话日志的哨兵（`session_usage.rs`），上游也不把它归给任何
+  供应商。故日限额的分子只算当前供应商可归属的今日；全局「今日」仍按 app_type 汇总。
+  没有 / 多个 `is_current`、限额值非法或为 0 时隐藏日限额项与预测——未知不能当 0；供应商
+  切换时 day 追踪器按（本地零点, provider_id）重置。上游此版本没有额度强制与 UI 消费
+  （`useProviderLimits` 只有定义），所以它是只读提示，不是硬预算。
 - **已用 ≥ 100% 判最高级并显示「用尽」**，不再显示可能为负的「还剩」。
 
 ## 速率与缩略（10-28 第二轮）
@@ -106,3 +115,22 @@
   `resets_at`、`used_usd` / `limit_usd`（可选）、`period`（daily / weekly / monthly）。
 - `SAFE_MARGIN = 4`：截图反推——`COLUMNS=146` 时 141 列内容 + 「…」被截断，故可用宽度为
   `COLUMNS − 4`；歧义宽度字符按 1 列计与截断点吻合。
+
+## 2026-10-29 独立只读审查
+
+基线 `244ca00`，`bash run_tests.sh` 45 tests OK。8 项发现、无 P0；逐项证据与最小复现已
+落到对应测试。**后续修改这 8 项行为前先读这里，不要重新做同范围审计。**
+
+| # | 发现 | 等级 | 状态 |
+|---|---|---|---|
+| 1 | 主栏 ctx = 已用，面板 ctx = 剩余，同名标签易误读 | P2 | 待修复 |
+| 2 | 面板共享状态无锁，并发读改写丢失更新 | P2 | 待修复 |
+| 3 | token 缓存无年龄校验，后台持续失败时旧值无限期展示 | P2 | 待修复 |
+| 4 | 日限额用全局今日 ÷ 当前供应商限额，口径不可比 | P1 | 本阶段修复 |
+| 5 | `/tmp` 缓存 0644、无所有者校验、缓存字段可注入转义 | P2（共享主机 P1） | 待修复 |
+| 6 | `--with-conf` 把默认降级序列固化进用户配置 | P2 | 待修复 |
+| 7 | install/check/uninstall 只处理 `statusLine`，漏 `subagentStatusLine` | P2 | 待修复 |
+| 8 | 面板脚本 / install / 陈旧 / 供应商维度 / 权限均无测试 | P2 | 待修复 |
+
+复核时用 `bash run_tests.sh`；单项 `bash run_tests.sh tokens` 等。审查期间的复现脚本留在
+`/tmp/ccpills-audit/`（仓库外），未纳入版本库。
