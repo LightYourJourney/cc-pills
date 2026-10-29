@@ -5,6 +5,7 @@
 #   bash install.sh --with-subagent  同时安装 subagent 状态行
 #   bash install.sh --with-conf      示例配置不存在时写入 ~/.config/claude-statusline.conf
 #   bash install.sh --check          核对线上副本与 settings 两个键（不改任何文件）
+#   bash install.sh --doctor [参数]  运行诊断（别名：tools/doctor.sh，纯只读，见其文件头）
 #   bash install.sh --uninstall      删除已安装的副本（线上有改动时拒绝，需 --force），
 #                                    并提示仍指向已删除脚本的 settings 键
 #
@@ -17,6 +18,13 @@ DEST=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf
 FILES=(statusline-command.sh statusline-tokens.py statusline-theme.py)
 WITH_SUB=0; WITH_CONF=0; MODE=install; FORCE=0
+# --doctor 只是别名：诊断实现在 tools/doctor.sh（只读，与安装无关），这里不重复逻辑
+if [ "${1:-}" = --doctor ]; then
+  shift
+  [ -f "$REPO/tools/doctor.sh" ] || {
+    echo "找不到 tools/doctor.sh：诊断脚本在仓库里，不随安装副本分发" >&2; exit 1; }
+  exec bash "$REPO/tools/doctor.sh" "$@"
+fi
 for a in "$@"; do
   case $a in
     --with-subagent) WITH_SUB=1 ;;

@@ -75,15 +75,24 @@ class Golden(unittest.TestCase):
 class WidthProperty(unittest.TestCase):
     """超出预算（COLUMNS − 4）只允许发生在所有项都已降到底时（永不丢弃项本身放不下）。"""
 
+    # 倒计时按真实时钟算，两次渲染之间跨过分钟边界就会改文本（8m → 7m）。
+    # 只归一化「数字 + 时长单位」，百分比、token 量、美元都不受影响。
+    COUNTDOWN = re.compile(r'\d+[dhms]')
+
+    @classmethod
+    def stable(cls, s):
+        return cls.COUNTDOWN.sub('#', strip(s))
+
     def test_never_overflow_while_degradable(self):
         with Sandbox() as sb:
             for name, d, env in each_scenario(sb):
                 for c in range(30, 221, 5):
                     o = sb.render(d, c, env=env)
                     if width(o) > c - SAFE:
-                        # 现场渲染最小形态：只缩小倒计时跨分钟造成的误判窗口（两次渲染仍可能跨秒）
+                        # 现场渲染最小形态（C=12 必然全部降级），只比较倒计时以外的内容
                         minimal = sb.render(d, 12, env=env)
-                        self.assertEqual(o, minimal, f'{name} C={c}：宽 {width(o)} 超预算 {c - SAFE}，但还能降级')
+                        self.assertEqual(self.stable(o), self.stable(minimal),
+                                         f'{name} C={c}：宽 {width(o)} 超预算 {c - SAFE}，但还能降级')
 
     def test_backfill_leaves_little_slack(self):
         """回填：有降级时剩余空间应小于任何一项可恢复内容（实测各场景 ≤ 7 列；无回填的旧版 100 列时余 16 列）。

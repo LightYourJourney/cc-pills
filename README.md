@@ -88,6 +88,35 @@ bash tools/preview.sh tint tokyo-glass
 Preview runs against `src/` in an isolated cache directory with fake data; it never touches a
 live session's caches.
 
+## Troubleshooting
+
+When an item disappears, the line loses its colours, or nothing renders at all, run the
+diagnostic first. It is strictly read-only: it writes no config, cache or database, makes no
+network requests, never dumps the environment, and scrubs `sk-…` / `*_API_KEY=…` / `Bearer …`
+out of the `settings.json` command before printing it.
+
+```bash
+bash tools/doctor.sh                                      # alias: bash install.sh --doctor
+bash tools/doctor.sh --transcript ~/.claude/projects/<project>/<session>.jsonl
+```
+
+One line per check — `[PASS] group/item  detail` — with PASS / WARN / FAIL / SKIP / UNKNOWN
+(UNKNOWN = undecidable without runtime stdin, SKIP = not applicable), a summary line, and a
+`修:` (fix) line whenever something needs doing. Exit code 0 = no FAIL, 1 = some FAIL, 2 = bad
+arguments.
+
+| Symptom | Look at |
+|---|---|
+| Empty line | `环境/jq`, `环境/bash`, `数据/stdin` (runs the installed script once on a fixture, in a temp dir) |
+| Text but no pill colours | `缓存/色板`, `缓存/退避`, `环境/终端` |
+| No `$/h`, `hit`, `io`, `msgs`, `out` | `缓存/token` (older than `TOK_STALE` drops derived items) |
+| No branch / directory | `环境/git`, `缓存/git` |
+| Relay shows `$x*` | `数据/CCSwitch库` (opened read-only; never modified) |
+| Config change has no effect | `安装/配置文件` (unknown keys and bad values are ignored silently) |
+| Panel has no custom lines | `安装/subagentStatusLine` |
+
+The render path never calls the diagnostic, so refreshes do not get slower.
+
 ## Layout
 
 ```
@@ -96,6 +125,7 @@ src/statusline-tokens.py      transcript aggregation, rates, quota pacing, relay
 src/statusline-theme.py       palette generation and contrast validation
 src/subagent-statusline.sh    the agent panel's per-subagent lines
 tools/preview.sh              side-by-side style preview
+tools/doctor.sh               read-only diagnostics (install / cache / data sources)
 tests/                        unit + golden + property + contrast-matrix tests
 install.sh  run_tests.sh
 ```
@@ -104,7 +134,7 @@ install.sh  run_tests.sh
 
 ```bash
 bash run_tests.sh              # ~1.5–5 min depending on load, fully isolated (no live caches, no network)
-bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install
+bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
 UPDATE_GOLDEN=1 bash run_tests.sh   # after an intentional rendering change
 ```
 

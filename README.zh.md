@@ -81,6 +81,33 @@ bash tools/preview.sh tint tokyo-glass
 
 预览在独立的缓存目录里对 `src/` 跑假数据，不碰线上会话的任何缓存。
 
+## 故障排查
+
+状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它是纯只读的：不写配置 / 缓存 /
+数据库，不联网，不打印环境变量全集，`settings.json` 里的命令行也会先抹掉
+`sk-…` / `*_API_KEY=…` / `Bearer …` 再显示。
+
+```bash
+bash tools/doctor.sh                                      # 或 bash install.sh --doctor
+bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   # 连某个会话一起查
+```
+
+每行一个结论：`[PASS] 分组/项  说明`，状态为 PASS / WARN / FAIL / SKIP / UNKNOWN
+（UNKNOWN = 取决于运行时 stdin，命令行里无法判定；SKIP = 不适用），末行汇总。
+退出码：0 无 FAIL，1 有 FAIL，2 参数错误。需要处理时下方会给出可直接照做的「修：」。
+
+| 症状 | 先看哪一项 |
+|---|---|
+| 整行为空 | `环境/jq`、`环境/bash`、`数据/stdin`（会在临时目录里用夹具真跑一次） |
+| 只有文字、没有胶囊底色 | `缓存/色板`、`缓存/退避`、`环境/终端` |
+| 少了 `$/h`、`hit`、`io`、`msgs`、`out` | `缓存/token`（超过 `TOK_STALE` 会丢弃派生项） |
+| 少了分支 / 目录 | `环境/git`、`缓存/git` |
+| 中转站显示 `$x*` | `数据/CCSwitch库`（只读打开，不改库） |
+| 改了配置没生效 | `安装/配置文件`（认不出的键与非法值会被静默忽略） |
+| 面板没有自定义行 | `安装/subagentStatusLine` |
+
+诊断不会在正常渲染路径上被调用：状态栏的每次刷新都不会因此变慢。
+
 ## 目录
 
 ```
@@ -89,6 +116,7 @@ src/statusline-tokens.py      transcript 聚合、速率、额度节奏、中转
 src/statusline-theme.py       色板生成与对比度验收
 src/subagent-statusline.sh    agent 面板里每个 subagent 的状态行
 tools/preview.sh              并排预览
+tools/doctor.sh               只读诊断（安装 / 缓存 / 数据来源）
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
 install.sh  run_tests.sh
 ```
@@ -97,7 +125,7 @@ install.sh  run_tests.sh
 
 ```bash
 bash run_tests.sh              # 约 1.5–5 分钟（随负载），全隔离（不读线上缓存、不联网）
-bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install
+bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
 UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
 ```
 
