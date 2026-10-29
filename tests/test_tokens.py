@@ -406,7 +406,7 @@ class TokenProtocol(unittest.TestCase):
         """bash 侧的 IFS=tab read 必须按 FIELDS 的顺序取变量，字段重排时这里先红。"""
         with open(os.path.join(SRC, 'statusline-command.sh')) as f:
             src = f.read()
-        m = re.search(r"IFS=\$'\\t' read -r (t_in .*?) < \"\$\{SLT\}/claude-sl-tok-", src, re.S)
+        m = re.search(r"IFS=\$'\\t' read -r (t_in .*?) < \"\$tokf\"", src, re.S)
         self.assertIsNotNone(m, '没找到 bash 侧的 token 缓存 read 列表')
         got = re.sub(r'\\\s*\n', ' ', m.group(1)).split()
         self.assertEqual(got, [BASH_NAMES[f] for f in FIELDS], 'bash read 的字段顺序必须与 FIELDS 一致')

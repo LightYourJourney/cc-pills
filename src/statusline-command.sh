@@ -24,7 +24,9 @@
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     $SLT/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
 #                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
-#     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档）
+#     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档；
+#                                           旁的 .cache.ts 是写入时刻，超过 TOK_STALE 秒
+#                                           同步路径丢弃派生项，只保留 stdin 的额度百分比）
 #     $SLT/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
 #   并发刷新幂等（同输入同输出 + mv 原子替换）；被 abort 杀掉的刷新进程由下一周期重试补上。
 #   输入（transcript 大小 / 费用 / 额度）都没变且距上次不足 TOK_MIN_GAP 秒时跳过 python。
@@ -167,6 +169,7 @@ STATUS_STALE=600         # 状态缓存超过此秒数未更新 → 整项隐藏
 STATUS_URL=https://status.claude.com/api/v2/status.json
 THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 系统深浅色切换
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
+TOK_STALE=900            # token 缓存超过此秒数判陈旧：派生项隐藏（宁缺勿假）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
@@ -327,7 +330,8 @@ if [ "${1:-}" = "--refresh" ]; then
   # 避免整段重扫。只搬自己的普通文件（非符号链接），目标已存在则不覆盖。
   if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT" != "/tmp" ] && [ -d /tmp ]; then
     sbase=${sid##*/}
-    for f in "claude-sl-tok-${skey}.cache" "claude-sl-skip-${skey}" "claude-statusline-${sbase}.json"; do
+    for f in "claude-sl-tok-${skey}.cache" "claude-sl-tok-${skey}.cache.ts" \
+             "claude-sl-skip-${skey}" "claude-statusline-${sbase}.json"; do
       src="/tmp/$f"; dst="$SLT/$f"
       [ ! -e "$dst" ] && [ -f "$src" ] && [ ! -L "$src" ] && [ -O "$src" ] &&
         mv -f "$src" "$dst" 2>/dev/null && chmod 600 "$dst" 2>/dev/null
@@ -404,6 +408,11 @@ if [ "${1:-}" = "--refresh" ]; then
         tmp2=$(mktemp "${SLT}/.claude-sl-tok-${skey}.XXXXXX" 2>/dev/null)
         if [ -n "$tmp2" ] && printf '%s\n' "$tok" > "$tmp2" 2>/dev/null \
            && mv -f "$tmp2" "${SLT}/claude-sl-tok-${skey}.cache" 2>/dev/null; then
+          # 新鲜度时间戳：同步路径据此丢弃长期未更新的派生值（约束 10 只防抖，不防永久陈旧）
+          tsf="${SLT}/claude-sl-tok-${skey}.cache.ts"
+          tsmf=$(mktemp "${SLT}/.claude-sl-tokts-${skey}.XXXXXX" 2>/dev/null)
+          [ -n "$tsmf" ] && printf '%s\n' "$now" > "$tsmf" 2>/dev/null \
+            && mv -f "$tsmf" "$tsf" 2>/dev/null || rm -f "$tsmf" 2>/dev/null
           stmp=$(mktemp "${SLT}/.claude-sl-skip-${skey}.XXXXXX" 2>/dev/null)
           [ -n "$stmp" ] && printf '%s\t%s\n' "$sig" "$now" > "$stmp" 2>/dev/null \
             && mv -f "$stmp" "$skipf" 2>/dev/null || rm -f "$stmp" 2>/dev/null
@@ -577,14 +586,34 @@ gstatus=${gstatus//[[:cntrl:]]/}
 skey=${sid//\//_}; skey=${skey// /_}
 t_in="" t_out="" p_rate="" comp="" q5lv="" q5out="" q7lv="" q7out="" dlv="" dout=""
 r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout="" msgs=""
-if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "${SLT}/claude-sl-tok-${skey}.cache"; then
+tokf="${SLT}/claude-sl-tok-${skey}.cache"
+tok_ok=1
+# 新鲜度：生产者写 <cache>.ts。超过 TOK_STALE 秒不读派生值（$/h、out、等级、hit、io、
+# msgs、comp），只保留 stdin 的额度百分比；没有 .ts 的旧缓存 / 预览假缓存按新鲜处理。
+if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.ts" ]; }; then
+  if [ -f "${tokf}.ts" ] && [ ! -L "${tokf}.ts" ] && cache_ok "${tokf}.ts"; then
+    tok_ts=""; read -r tok_ts < "${tokf}.ts"
+    case "$tok_ts" in
+      ''|*[!0-9]*) tok_ok=0 ;;                    # 坏的 .ts：按陈旧处理，等刷新重写
+      *) [ $((now - tok_ts)) -gt "$TOK_STALE" ] && tok_ok=0 ;;
+    esac
+  else
+    tok_ok=0                                      # 有 .ts 但不是本人的普通文件：不读缓存
+  fi
+fi
+if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
   IFS=$'\t' read -r t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout \
-    r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "${SLT}/claude-sl-tok-${skey}.cache"
+    r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "$tokf"
 fi
 for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout msgs; do
   [ "${!v}" = "-" ] && printf -v "$v" ''
   printf -v "$v" '%s' "${!v//[[:cntrl:]]/}"       # 约束 16：缓存内容同样不可信
 done
+# 跨窗口一致性：当前 stdin 已用 <100% 时，缓存里的「用尽」不可能属于这个窗口，
+# 直接丢弃等级与 out。bad 但 out 是真实倒计时仍保留——那是「很快用完」的预测。
+[ -n "$q5" ] && [ "$q5" -lt 100 ] && [ "$q5out" = 用尽 ] && { q5out=""; q5lv=""; }
+[ -n "$q7" ] && [ "$q7" -lt 100 ] && [ "$q7out" = 用尽 ] && { q7out=""; q7lv=""; }
+[ -n "$sp" ] && [ "$sp" -lt 100 ] && [ "$spout" = 用尽 ] && { spout=""; splv=""; }
 [ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
 case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 
