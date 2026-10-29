@@ -34,9 +34,10 @@
 #   - 时长段仅在 startTime 为可信 epoch 毫秒（>1e12）且任务 running/pending
 #     时显示；速率段仅在有上次状态、间隔 ≥1s、增量非负且 ≥1 tok/s 时显示
 #
-# 状态文件：${CLAUDE_SUBAGENT_SL_STATE:-$TMPDIR/claude-subagent-sl-state.json}
-#   多会话共享：合并写入（不清别家条目），条目超 600s 剪枝，tmp+mv 原子替换，
-#   entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
+# 状态文件：${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-<uid>.json}
+#   多会话共享：读-改-写全程在同一把 mkdir 锁内，锁内重新读取后再合并（不会用旧快照
+#   覆盖别家条目）；抢锁超过 1s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
+#   原子替换，状态文件 0600；entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
 #
 # 工程约束（修改时必须保留）
 # --------------------------
@@ -49,13 +50,22 @@
 
 command -v jq >/dev/null 2>&1 || { while IFS= read -r _; do :; done; exit 0; }  # 纯 builtin 排空 stdin，不依赖 PATH
 
-STATE="${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-state.json}"
+umask 077                                    # 状态文件只给本人读写
+STATE="${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-${UID:-0}.json}"
+
+# 残锁判定：lock 目录的 mtime（BSD / GNU stat 顺序同主脚本，不能反）
+if [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
+  mtime() { /usr/bin/stat -f %m "$1" 2>/dev/null; }
+else
+  mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+fi
 
 input=$(cat 2>/dev/null)
 
 prev='{}'
-[ -r "$STATE" ] && prev=$(cat "$STATE" 2>/dev/null)
+[ -r "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")   # $(<file) 是内建读，不 fork
 printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'
+initprev=$prev                              # 锁内重读后与它比较：未变就省一次 jq
 
 # ── 渲染各行 ────────────────────────────────────────────────────────────
 printf '%s' "$input" | jq -c --argjson prev "$prev" '
@@ -129,22 +139,46 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
                 + $stTag) }
 ' 2>/dev/null
 
-# ── 状态写回（合并共享、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
-new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
-  now as $n
-  | ($prev | with_entries(select(
-      (.value | type == "object") and ((.value.t // 0) > ($n - 600))))) as $base
-  | reduce ((.tasks // [])[] | select(.id != null)
-            | select((.status // "running" | tostring) as $s
-                     | $s == "running" or $s == "" or $s == "pending")) as $t
-      ($base;
-       $t.id as $i
-       | if ((.[$i] | type) != "object") or (($n - .[$i].t) >= 2)
-         then .[$i] = {t: $n, k: ($t.tokenCount // 0)}
-         else . end)
-' 2>/dev/null)
-if [ -n "$new" ]; then
-  printf '%s' "$new" > "$STATE.tmp.$$" 2>/dev/null && mv -f "$STATE.tmp.$$" "$STATE" 2>/dev/null
+# ── 状态写回（共享合并、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
+# 读-改-写全程持锁，锁内重新读取状态：否则两个实例都用开始时的快照，后写者会覆盖
+# 先写者的条目。抢不到锁（>1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
+sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
+lock="$STATE.lock"; got=0; nowsec=""
+if [ -d "$sdir" ]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if mkdir "$lock" 2>/dev/null; then got=1; break; fi
+    [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
+    lt=$(mtime "$lock"); lt=${lt:-0}
+    if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
+      rmdir "$lock" 2>/dev/null; continue          # 残锁（被杀进程遗留）
+    fi
+    sleep 0.05
+  done
+fi
+if [ "$got" = 1 ]; then
+  trap 'rmdir "$lock" 2>/dev/null' EXIT
+  prev='{}'
+  [ -r "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
+  [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
+  new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
+    now as $n
+    | ($prev | with_entries(select(
+        (.value | type == "object") and ((.value.t // 0) > ($n - 600))))) as $base
+    | reduce ((.tasks // [])[] | select(.id != null)
+              | select((.status // "running" | tostring) as $s
+                       | $s == "running" or $s == "" or $s == "pending")) as $t
+        ($base;
+         $t.id as $i
+         | if ((.[$i] | type) != "object") or (($n - .[$i].t) >= 2)
+           then .[$i] = {t: $n, k: ($t.tokenCount // 0)}
+           else . end)
+  ' 2>/dev/null)
+  if [ -n "$new" ]; then
+    tmp=$(mktemp "$STATE.XXXXXX" 2>/dev/null)
+    [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  fi
+  rmdir "$lock" 2>/dev/null
 fi
 
 true
