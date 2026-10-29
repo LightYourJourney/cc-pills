@@ -82,6 +82,19 @@ class Install(unittest.TestCase):
         with open(os.path.join(self.dest, 'settings.json')) as f:
             self.assertEqual(f.read(), before, '卸载不应改写用户 settings')
 
+    def test_uninstall_warns_for_official_command_form(self):
+        """README 建议的 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/... 写法也要被识别。"""
+        self.run_sh('--with-subagent')
+        s = {'statusLine': {'type': 'command',
+                            'command': 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"'},
+             'subagentStatusLine': {'type': 'command',
+                                    'command': 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh"'}}
+        r = self.run_sh('--check', settings=s)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.run_sh('--uninstall')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('仍指向已删除', r.stderr)
+
     def test_with_conf_does_not_freeze_default_steps(self):
         r = self.run_sh('--with-conf')
         self.assertEqual(r.returncode, 0, r.stderr)

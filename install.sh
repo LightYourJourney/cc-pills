@@ -156,9 +156,8 @@ uninstall)
       c=$(settings_cmd "$DEST/settings.json" "$key")
       [ -n "$c" ] || continue
       for dst in "${removed[@]}"; do
-        case "$c" in
-          *"$dst"*) echo "⚠ settings.json 的 $key 仍指向已删除的 $dst；请改回或删除该键" >&2 ;;
-        esac
+        points_to "$c" "${dst##*/}" "$DEST"; st=$?
+        [ "$st" != 1 ] && echo "⚠ settings.json 的 $key 仍指向已删除的 $dst；请改回或删除该键" >&2
       done
     done
   fi
