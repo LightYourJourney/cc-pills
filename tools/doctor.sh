@@ -399,18 +399,32 @@ elif [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
   res WARN 缓存/色板 "色板缓存不是属于本人的普通文件，渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
 else
   line=""; read -r line < "$tc"
+  # 渲染侧本轮能不能上色（statusline-command.sh 的 NC=0）：缓存主题部分与当前 THEME 相同、
+  # 且缓存里有 P_CTX。chroma / 风格 / 格式版本不符只会触发后台重算，本轮照常上色。
+  have_ctx=0
+  while IFS='=' read -r k v; do
+    [ "$k" = P_CTX ] && [ -n "$v" ] && have_ctx=1
+  done < "$tc"
+  tval=${line#THEME=}
+  [ "$tval" != "$line" ] && [ "${tval%%/*}" = "$C_THEME" ] && [ "$have_ctx" = 1 ] && THEME_OK=1
   want="THEME=$C_THEME/$C_CHROMA/$C_STYLE/v$PALETTE_V"
   if [ "$line" != "$want" ]; then
-    res WARN 缓存/色板 "首行是「${line}」，与当前配置不符（期望 ${want}）；后台会重算" \
-      "等下一轮刷新；若一直不变，看 缓存/退避"
-  else
-    THEME_OK=1                     # 首行匹配即可上色：渲染侧读色板不看 mtime
+    if [ "$THEME_OK" = 1 ]; then
+      res WARN 缓存/色板 "首行是「${line}」，与当前配置不符（期望 ${want}）；仍按旧色板上色，后台会重算" \
+        "等下一轮刷新；若一直不变，看 缓存/退避"
+    else
+      res WARN 缓存/色板 "首行是「${line}」，与当前配置不符且不能上色（主题不同或缺 P_CTX）；后台会重算" \
+        "等下一轮刷新；若一直不变，看 缓存/退避"
+    fi
+  elif [ "$THEME_OK" = 1 ]; then
     age=$(( NOW - $(mtime "$tc") ))
     if [ "$age" -ge "$THEME_TTL" ]; then
       res PASS 缓存/色板 "${want}；上次重算 ${age}s 前（后台按需触发，没有活跃会话时不上涨是正常的）"
     else
       res PASS 缓存/色板 "${want}，${age}s 前写入"
     fi
+  else
+    res WARN 缓存/色板 "首行匹配但缓存里没有 P_CTX（文件损坏）：本轮无色，后台会重算" "等下一轮刷新"
   fi
 fi
 

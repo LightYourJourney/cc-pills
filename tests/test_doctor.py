@@ -365,6 +365,20 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'WARN')
         self.assertIn('自动', self.sb.detail(r, '缓存/锁'))
 
+    def test_backoff_does_not_claim_no_colour_when_theme_still_matches(self):
+        """渲染侧只要求缓存的主题部分与当前 THEME 相同、且有 P_CTX 就上色；chroma / 风格 /
+        版本不符只会触发后台重算。此时 .fail 存在也不能说「整行无色」。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('theme = dracula\n')
+        # 主题相同、格式版本旧：渲染侧照常上色
+        self.sb.make_cache(theme_line=f'THEME=dracula/12/tint/v{PALETTE_V}old')
+        with open(os.path.join(self.sb.cache, 'claude-sl-theme-term-other.cache.fail'), 'w') as f:
+            f.write(f'{int(time.time())}\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/退避'), 'WARN')
+        self.assertNotIn('整行无色', self.sb.detail(r, '缓存/退避'))
+
     def test_theme_backoff_file_is_reported(self):
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-theme-term-other.cache.fail'), 'w') as f:
