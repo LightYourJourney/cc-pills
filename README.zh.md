@@ -127,12 +127,13 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 缓存目录权限不是 0700 | WARN | `缓存/权限` |
 | 色板缓存缺失 / 首行与配置不符 / `P_CTX` 非法 | WARN | `缓存/色板` |
 | 色板生成失败（仍在退避） | WARN | `缓存/退避` |
-| token 缓存超过 15 分钟，或没有 `.ts` 时间戳 | WARN | `缓存/token` |
+| token 缓存超过 15 分钟（按 `.ts` 或文件 mtime 计） | WARN | `缓存/token` |
 | token 缓存字段数不是 18 | WARN | `缓存/token` |
 | 刷新锁路径被普通文件占住（后台刷新永久失败） | FAIL | `缓存/锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
 | 中转站模式但找不到 CC Switch 库 | WARN | `数据/CCSwitch库` |
-| CC Switch 供应商不唯一 / 日限额未设置 | WARN | `数据/CCSwitch库` |
+| CC Switch 供应商不唯一 / 日限额值非法 | WARN | `数据/CCSwitch库` |
+| 日限额未设置（当前供应商唯一） | SKIP | `数据/CCSwitch库` |
 | 订阅模式（不打开数据库） | SKIP | `数据/CCSwitch库` |
 | 已安装脚本坏掉 / 被换成占位脚本 | FAIL | `数据/stdin` |
 | 计费模式 | UNKNOWN | `数据/计费模式` |

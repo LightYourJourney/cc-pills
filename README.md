@@ -136,12 +136,13 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Cache directory not 0700 | WARN | `缓存/权限` |
 | Palette cache missing / header mismatch / invalid `P_CTX` | WARN | `缓存/色板` |
 | Palette generation failing (backing off) | WARN | `缓存/退避` |
-| Token cache older than 15 min, or no `.ts` | WARN | `缓存/token` |
+| Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
 | Token cache not 18 fields | WARN | `缓存/token` |
 | Lock path occupied by a plain file (refresh never runs) | FAIL | `缓存/锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |
-| CC Switch provider not unique / no daily limit | WARN | `数据/CCSwitch库` |
+| CC Switch provider not unique / invalid daily limit | WARN | `数据/CCSwitch库` |
+| Daily limit not set (single current provider) | SKIP | `数据/CCSwitch库` |
 | Subscription mode (database not opened) | SKIP | `数据/CCSwitch库` |
 | Installed script broken or replaced by a stub | FAIL | `数据/stdin` |
 | Billing mode | UNKNOWN | `数据/计费模式` |

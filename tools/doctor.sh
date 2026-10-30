@@ -436,9 +436,9 @@ else
 fi
 
 # token 缓存：只看新鲜度与归属，不读内容
-# 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件 → 判陈旧（tok_ok=0，派生项隐藏）。
-# 没有 .ts 的旧缓存渲染侧按「新鲜」处理（一直沿用），所以这里不能照抄 .ts 的结论：
-# 那种情况报的是「不会自动判陈旧」的风险，而不是「项已消失」。
+# 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件（含悬空符号链接）→ 判陈旧
+# （tok_ok=0，派生项隐藏）。没有 .ts 的旧缓存本轮按「新鲜」处理，但后台刷新会按缓存 mtime
+# 补写 .ts，下一轮就判陈旧并隐藏派生项（3a8679e）；这里报的是刷新前这段静默陈旧。
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0
 tok_old_ts=0; tok_no_ts_old=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
@@ -454,7 +454,7 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
       *) t=$tv; [ $(( NOW - tv )) -gt "$TOK_STALE" ] && tok_old_ts=$((tok_old_ts + 1)) ;;
     esac
-  elif [ -e "$ts" ]; then
+  elif [ -e "$ts" ] || [ -L "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
   else
     t=$(( $(mtime "$f") ))
@@ -474,14 +474,14 @@ else
     res WARN 缓存/token "有 $tok_malformed 个缓存不是 $TOK_FIELDS 段（被截断或旧格式）：对应派生项会错位或消失" \
       "删掉该会话的 token 缓存，后台会整段重算"
   elif [ "$tok_tsbad" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$\\h、out、hit、io、msgs 被隐藏" \
+    res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
   elif [ "$tok_old_ts" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_old_ts 个缓存超过 TOK_STALE=${TOK_STALE}：\$\\h、out、hit、io、msgs 会被隐藏" \
+    res WARN 缓存/token "有 $tok_old_ts 个缓存超过 TOK_STALE=${TOK_STALE}：\$/h、out、hit、io、msgs 会被隐藏" \
       "回到那个会话让它刷新；若持续不更新，看 数据/stdin 与 缓存/后台刷新"
   elif [ "$tok_no_ts_old" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：渲染侧会一直沿用（不会自动判陈旧）" \
-      "让该会话刷新一次即可补写 .ts；不需要手工删"
+    res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：本轮仍沿用旧值，后台刷新按 mtime 回填 .ts 后派生项会被隐藏" \
+      "让该会话刷新一次即可补写 .ts；持续出现就查后台 token 计算是否在更新缓存"
   else
     res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前"
   fi

@@ -311,8 +311,8 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS')
         self.assertIn('按需', self.sb.detail(r, '缓存/色板'))
 
-    def test_old_cache_without_ts_is_flagged_as_risk_not_hidden(self):
-        """没有 .ts 的旧缓存渲染侧按「新鲜」处理、不会隐藏；文案不能说成「已隐藏」。"""
+    def test_old_cache_without_ts_reports_round_then_refresh(self):
+        """无 .ts 的旧缓存本轮仍沿用，但刷新按 mtime 回填 .ts 后下一轮会隐藏派生项。"""
         self.sb.install()
         self.sb.make_cache(tok_age=0)
         tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
@@ -323,7 +323,8 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
         d = self.sb.detail(r, '缓存/token')
         self.assertIn('沿用', d)
-        self.assertNotIn('会被隐藏', d)
+        self.assertIn('回填', d)
+        self.assertIn('隐藏', d)
 
     def test_truncated_token_cache_is_flagged(self):
         """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
@@ -339,6 +340,16 @@ class Doctor(unittest.TestCase):
         env = self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache.ts'), 'w') as f:
             f.write('garbage\n')
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('时间戳', self.sb.detail(r, '缓存/token'))
+
+    def test_dangling_ts_symlink_is_reported_as_stale(self):
+        """渲染侧用 -e || -L 认 .ts：悬空链接也判陈旧；doctor 只看 -e 会漏报成 PASS。"""
+        env = self.sb.healthy()
+        ts = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache.ts')
+        os.unlink(ts)
+        os.symlink('/nonexistent-ccpills-target', ts)
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
         self.assertIn('时间戳', self.sb.detail(r, '缓存/token'))
