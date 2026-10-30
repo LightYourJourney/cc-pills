@@ -110,6 +110,35 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 
 诊断不会在正常渲染路径上被调用：状态栏的每次刷新都不会因此变慢。
 
+### 故障场景与诊断结果
+
+| 场景 | 期望状态 | 检查项 |
+|---|---|---|
+| 安装完整、配置合法 | 无 FAIL | 全部 |
+| 脚本没装 | FAIL | `安装/副本-statusline-command.sh` |
+| `statusLine` 没配 / 指向不存在 / 指向 `.bak` | FAIL | `安装/statusLine` |
+| `settings.json` 语法错误 | FAIL | `安装/settings.json` |
+| `jq` 缺失 | FAIL | `环境/jq` |
+| `python3` < 3.9 或缺失 | FAIL | `环境/python3` |
+| `bash` < 4.2 且没有 ≥5 的替代 | FAIL | `环境/bash` |
+| `bash` < 4.2 但有 ≥5 的替代（靠脚本换壳） | WARN | `环境/bash` |
+| 线上副本与仓库不一致 | WARN | `安装/副本-*` |
+| 配置里有不认识的键 / 非法值 / 写错的 `step` | WARN | `安装/配置文件` |
+| 缓存目录权限不是 0700 | WARN | `缓存/权限` |
+| 色板缓存缺失 / 首行与配置不符 / `P_CTX` 非法 | WARN | `缓存/色板` |
+| 色板生成失败（仍在退避） | WARN | `缓存/退避` |
+| token 缓存超过 15 分钟，或没有 `.ts` 时间戳 | WARN | `缓存/token` |
+| token 缓存字段数不是 18 | WARN | `缓存/token` |
+| 刷新锁路径被普通文件占住（后台刷新永久失败） | FAIL | `缓存/锁` |
+| 缓存目录不可写 | FAIL | `缓存/后台刷新` |
+| 中转站模式但找不到 CC Switch 库 | WARN | `数据/CCSwitch库` |
+| CC Switch 供应商不唯一 / 日限额未设置 | WARN | `数据/CCSwitch库` |
+| 订阅模式（不打开数据库） | SKIP | `数据/CCSwitch库` |
+| 已安装脚本坏掉 / 被换成占位脚本 | FAIL | `数据/stdin` |
+| 计费模式 | UNKNOWN | `数据/计费模式` |
+
+退出码：0 = 无 FAIL，1 = 有 FAIL，2 = 参数错误。
+
 ## 目录
 
 ```

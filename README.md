@@ -119,6 +119,35 @@ arguments.
 
 The render path never calls the diagnostic, so refreshes do not get slower.
 
+### Scenario → result
+
+| Scenario | Expected | Check |
+|---|---|---|
+| Complete install, valid config | no FAIL | all |
+| Scripts not installed | FAIL | `安装/副本-statusline-command.sh` |
+| `statusLine` missing / dangling / pointing at `.bak` | FAIL | `安装/statusLine` |
+| `settings.json` is not valid JSON | FAIL | `安装/settings.json` |
+| `jq` missing | FAIL | `环境/jq` |
+| `python3` < 3.9 or missing | FAIL | `环境/python3` |
+| `bash` < 4.2 with no ≥5 fallback | FAIL | `环境/bash` |
+| `bash` < 4.2 but a ≥5 build exists (re-exec guard) | WARN | `环境/bash` |
+| Installed copy drifts from the repo | WARN | `安装/副本-*` |
+| Unknown key / bad value / misspelled `step` | WARN | `安装/配置文件` |
+| Cache directory not 0700 | WARN | `缓存/权限` |
+| Palette cache missing / header mismatch / invalid `P_CTX` | WARN | `缓存/色板` |
+| Palette generation failing (backing off) | WARN | `缓存/退避` |
+| Token cache older than 15 min, or no `.ts` | WARN | `缓存/token` |
+| Token cache not 18 fields | WARN | `缓存/token` |
+| Lock path occupied by a plain file (refresh never runs) | FAIL | `缓存/锁` |
+| Cache directory not writable | FAIL | `缓存/后台刷新` |
+| Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |
+| CC Switch provider not unique / no daily limit | WARN | `数据/CCSwitch库` |
+| Subscription mode (database not opened) | SKIP | `数据/CCSwitch库` |
+| Installed script broken or replaced by a stub | FAIL | `数据/stdin` |
+| Billing mode | UNKNOWN | `数据/计费模式` |
+
+Exit code: 0 = no FAIL, 1 = some FAIL, 2 = bad arguments.
+
 ## Layout
 
 ```

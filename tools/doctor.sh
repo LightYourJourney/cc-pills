@@ -83,6 +83,8 @@ scrub() {
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
     -e 's/([A-Za-z0-9_]*(KEY|TOKEN)=)[^ ]+/\1***/g' \
     -e 's#//[^/@ ]+@#//***@#g' \
+    -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*[\"']?)[^ \";']+/\1***/g" \
+    -e "s/([Aa]uthorization[ ]*:[ ]*[A-Za-z]+[ ]+[\"']?)[^ \";']+/\1***/g" \
     -e 's/([Bb]earer )[A-Za-z0-9._~+\/-]+/\1***/g'
 }
 
@@ -389,7 +391,7 @@ else
 fi
 PKEY=${PKEY//[^A-Za-z0-9_-]/_}
 tc=$SLT/claude-sl-theme-$PKEY.cache
-THEME_OK=0
+COLOUR_OK=0     # 渲染侧此刻能不能上色（statusline-command.sh 的 NC=0）
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/色板 "缓存根不可用"
 elif [ ! -e "$tc" ]; then
@@ -398,25 +400,30 @@ elif [ ! -e "$tc" ]; then
 elif [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
   res WARN 缓存/色板 "色板缓存不是属于本人的普通文件，渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
 else
-  line=""; read -r line < "$tc"
-  # 渲染侧本轮能不能上色（statusline-command.sh 的 NC=0）：缓存主题部分与当前 THEME 相同、
-  # 且缓存里有 P_CTX。chroma / 风格 / 格式版本不符只会触发后台重算，本轮照常上色。
-  have_ctx=0
+  # 上色的实际条件（statusline-command.sh:536-543）：
+  #   1) 某行 THEME=<主题>/… 的主题部分等于当前 theme；
+  #   2) 某行 P_CTX 的值只含数字与分号（渲染侧 ''|*[!0-9;]*) 会整条丢弃非法值）。
+  # chroma / 风格 / 格式版本不符只触发后台重算，本轮照常上色。
+  cache_theme=""; have_ctx=0
   while IFS='=' read -r k v; do
-    [ "$k" = P_CTX ] && [ -n "$v" ] && have_ctx=1
+    case "$k" in
+      THEME)   cache_theme=$v ;;
+      P_CTX)   case "$v" in ''|*[!0-9\;]*) ;; *) have_ctx=1 ;; esac ;;
+    esac
   done < "$tc"
-  tval=${line#THEME=}
-  [ "$tval" != "$line" ] && [ "${tval%%/*}" = "$C_THEME" ] && [ "$have_ctx" = 1 ] && THEME_OK=1
+  [ "${cache_theme%%/*}" = "$C_THEME" ] && [ "$have_ctx" = 1 ] && COLOUR_OK=1
+  line=""; read -r line < "$tc"
+  line=${line//[[:cntrl:]]/}                       # 与渲染侧约束 16 一致：别把控制字符打上屏
   want="THEME=$C_THEME/$C_CHROMA/$C_STYLE/v$PALETTE_V"
   if [ "$line" != "$want" ]; then
-    if [ "$THEME_OK" = 1 ]; then
+    if [ "$COLOUR_OK" = 1 ]; then
       res WARN 缓存/色板 "首行是「${line}」，与当前配置不符（期望 ${want}）；仍按旧色板上色，后台会重算" \
         "等下一轮刷新；若一直不变，看 缓存/退避"
     else
-      res WARN 缓存/色板 "首行是「${line}」，与当前配置不符且不能上色（主题不同或缺 P_CTX）；后台会重算" \
+      res WARN 缓存/色板 "首行是「${line}」，与当前配置不符且不能上色（主题不同或缺合法 P_CTX）；后台会重算" \
         "等下一轮刷新；若一直不变，看 缓存/退避"
     fi
-  elif [ "$THEME_OK" = 1 ]; then
+  elif [ "$COLOUR_OK" = 1 ]; then
     age=$(( NOW - $(mtime "$tc") ))
     if [ "$age" -ge "$THEME_TTL" ]; then
       res PASS 缓存/色板 "${want}；上次重算 ${age}s 前（后台按需触发，没有活跃会话时不上涨是正常的）"
@@ -424,7 +431,7 @@ else
       res PASS 缓存/色板 "${want}，${age}s 前写入"
     fi
   else
-    res WARN 缓存/色板 "首行匹配但缓存里没有 P_CTX（文件损坏）：本轮无色，后台会重算" "等下一轮刷新"
+    res WARN 缓存/色板 "首行匹配但 P_CTX 缺失或非法（文件损坏）：本轮无色，后台会重算" "等下一轮刷新"
   fi
 fi
 
@@ -528,7 +535,7 @@ failf=$tc.fail
 if [ -e "$failf" ]; then
   ft=""; read -r ft < "$failf" 2>/dev/null
   case "$ft" in ''|*[!0-9]*) ft=$NOW ;; esac
-  if [ "$THEME_OK" = 1 ]; then
+  if [ "$COLOUR_OK" = 1 ]; then
     # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染
     res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"
   else
@@ -555,13 +562,17 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/ccpills-doctor.XXXXXX" 2>/dev/null)
 trap '[ -n "${scratch:-}" ] && rm -rf "$scratch"' EXIT
 smoke=$DEST/statusline-command.sh
 [ -f "$smoke" ] || smoke=$REPO/src/statusline-command.sh
-mkfx() {   # mkfx <cwd> <ctx 总输入> <已用%> <模型名> <费用> → 打印夹具 JSON
-  # 单引号里不能换行续行（反斜杠是字面量），所以整条 JSON 写在一行
-  printf '{"session_id":"doctor-fixture","transcript_path":"","cwd":"%s","model":{"display_name":"%s"},"effort":{"level":"high"},"cost":{"total_cost_usd":%s,"total_api_duration_ms":123000},"context_window":{"total_input_tokens":%s,"context_window_size":200000,"used_percentage":%s},"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"5m","expires_at":%s,"recache_tokens_if_cold":1234}}' \
-    "$1" "$4" "$5" "$2" "$3" "$((NOW + 120))"
+mkfx() {   # mkfx <current_dir> <ctx 总输入> <已用%> <模型名> <费用> [5h%]
+  # 单引号里不能换行续行（反斜杠是字面量），所以整条 JSON 写在一行。
+  # 子进程的 cwd 固定为 $scratch，差异只来自 stdin 里的 workspace.current_dir —— 否则一个
+  # 只 printf "$PWD" 的占位脚本也会因为两次 cd 不同而「通过」差分。
+  rl=""
+  [ -n "${6:-}" ] && rl=',"rate_limits":{"five_hour":{"used_percentage":'"$6"',"resets_at":'"$((NOW + 7200))"'}}'
+  printf '{"session_id":"doctor-fixture","transcript_path":"","cwd":"%s","workspace":{"current_dir":"%s"},"model":{"display_name":"%s"},"effort":{"level":"high"},"cost":{"total_cost_usd":%s,"total_api_duration_ms":123000},"context_window":{"total_input_tokens":%s,"context_window_size":200000,"used_percentage":%s},"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"5m","expires_at":%s,"recache_tokens_if_cold":1234}%s}' \
+    "$scratch" "$1" "$4" "$5" "$2" "$3" "$((NOW + 120))" "$rl"
 }
-runfx() {  # runfx <夹具> <cwd> → 全局 RUNOUT
-  RUNOUT=$( cd "$2" 2>/dev/null && printf '%s' "$1" | \
+runfx() {  # runfx <夹具> → 全局 RUNOUT（固定在同一目录执行）
+  RUNOUT=$( cd "$scratch" 2>/dev/null && printf '%s' "$1" | \
             CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
             TERM_PROGRAM= LC_TERMINAL= bash "$smoke" 2>/dev/null )
 }
@@ -571,10 +582,10 @@ elif [ -z "$scratch" ]; then
   res SKIP 数据/stdin "无法创建临时目录，跳过冒烟"
 else
   mkdir -p "$scratch/a" "$scratch/b" 2>/dev/null
-  # 两份夹具同时改 dir（cwd）、ctxin（总输入）与 ctx / 模型 / 费用：前两项在默认序列里
-  # 永不丢弃，所以即使用户 drop 了 ctx、模型与费用，差分仍然成立。
-  runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23)" "$scratch/a"; outA=$RUNOUT
-  runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)" "$scratch/b"; outB=$RUNOUT
+  # 差分同时落在 dir（workspace.current_dir）、ctxin（总输入）、ctx / 模型 / 费用与 5h 额度上：
+  # 前两项在默认序列里永不丢弃，所以即使用户 drop 了 ctx、模型与费用，差分仍然成立。
+  runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23 20)"; outA=$RUNOUT
+  runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
   # 判据不依赖任何具体项（用户可能改过降级序列）：非空 + 不是最简行 + 两份夹具结果不同
   case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
@@ -632,18 +643,50 @@ elif [ ! -r "$CCSWITCH_DB" ]; then
   res WARN 数据/CCSwitch库 "${CCSWITCH_DB} 不可读：中转站费用会回落为 \$x*" "chmod 644 \"$CCSWITCH_DB\"（只读访问需要读权限）"
 else
   probe=$(python3 - "$CCSWITCH_DB" <<'PY' 2>/dev/null
-import sqlite3, sys
+import json, math, sqlite3, sys
 try:
     con = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True, timeout=2)
     n = con.execute('SELECT COUNT(*) FROM proxy_request_logs').fetchone()[0]
 except Exception:
     sys.exit(1)                      # 账本表都读不到 = 真的用不了
+
+
+def limit_state(row):
+    """与 statusline-tokens.py 的 current_provider / _limit_usd 同口径。
+    → 'ok' 有效 / 'none' 未设置 / 'bad' 值非法或元数据损坏。"""
+    _, col, meta = row
+    lim = col
+    if meta:
+        try:
+            m = json.loads(meta)
+        except Exception:
+            return 'bad'             # 元数据坏了：未知，不回落旧列
+        if isinstance(m, dict):
+            if 'limitDailyUsd' in m:
+                lim = m.get('limitDailyUsd')
+            # 字典里没有该键：回落旧列（与上游一致）
+        else:
+            return 'bad'
+    if lim is None:
+        return 'none'
+    try:
+        f = float(lim)
+    except (TypeError, ValueError):
+        return 'bad'
+    return 'ok' if math.isfinite(f) and f > 0 else 'bad'
+
+
 try:
-    p = con.execute("SELECT COUNT(*) FROM providers WHERE app_type='claude' AND is_current=1"
-                    ).fetchone()[0]
+    try:
+        rows = con.execute("SELECT id, limit_daily_usd, meta FROM providers "
+                           "WHERE app_type='claude' AND is_current=1").fetchall()
+    except Exception:                # 旧库没有 meta 列
+        rows = con.execute("SELECT id, limit_daily_usd, NULL FROM providers "
+                           "WHERE app_type='claude' AND is_current=1").fetchall()
 except Exception:
-    p = '-'                          # 旧库没有 providers 表：可读，但供应商归属不可确定
-print(n, p)
+    print(n, '-', '-')               # providers 表 / 列不完整：渲染侧返回 (None, None)
+    sys.exit(0)
+print(n, len(rows), limit_state(rows[0]) if len(rows) == 1 else '-')
 PY
   )
   case "$probe" in
@@ -651,9 +694,14 @@ PY
           "确认没有被其他进程独占，且文件确实是 SQLite 库；本工具不会写它" ;;
     *)  set -- $probe
         case "${2:-}" in
-          -) res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但没有 providers 表（旧库）：日限额无法确定、会隐藏" \
-                "与渲染侧同口径：供应商归属未知时不当 0" ;;
-          1) res PASS 数据/CCSwitch库 "只读打开成功；代理日志 $1 行；当前供应商唯一（日限额口径可确定）" ;;
+          -) res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但 providers 表/列不完整：日限额无法确定、会隐藏" \
+                "与渲染侧同口径：不确定就不显示，不拿未知当 0" ;;
+          1) case "${3:-}" in
+               ok)   res PASS 数据/CCSwitch库 "只读打开成功；代理日志 $1 行；当前供应商唯一且日限额有效" ;;
+               none) res SKIP 数据/CCSwitch库 "日限额未设置（当前供应商唯一）：日限额项本来就不显示，属正常配置" ;;
+               *)    res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），当前供应商唯一但日限额值非法：日限额项与预测会隐藏" \
+                       "在 CC Switch 里改正当前供应商的日限额，或清空它" ;;
+             esac ;;
           *) res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但当前供应商为 ${2:-0} 个：日限额与预测会隐藏（未知不当 0）" \
                 "在 CC Switch 里选定唯一的当前供应商" ;;
         esac ;;

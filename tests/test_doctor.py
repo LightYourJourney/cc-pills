@@ -355,6 +355,20 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
         self.assertIn('默认', self.sb.detail(r, '安装/配置文件'))
 
+    def test_invalid_p_ctx_is_not_colourable(self):
+        """渲染侧只接受 [0-9;] 的 P_CTX，非法值等于没有：此时整行无色，不能报 PASS。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('theme = dracula\n')
+        os.makedirs(self.sb.cache, exist_ok=True)
+        os.chmod(self.sb.cache, 0o700)
+        p = os.path.join(self.sb.cache, 'claude-sl-theme-term-other.cache')
+        with open(p, 'w') as f:
+            f.write(f'THEME=dracula/12/tint/v{PALETTE_V}\nNAME=dracula\nP_CTX=garbage\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/色板'), 'WARN')
+        self.assertIn('无色', self.sb.detail(r, '缓存/色板'))
+
     def test_leftover_lock_warns(self):
         self.sb.healthy()
         lock = os.path.join(self.sb.cache, 'claude-sl-lock-doctor')
@@ -470,6 +484,53 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('providers', self.sb.detail(r, '数据/CCSwitch库'))
 
+    def test_db_without_limit_column_warns(self):
+        """providers 缺 limit_daily_usd 列时渲染侧返回 (None, None)、隐藏日限额。"""
+        env = self.sb.healthy(relay=True)
+        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db))
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
+        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER)')
+        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1)")
+        con.commit()
+        con.close()
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
+        self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
+
+    def test_db_without_limit_is_skip(self):
+        """供应商唯一但没有日限额：日限额项本来就不显示，属正常配置，不该报 WARN。"""
+        env = self.sb.healthy(relay=True)
+        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db))
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
+        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
+                    'limit_daily_usd REAL, meta TEXT)')
+        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1, NULL, NULL)")
+        con.commit()
+        con.close()
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'SKIP')
+        self.assertIn('正常', self.sb.detail(r, '数据/CCSwitch库'))
+
+    def test_db_with_invalid_limit_warns(self):
+        """限额为 0 / 非数字时渲染侧按「未设置」处理，诊断不能说「口径可确定」。"""
+        env = self.sb.healthy(relay=True)
+        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db))
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
+        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
+                    'limit_daily_usd REAL, meta TEXT)')
+        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1, 0, NULL)")
+        con.commit()
+        con.close()
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
+        self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
+
     def test_relay_without_unique_provider_warns(self):
         env = self.sb.healthy(relay=True)
         db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
@@ -496,6 +557,15 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
         self.assertIn('不同', self.sb.detail(r, '数据/stdin'))
+
+    def test_smoke_detects_stub_that_only_echoes_pwd(self):
+        """两份夹具必须在同目录里跑：否则只 printf "$PWD" 的脚本也会因 cwd 不同而「通过」。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
+            f.write('#!/usr/bin/env bash\nprintf "%s" "$PWD"\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertIn('相同', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_detects_stub_that_ignores_stdin(self):
         """只会 echo 的脚本也能「非空」，必须靠两份夹具结果不同才判通过。"""
@@ -539,9 +609,12 @@ class Doctor(unittest.TestCase):
             'command': 'ANTHROPIC_API_KEY=plain123456; ANTHROPIC_AUTH_TOKEN=tok_live_abcdef; '
                        'echo sk-ant-api03-SECRETabcdef123456; '
                        'curl https://user:pw@relay.example/x; '
+                       'x-api-key: possesscret789; Authorization: Basic dXNlcjpwYXNz; '
                        'bearer BearerTOKENvalue123456 bash /wrong/statusline-command.sh'}})
         r = self.sb.run()
         self.assertNotIn('user:pw', r.stdout)
+        self.assertNotIn('possesscret789', r.stdout)
+        self.assertNotIn('dXNlcjpwYXNz', r.stdout)
         self.assertNotIn('plain123456', r.stdout)
         self.assertNotIn('tok_live_abcdef', r.stdout)
         self.assertNotIn('SECRETabcdef123456', r.stdout)
