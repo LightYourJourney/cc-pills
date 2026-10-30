@@ -250,9 +250,15 @@ if [ -n "$jq" ] && [ -r "$sj" ] && jq -e . "$sj" >/dev/null 2>&1; then
 elif [ -z "$jq" ]; then
   SJ_STATE=SKIP
   res SKIP 安装/settings.json "jq 缺失，无法校验（见 环境/jq）"
-elif [ ! -e "$sj" ]; then
+elif [ ! -e "$sj" ] && [ ! -L "$sj" ]; then
   res FAIL 安装/settings.json "$sj 不存在" \
     '写入 "statusLine": {"type": "command", "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\""}'
+elif [ ! -f "$sj" ]; then
+  res FAIL 安装/settings.json "$sj 不是普通文件（目录或悬空符号链接），读不到 statusLine 配置" \
+    "修好该路径：删除它后重新运行 bash install.sh"
+elif [ ! -r "$sj" ]; then
+  res FAIL 安装/settings.json "$sj 不可读（权限）：Claude Code 读不到 statusLine 配置" \
+    "chmod u+r \"$sj\""
 else
   res FAIL 安装/settings.json "$sj 无法解析（JSON 语法错误）" "修好该文件的 JSON，状态栏配置才不会整体失效"
 fi
@@ -511,8 +517,8 @@ fi
 # 从此每轮直接退出（渲染侧不会自愈），必须当故障报出来
 lock_n=0; lock_old=""; lock_bad=""
 for l in "$SLT"/claude-sl-lock-*; do
-  [ -e "$l" ] || continue
-  if [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
+  { [ -e "$l" ] || [ -L "$l" ]; } || continue
+  if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
   lock_n=$((lock_n + 1))
   lt=$(mtime "$l"); lt=${lt:-$NOW}
   age=$(( NOW - lt ))
@@ -521,7 +527,7 @@ done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/锁 "缓存根不可用"
 elif [ -n "$lock_bad" ]; then
-  res FAIL 缓存/锁 "锁路径是普通文件${lock_bad}：mkdir 永远失败，后台刷新会一直退出（不会自愈）" \
+  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：mkdir 永远失败，后台刷新会一直退出（不会自愈）" \
     "rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
   res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：下次刷新会自动清除，无需手工处理"
@@ -548,6 +554,8 @@ if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/后台刷新 "缓存根不可用，后台刷新会整轮放弃写缓存"
 elif [ -z "$py" ]; then
   res SKIP 缓存/后台刷新 "python3 缺失：后台刷新算不了 token 与色板（见 环境/python3）"
+elif ! ver_ge "$pver" "$PY_MIN"; then
+  res SKIP 缓存/后台刷新 "python3 ${pver} 低于 ${PY_MIN}：后台刷新算不了 token 与色板（见 环境/python3）"
 elif [ -w "$SLT" ]; then
   res PASS 缓存/后台刷新 "缓存目录可写；python3 ${pver}；刷新不阻塞渲染（脱钩进程）"
 else
@@ -592,6 +600,9 @@ else
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
     'Opus 5.5 · 37%') res FAIL 数据/stdin "只渲染出版本守卫的最简行（模型 · ctx%）：主渲染路径没跑起来" \
                      "看 环境/bash：PATH 里的 bash 需要 ≥${BASH_MIN}，或让脚本换到 ≥5 的 bash" ;;
+    *'"session_id"'*|*'"context_window"'*|*'"prompt_cache"'*)
+                     res FAIL 数据/stdin "输出包含 stdin 原文（${smoke}）：疑似透传/占位脚本，主渲染路径没有执行" \
+                     "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本" ;;
     *) if [ "$outA" = "$outB" ]; then
          res FAIL 数据/stdin "两份不同夹具渲染出相同结果：stdin 没有真正进入渲染（${smoke}）" \
            "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本"

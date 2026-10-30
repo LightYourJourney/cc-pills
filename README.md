@@ -126,7 +126,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Complete install, valid config | no FAIL | all |
 | Scripts not installed | FAIL | `安装/副本-statusline-command.sh` |
 | `statusLine` missing / dangling / pointing at `.bak` | FAIL | `安装/statusLine` |
-| `settings.json` is not valid JSON | FAIL | `安装/settings.json` |
+| `settings.json` missing / unreadable / not a regular file / invalid JSON | FAIL | `安装/settings.json` |
 | `jq` missing | FAIL | `环境/jq` |
 | `python3` < 3.9 or missing | FAIL | `环境/python3` |
 | `bash` < 4.2 with no ≥5 fallback | FAIL | `环境/bash` |

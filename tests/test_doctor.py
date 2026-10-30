@@ -203,13 +203,14 @@ class Doctor(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
 
     def test_low_python_is_fail(self):
-        self.sb.install()
+        self.sb.healthy()                     # 缓存根存在，确保走的是版本分支而不是「根不可用」
         b = self.sb.minimal_path()
         self.sb.fake(b, 'python3', '#!/bin/sh\necho "Python 3.7.9"\n')
         r = self.sb.run(env={'PATH': b})
         self.assertEqual(self.sb.status(r, '环境/python3'), 'FAIL')
         self.assertIn('3.9', self.sb.detail(r, '环境/python3'))
         self.assertEqual(self.sb.status(r, '缓存/后台刷新'), 'SKIP')
+        self.assertIn('3.7.9', self.sb.detail(r, '缓存/后台刷新'))
 
     def test_low_bash_is_reported(self):
         """PATH 里是 3.2 时必须报出来。本机若另装了 ≥5 的 bash，脚本的换壳守卫能接管，
@@ -237,6 +238,19 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '安装/settings.json'), 'FAIL')
         self.assertIn('解析', self.sb.detail(r, '安装/settings.json'))
+
+    def test_unreadable_settings_reports_permission_not_syntax(self):
+        """chmod 000 是读不到，不是 JSON 写错；原因与修复建议必须对得上。"""
+        self.sb.install()
+        sj = os.path.join(self.sb.dest, 'settings.json')
+        os.chmod(sj, 0)
+        self.addCleanup(os.chmod, sj, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '安装/settings.json'), 'FAIL')
+        d = self.sb.detail(r, '安装/settings.json')
+        self.assertIn('不可读', d)
+        self.assertIn('chmod', r.stdout)
+        self.assertNotIn('JSON', d)
 
     def test_statusline_pointing_at_missing_file_is_fail(self):
         self.sb.install()
@@ -542,6 +556,50 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
 
+    def test_limit_state_matches_tokens_current_provider(self):
+        """doctor 的限额探针是第三份实现：以 TOKENS.current_provider 为 oracle 防漂移。
+
+        唯一必须锁死的语义是「PASS ⇔ 上游认为限额可用」；未设置与非法值都隐藏，
+        至于报 SKIP 还是 WARN 是诊断自身的分级，不在这里约束。
+        """
+        env = self.sb.healthy(relay=True)
+        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db), exist_ok=True)
+        cases = [
+            ('meta TEXT', '{"limitDailyUsd": 50}', 99),      # meta 压过旧列
+            ('meta TEXT', '{"limitDailyUsd": "abc"}', 50),   # 非法值不回落旧列
+            ('meta TEXT', '{}', 50),                         # 空对象回落旧列
+            ('meta TEXT', None, 50),                         # 没有 meta 回落旧列
+            ('meta TEXT', '[1]', 50),                        # meta 不是对象
+            ('meta TEXT', '{"limitDailyUsd": null}', 50),    # 明确写 null
+            ('', None, 50),                                  # 旧库没有 meta 列
+        ]
+        for coldef, meta, col in cases:
+            with self.subTest(meta=meta, col=col):
+                if os.path.exists(db):
+                    os.unlink(db)
+                con = sqlite3.connect(db)
+                con.execute('CREATE TABLE proxy_request_logs (x)')
+                cols = 'id TEXT, app_type TEXT, is_current INTEGER, limit_daily_usd REAL'
+                if coldef:
+                    cols += ', ' + coldef
+                con.execute(f'CREATE TABLE providers ({cols})')
+                vals = ['p1', 'claude', 1, col] + ([meta] if coldef else [])
+                con.execute('INSERT INTO providers VALUES (' + ','.join('?' * len(vals)) + ')', vals)
+                con.commit()
+                ro = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+                try:
+                    _, lim = TOKENS.current_provider(ro)
+                finally:
+                    ro.close()
+                con.close()
+                r = self.sb.run(env=env)
+                st = self.sb.status(r, '数据/CCSwitch库')
+                if lim is not None:
+                    self.assertEqual(st, 'PASS', r.stdout)
+                else:
+                    self.assertNotEqual(st, 'PASS', r.stdout)
+
     def test_relay_without_unique_provider_warns(self):
         env = self.sb.healthy(relay=True)
         db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
@@ -586,6 +644,15 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('相同', self.sb.detail(r, '数据/stdin'))
+
+    def test_smoke_detects_passthrough_stub(self):
+        """cat 会把两份不同夹具原样输出，差分成立但主渲染没执行——必须拒绝 stdin 原文。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
+            f.write('#!/usr/bin/env bash\ncat\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertIn('原文', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_is_independent_of_custom_steps(self):
         """用户改过降级序列（删掉 ctx / 模型 / 目录）不该让冒烟误报——判据不看具体项。"""
@@ -806,6 +873,15 @@ class Doctor(unittest.TestCase):
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-lock-doctor'), 'w') as f:
             f.write('x')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+        self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))
+
+    def test_lock_path_symlink_fails(self):
+        """符号链接占住锁路径时 mkdir/rmdir 都失败，刷新永不自愈——与普通文件同等对待。"""
+        self.sb.healthy()
+        os.symlink('/nonexistent-lock-target',
+                   os.path.join(self.sb.cache, 'claude-sl-lock-doctor'))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
         self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))

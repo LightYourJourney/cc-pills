@@ -117,7 +117,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 安装完整、配置合法 | 无 FAIL | 全部 |
 | 脚本没装 | FAIL | `安装/副本-statusline-command.sh` |
 | `statusLine` 没配 / 指向不存在 / 指向 `.bak` | FAIL | `安装/statusLine` |
-| `settings.json` 语法错误 | FAIL | `安装/settings.json` |
+| `settings.json` 缺失 / 不可读 / 不是普通文件 / 语法错误 | FAIL | `安装/settings.json` |
 | `jq` 缺失 | FAIL | `环境/jq` |
 | `python3` < 3.9 或缺失 | FAIL | `环境/python3` |
 | `bash` < 4.2 且没有 ≥5 的替代 | FAIL | `环境/bash` |
