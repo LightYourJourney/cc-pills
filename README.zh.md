@@ -83,9 +83,11 @@ bash tools/preview.sh tint tokyo-glass
 
 ## 故障排查
 
-状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它是纯只读的：不写配置 / 缓存 /
-数据库，不联网，不打印环境变量全集，`settings.json` 里的命令行也会先抹掉
-`sk-…` / `*_API_KEY=…` / `Bearer …` 再显示。
+状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它不改写你的配置 / 缓存 / 数据库
+内容，不联网，不打印环境变量全集；`settings.json` 里的命令行会先抹掉
+`sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL 里的 `user:pass@` / `Bearer …` 再显示。唯一的写是冒烟
+用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时可能生成 `-wal`/`-shm` 旁文件，与
+渲染脚本自己的读取方式相同。
 
 ```bash
 bash tools/doctor.sh                                      # 或 bash install.sh --doctor

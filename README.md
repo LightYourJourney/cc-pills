@@ -91,9 +91,11 @@ live session's caches.
 ## Troubleshooting
 
 When an item disappears, the line loses its colours, or nothing renders at all, run the
-diagnostic first. It is strictly read-only: it writes no config, cache or database, makes no
-network requests, never dumps the environment, and scrubs `sk-…` / `*_API_KEY=…` / `Bearer …`
-out of the `settings.json` command before printing it.
+diagnostic first. It never modifies your config, cache or database content, makes no network
+requests, never dumps the environment, and scrubs `sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL
+credentials / `Bearer …` out of the `settings.json` command before printing it. Its only write
+is a throwaway temp dir; a WAL-mode SQLite database may get `-wal`/`-shm` sidecars on read-only
+open, exactly as the renderer's own read does.
 
 ```bash
 bash tools/doctor.sh                                      # alias: bash install.sh --doctor

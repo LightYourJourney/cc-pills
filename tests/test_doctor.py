@@ -11,13 +11,12 @@ import os
 import re
 import shutil
 import sqlite3
-import stat
 import subprocess
 import tempfile
 import time
 import unittest
 
-from _util import REPO, THEME
+from _util import REPO, THEME, TOKENS
 
 DOCTOR = os.path.join(REPO, 'tools', 'doctor.sh')
 INSTALL = os.path.join(REPO, 'install.sh')
@@ -210,6 +209,7 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env={'PATH': b})
         self.assertEqual(self.sb.status(r, '环境/python3'), 'FAIL')
         self.assertIn('3.9', self.sb.detail(r, '环境/python3'))
+        self.assertEqual(self.sb.status(r, '缓存/后台刷新'), 'SKIP')
 
     def test_low_bash_is_reported(self):
         """PATH 里是 3.2 时必须报出来。本机若另装了 ≥5 的 bash，脚本的换壳守卫能接管，
@@ -311,6 +311,15 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS')
         self.assertIn('按需', self.sb.detail(r, '缓存/色板'))
 
+    def test_truncated_token_cache_is_flagged(self):
+        """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
+        env = self.sb.healthy()
+        with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache'), 'w') as f:
+            f.write('-\t-\t-\n')
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('18', self.sb.detail(r, '缓存/token'))
+
     def test_corrupt_ts_is_reported_as_stale(self):
         """渲染侧把非数字 .ts 判为陈旧；doctor 按 .ts 的 mtime 回退会漏报，必须同样判陈旧。"""
         env = self.sb.healthy()
@@ -387,14 +396,15 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
 
-    def test_unreadable_db_is_fail(self):
+    def test_unreadable_db_warns(self):
         env = self.sb.healthy(relay=True)
         db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
         os.makedirs(os.path.dirname(db))
         with open(db, 'w') as f:
             f.write('这不是数据库' * 100)
         r = self.sb.run(env=env)
-        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'FAIL')
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
+        self.assertIn('$x*', self.sb.detail(r, '数据/CCSwitch库'))
 
     def test_db_is_opened_read_only(self):
         """真实库只允许只读：跑完之后字节完全不变。"""
@@ -418,6 +428,19 @@ class Doctor(unittest.TestCase):
         with open(db, 'rb') as f:
             self.assertEqual(hashlib.sha256(f.read()).hexdigest(), before)
         self.assertEqual(os.stat(db).st_mtime, mtime)
+
+    def test_db_without_providers_table_warns(self):
+        """旧库没有 providers 表：渲染侧容忍（只是隐藏日限额），诊断不能判 FAIL。"""
+        env = self.sb.healthy(relay=True)
+        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db))
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
+        con.commit()
+        con.close()
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
+        self.assertIn('providers', self.sb.detail(r, '数据/CCSwitch库'))
 
     def test_relay_without_unique_provider_warns(self):
         env = self.sb.healthy(relay=True)
@@ -444,13 +467,22 @@ class Doctor(unittest.TestCase):
         env = self.sb.healthy()
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
-        self.assertIn('字节', self.sb.detail(r, '数据/stdin'))
+        self.assertIn('不同', self.sb.detail(r, '数据/stdin'))
+
+    def test_smoke_detects_stub_that_ignores_stdin(self):
+        """只会 echo 的脚本也能「非空」，必须靠两份夹具结果不同才判通过。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
+            f.write('#!/usr/bin/env bash\necho hello\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertIn('相同', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_is_independent_of_custom_steps(self):
         """用户改过降级序列（删掉 ctx / 模型 / 目录）不该让冒烟误报——判据不看具体项。"""
         env = self.sb.healthy()
         with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
-            f.write('step = drop ctx\nstep = drop model\nstep = drop dir\n')
+            f.write('step = drop ctx\nstep = drop model\n')
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
 
@@ -478,8 +510,10 @@ class Doctor(unittest.TestCase):
             'type': 'command',
             'command': 'ANTHROPIC_API_KEY=plain123456; ANTHROPIC_AUTH_TOKEN=tok_live_abcdef; '
                        'echo sk-ant-api03-SECRETabcdef123456; '
+                       'curl https://user:pw@relay.example/x; '
                        'bearer BearerTOKENvalue123456 bash /wrong/statusline-command.sh'}})
         r = self.sb.run()
+        self.assertNotIn('user:pw', r.stdout)
         self.assertNotIn('plain123456', r.stdout)
         self.assertNotIn('tok_live_abcdef', r.stdout)
         self.assertNotIn('SECRETabcdef123456', r.stdout)
@@ -505,6 +539,12 @@ class Doctor(unittest.TestCase):
             m = re.search(rf'^{name}=(\d+)', src, re.M)
             self.assertIsNotNone(m, f'doctor 里没有 {name}')
             self.assertEqual(m.group(1), str(want), f'{name} 与 statusline-command.sh 不一致')
+
+    def test_token_field_count_matches_tokens_module(self):
+        with open(DOCTOR, encoding='utf-8') as f:
+            m = re.search(r'^TOK_FIELDS=(\d+)', f.read(), re.M)
+        self.assertIsNotNone(m, 'doctor 里没有 TOK_FIELDS')
+        self.assertEqual(int(m.group(1)), len(TOKENS.FIELDS))
 
     def test_theme_and_style_lists_match_theme_module(self):
         """doctor 的白名单一旦落后于 statusline-theme.py，合法配置会被报成「值不合法」。"""
@@ -539,11 +579,16 @@ class Doctor(unittest.TestCase):
             self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', f.read())
 
     def test_theme_cache_key_matches_renderer(self):
-        """色板缓存按终端命名：doctor 必须找得到渲染脚本写的那个文件名。"""
-        env = self.sb.healthy()
-        r = self.sb.run(env=dict(env, TERM_PROGRAM='wezterm'))
-        self.assertIn('term-wezterm', self.sb.detail(r, '缓存/色板'))
-        r = self.sb.run(env=env)
+        """让真实渲染脚本写一次色板缓存，doctor 必须找到同一个文件名（不是测试自己编的名字）。"""
+        self.sb.install()
+        os.makedirs(self.sb.cache, exist_ok=True)
+        os.chmod(self.sb.cache, 0o700)
+        subprocess.run([BASE_BASH, os.path.join(SRC, 'statusline-command.sh'), '--refresh',
+                        self.sb.d, '-', 'doctor', 'sub'],
+                       env=dict(self.sb.env, CLAUDE_SL_TMP=self.sb.cache, TERM_PROGRAM='wezterm'),
+                       capture_output=True, timeout=60)
+        self.assertIn('claude-sl-theme-term-wezterm.cache', os.listdir(self.sb.cache))
+        r = self.sb.run(env={'TERM_PROGRAM': 'wezterm'})
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS')
 
     def test_config_keys_match_parser(self):
@@ -601,6 +646,7 @@ class Doctor(unittest.TestCase):
             'bash "~/.claude/statusline-command.sh"',
             'bash /elsewhere/statusline-command.sh',
             'statusline-command.sh',
+            f'bash {dest}/statusline-command.sh.bak',
             '',
         ]
         for cmd in forms:
@@ -611,6 +657,47 @@ class Doctor(unittest.TestCase):
             self.assertEqual(chk.returncode == 0, self.sb.status(d, '安装/statusLine') == 'PASS',
                              f'写法 {cmd!r}：install --check rc={chk.returncode}，'
                              f'doctor={self.sb.status(d, "安装/statusLine")}\n{chk.stdout}')
+
+    def test_invalid_step_is_flagged(self):
+        """渲染器会静默忽略写错的 step；配置检查必须指出来（合法项名从渲染脚本的 ITEM_IDS 取）。"""
+        self.sb.install()
+        conf = os.path.join(self.sb.cfg, 'claude-statusline.conf')
+        with open(conf, 'w') as f:
+            f.write('step = drop cot\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
+        self.assertIn('cot', self.sb.detail(r, '安装/配置文件'))
+        with open(conf, 'w') as f:
+            f.write('step = drop api\nstep = shrink model\n')
+        self.assertEqual(self.sb.status(self.sb.run(), '安装/配置文件'), 'PASS')
+
+    def test_lock_path_occupied_by_file_fails(self):
+        """普通文件占住锁路径时 mkdir 永远失败，后台刷新每轮直接退出，不会自愈。"""
+        self.sb.healthy()
+        with open(os.path.join(self.sb.cache, 'claude-sl-lock-doctor'), 'w') as f:
+            f.write('x')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+        self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))
+
+    def test_credentials_in_base_url_are_stripped(self):
+        self.sb.healthy(relay=True)
+        r = self.sb.run(env={'ANTHROPIC_BASE_URL': 'https://user:pass@relay.example/v1'})
+        self.assertNotIn('user:pass', r.stdout)
+        self.assertIn('relay.example', r.stdout)
+
+    def test_flags_have_behaviour(self):
+        """--transcript / --dir 不能只出现在 help 里。"""
+        self.sb.install()
+        r = self.sb.run('--transcript', os.path.join(self.sb.d, 'nope.jsonl'))
+        self.assertEqual(self.sb.status(r, '数据/transcript'), 'FAIL')
+        p = os.path.join(self.sb.d, 's.jsonl')
+        with open(p, 'w') as f:
+            f.write('{"x":1}\n')
+        self.assertEqual(self.sb.status(self.sb.run('--transcript', p), '数据/transcript'), 'PASS')
+        r = self.sb.run('--dir', os.path.join(self.sb.d, 'missing'))
+        self.assertEqual(self.sb.status(r, '缓存/git'), 'WARN')
+        self.assertEqual(self.sb.status(self.sb.run('--dir', REPO), '缓存/git'), 'PASS')
 
     def test_render_path_never_calls_doctor(self):
         for name in ('statusline-command.sh', 'subagent-statusline.sh'):

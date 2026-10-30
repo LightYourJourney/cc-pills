@@ -143,7 +143,7 @@
 
 - **实现放 `tools/doctor.sh`，`install.sh --doctor` 只是 exec 别名**：install.sh 是写工具
   （复制 / 备份 / 删除），诊断是读工具；分开才能从结构上保证「默认只读」，也不让只读诊断
-  背上安装流程的语义。别名只加两次 `shift` 与一次 exec，不重复任何逻辑。
+  背上安装流程的语义。别名只加一次 `shift` 与一次 exec，不重复任何逻辑。
 - **doctor 保持 bash 3.2 可跑**（不用关联数组）：最坏环境里——PATH 里的 bash 是 macOS 自带的
   3.2——它仍要能回答「为什么状态栏退化成最简行」。渲染脚本本身仍要求 ≥4.2，两者要求不同是
   故意的。
@@ -151,32 +151,37 @@
   UNKNOWN = 取决于运行时 stdin（例如计费模式），命令行里无法判定。没有「差不多正常」这种
   中间态——那正是本阶段要消灭的表达。
 - **FAIL 只留给「状态栏很可能不工作」**：副本与仓库不一致是 WARN（能跑，只是跑的不是仓库那
-  一版）；settings 未指向、jq 缺失、缓存根不属于本人、冒烟无输出才是 FAIL。残余的「副本缺失」
-  与「settings 缺失」同时 FAIL 是故意的——两处都要修。配置文件不可读同样是 WARN：渲染脚本
-  对 `-r` 失败只是静默用默认值，状态栏照常工作。
+  一版）；settings 未指向、jq 缺失、缓存根不属于本人、锁路径被普通文件占住、冒烟无输出或
+  两份夹具结果相同才是 FAIL。残余的「副本缺失」与「settings 缺失」同时 FAIL 是故意的——两处
+  都要修。配置文件不可读是 WARN（渲染脚本对 `-r` 失败只是静默用默认值）。
 - **判「能不能用」而不是「新不新」**：色板缓存只要首行与配置一致就能上色，年龄只影响后台何时
   重算，所以旧色板是 PASS（静止时不上涨是正常的）；token 缓存超过 `TOK_STALE` 则真的会让
   `$/h`、out、hit、io、msgs 消失，才是 WARN。`.fail` 退避文件也分两种：色板仍有效时它不影响
-  渲染，没有可用色板时才等于整行无色。
+  渲染，没有可用色板时才等于整行无色。CC Switch 库缺失、不可读、旧架构缺 `providers` 表都
+  只是回落 `$x*`，一律 WARN。
 - **中转站判定要同时看 shell 与 `settings.json` 的 `env`**：CC Switch 的标准写法是把
   `ANTHROPIC_BASE_URL` 写进 settings 的 `env`，由 Claude Code 注入状态栏进程。只看 shell 变量
   会在最常见的部署方式上得出相反结论（该报「中转站但没库」却报 SKIP）。订阅模式下不打开
   CC Switch 库，与 `statusline-tokens.py` 约束 7 一致。
-- **冒烟用安全夹具真跑已安装脚本**：`CLAUDE_SL_TMP` 指向 mktemp 目录、`CLAUDE_SL_NO_REFRESH=1`、
-  `COLUMNS=200`，断言输出含模型名与 `ctx 37%`。这一次覆盖 jq、bash 版本守卫、脚本路径、
-  jq 过滤器；只用 jq 解析夹具查不出「脚本自己坏了」。
-- **不读用户会话内容**：transcript 与它的 token 缓存只在显式 `--transcript` 时检查。默认只做
-  缓存目录的粗粒度统计（个数、最新写入时刻、归属），不解析缓存内容——诊断不需要看你的用量。
-- **常量与判据单一来源**：doctor 里的 `THEME_TTL` / `TOK_STALE` / `LOCK_STALE` / `PALETTE_V`
-  由 `test_doctor` 逐字比对 `statusline-command.sh`；`CONF_KEYS` 与配置解析器的 case 分支比对；
-  `points_to` 与 install.sh 同判据，测试在多种写法上验证两侧结论一致。改渲染脚本而忘了改
-  doctor 时，测试会红。
+- **冒烟用两份夹具做差分**：`CLAUDE_SL_TMP` 指向 mktemp 目录、`CLAUDE_SL_NO_REFRESH=1`、
+  `COLUMNS=200`，两组夹具只差 ctx / 模型名 / 费用，要求两次结果**不同**且不是版本守卫的最简行。
+  只看「非空」太弱——`echo hello` 也会通过（复审实测）。判据不看具体项，用户改过降级序列也
+  不会误报（除非把 ctx、模型、费用三项全 drop）。
+- **不读用户会话内容**：`--transcript` 只检查该会话的 jsonl 是否可读；默认只做缓存目录的
+  粗粒度统计（个数、最新写入时刻、格式、归属），不解析缓存内容——诊断不需要看你的用量。
+- **常量与判据单一来源**：doctor 里的 `THEME_TTL` / `TOK_STALE` / `LOCK_STALE` / `PALETTE_V`、
+  主题与胶囊风格白名单、官方地址白名单、bash 下限由 `test_doctor` 与渲染侧逐字比对；
+  `CONF_KEYS` 与配置解析器的 case 分支比对，`step` 的合法项名直接读渲染脚本的 `ITEM_IDS`
+  （取不到就跳过该项校验）；`points_to` 与 install.sh 同判据（含「文件名后紧跟单词字符不算
+  指向」，拦下 `.bak`），测试在多种写法上验证两侧结论一致。时效判定这类语义仍各有一份实现
+  （bash 侧无法被 source），靠测试对齐而不是共享代码。
 - **诊断不进渲染路径**：`statusline-command.sh` 与 `subagent-statusline.sh` 都不引用 doctor，
   由静态测试守护；渲染的每次刷新没有任何新增成本。
 - **默认不联网**：doctor 不调用 curl（测试用一个「被调用就留标记」的假 curl 验证）。状态页
   只报缓存年龄，不主动拉取。
-- **凭据过滤在显示层**：`scrub()` 抹 `sk-…` / `*_API_KEY=…` / `Bearer …`，路径与其余参数保留
-  ——不保留就没人能照着修。`ANTHROPIC_BASE_URL` 只显示 scheme://host。
+- **凭据过滤在显示层**：`scrub()` 抹 `sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL 里的 `user:pass@` /
+  `Bearer …`，路径与其余参数保留——不保留就没人能照着修。`ANTHROPIC_BASE_URL` 只显示
+  scheme://host。
 
 ## 与 Claude Code 的契约来源
 
@@ -221,4 +226,4 @@
 | mtime 回填 | 3a8679e | 73→74 | 一次性后台写 | — |
 | 卸载写法 | 8c7f7c9 | 74→75 | 无 | — |
 | 复审修复 | 本次提交 | 75→80 | 同步路径未新增外部进程 | 见「剩余风险」清单 |
-| 运行诊断（Phase 06） | 本阶段 | 80→114 | `src/` 零改动，同步路径逐字节相同；doctor 按需运行 0.5–0.8s | 见文末「残余风险」 |
+| 运行诊断（Phase 06） | 5b3debb | 80→135 | `src/` 零改动，同步路径逐字节相同；doctor 按需运行，不在渲染路径上 | 见 Phase 06 交付报告的「残余风险」 |

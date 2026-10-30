@@ -65,6 +65,8 @@ has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
 }
 points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 只含名字 / 1 未指向
+  # 文件名后面紧跟单词字符说明是另一个文件（statusline-command.sh.bak / .tmp），不算指向
+  case "$1" in *"$2"[A-Za-z0-9_.-]*) return 1 ;; esac
   case "$1" in
     *"$3/$2"*)                  return 0 ;;          # 指向已安装副本
     *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;        # 建议写法：运行时展开到同一目录

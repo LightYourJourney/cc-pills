@@ -3,7 +3,7 @@
 #
 #   bash tools/doctor.sh                    检查本机安装与运行时状态
 #   bash tools/doctor.sh --dir <路径>        指定当前项目目录（git 缓存 / 仓库判定用；默认 $PWD）
-#   bash tools/doctor.sh --transcript <路径>  检查某个会话的 transcript 与它的 token 缓存
+#   bash tools/doctor.sh --transcript <路径>  检查某个会话的 transcript 是否可读
 #   bash install.sh --doctor                同一实现的别名
 #
 # 输出每行「[状态] 分组/项  说明」，状态 ∈ PASS / WARN / FAIL / SKIP / UNKNOWN：
@@ -13,13 +13,13 @@
 #
 # 只读承诺
 # --------
-# - 不写用户配置、缓存、数据库、系统文件；唯一的写操作是冒烟测试用的 mktemp -d，跑完即删。
+# - 不改写用户配置、缓存、数据库与系统文件；唯一的临时写是冒烟用的 mktemp -d（跑完即删）。
 # - 不联网：不调用 curl，不访问 status.claude.com。
 # - CC Switch 数据库只用 `file:<path>?mode=ro` 打开（与 statusline-tokens.py 约束 7 同口径），
 #   且只在中转站模式下打开。WAL 模式的库即使只读打开，SQLite 也可能在库旁建 -wal / -shm
 #   旁文件——生产脚本是同样的访问方式，诊断不额外写库内容。
-# - 不打印环境变量全集；ANTHROPIC_BASE_URL 只给 scheme://host；settings 里的命令行经
-#   scrub() 抹掉 sk-… / *_API_KEY=… / Bearer … 之后才显示。
+# - 不打印环境变量全集；ANTHROPIC_BASE_URL 只给 scheme://host（连 user:pass@ 一并去掉）；
+#   settings 里的命令行经 scrub() 抹掉 sk-… / *_KEY=… / *_TOKEN=… / URL 凭据 / Bearer … 后显示。
 # - 正常渲染路径不调用本脚本（statusline-command.sh 与 subagent-statusline.sh 都不引用它，
 #   由 tests/test_doctor.py 的契约测试守护）。
 #
@@ -43,6 +43,7 @@ THEME_TTL=300        # 色板重算间隔
 TOK_STALE=900        # token 缓存超此秒数即判陈旧（派生项隐藏）
 LOCK_STALE=30        # 后台刷新残锁的判定秒数
 PALETTE_V=4          # 色板缓存格式版本
+TOK_FIELDS=18        # 18 段 token 协议（与 statusline-tokens.py 的 FIELDS 一致）
 BASH_MIN=4.2         # 渲染脚本要求的最低 bash
 PY_MIN=3.9           # 渲染脚本用到 math.dist（3.8）与 str.removesuffix（3.9）
 # 配置文件认的键（必须与 statusline-command.sh 里 case "$k" 的分支一致）
@@ -53,7 +54,7 @@ DIR=$PWD
 TRANSCRIPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir)        [ $# -ge 2 ] || { echo "──dir 需要一个路径" >&2; exit 2; }; DIR=$2; shift 2 ;;
+    --dir)        [ $# -ge 2 ] || { echo "--dir 需要一个路径" >&2; exit 2; }; DIR=$2; shift 2 ;;
     --transcript) [ $# -ge 2 ] || { echo "--transcript 需要一个路径" >&2; exit 2; }; TRANSCRIPT=$2; shift 2 ;;
     -h|--help)    sed -n '2,/^set -u$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "未知参数：${1}（--help 看用法）" >&2; exit 2 ;;
@@ -81,6 +82,7 @@ scrub() {
   sed -E \
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
     -e 's/([A-Za-z0-9_]*(KEY|TOKEN)=)[^ ]+/\1***/g' \
+    -e 's#//[^/@ ]+@#//***@#g' \
     -e 's/([Bb]earer )[A-Za-z0-9._~+\/-]+/\1***/g'
 }
 
@@ -106,13 +108,24 @@ ver_ge() {
 }
 
 # ── 配置（只按白名单解析，与渲染脚本同一套规则；非法值按默认处理）──────
+# 降级序列的合法项名从渲染脚本的 ITEM_IDS 取（单一来源）：取不到就跳过 step 校验，
+# 宁可少判一项，也不在这里再抄一份会漂移的清单。
+stepids=""
+for s in "$DEST/statusline-command.sh" "$REPO/src/statusline-command.sh"; do
+  [ -r "$s" ] || continue
+  raw=$(sed -n '/^ITEM_IDS="/,/"/p' "$s" 2>/dev/null)
+  [ -n "$raw" ] || continue
+  raw=${raw#*ITEM_IDS=}; raw=${raw#\"}; raw=${raw%\"*}
+  stepids=" $(echo $raw) "
+  break
+done
 C_THEME=auto; C_CHROMA=12; C_STYLE=tint; C_PAGE=on
 CFG_BAD=""; CFG_UNKNOWN=""; CFG_READABLE=0
 CONF_KEYS_ONE=" $(echo $CONF_KEYS) "     # 折叠成一行，下面逐行比对时不必每行 fork
 if [ -r "$CONF" ]; then
   CFG_READABLE=1
   while IFS='=' read -r k v; do
-    k=${k//[[:space:]]/}; v=${v%%#*}; v=${v//[[:space:]]/}
+    k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
     case "$k" in ''|\#*) continue ;; esac
     case "$CONF_KEYS_ONE" in
       *" $k "*) ;;
@@ -127,7 +140,17 @@ if [ -r "$CONF" ]; then
                               *) CFG_BAD="$CFG_BAD $k" ;; esac ;;
       pill_chroma) case "$v" in ''|*[!0-9]*) CFG_BAD="$CFG_BAD $k" ;;
                               *) [ $((10#$v)) -le 40 ] && C_CHROMA=$((10#$v)) || CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      step) : ;;   # 项名合法性由渲染脚本自己判断，这里不重复
+      step)
+        if [ -n "$stepids" ]; then
+          read -r act sid_ _ <<< "$rv"
+          case "$act" in
+            drop|shrink) case "$stepids" in
+                           *" $sid_ "*) ;;
+                           *) CFG_BAD="$CFG_BAD step($act $sid_)" ;;
+                         esac ;;
+            *) CFG_BAD="$CFG_BAD step($act)" ;;
+          esac
+        fi ;;
       *) case "$v" in ''|*[!0-9]*) CFG_BAD="$CFG_BAD $k" ;; esac ;;
     esac
   done < "$CONF"
@@ -234,6 +257,8 @@ fi
 
 # 与 install.sh 的 points_to 同一判据：0 明确指向已安装副本 / 2 只含文件名 / 1 未指向
 points_to() {
+  # 文件名后面紧跟单词字符说明是另一个文件（statusline-command.sh.bak / .tmp），不算指向
+  case "$1" in *"$2"[A-Za-z0-9_.-]*) return 1 ;; esac
   case "$1" in
     *"$3/$2"*) return 0 ;;
     *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;
@@ -303,7 +328,7 @@ elif [ "$CFG_READABLE" = 0 ]; then
 elif [ -n "$CFG_UNKNOWN" ]; then
   res WARN 安装/配置文件 "这些键不认识、会被静默忽略：$CFG_UNKNOWN" "删掉它们，或核对 config/claude-statusline.conf.example"
 elif [ -n "$CFG_BAD" ]; then
-  res WARN 安装/配置文件 "这些键的值不合法、按默认处理：$CFG_BAD" "核对 config/claude-statusline.conf.example 里的可选值"
+  res WARN 安装/配置文件 "这些键的值不合法、会被静默忽略：$CFG_BAD" "核对 config/claude-statusline.conf.example 里的可选值"
 else
   res PASS 安装/配置文件 "可解析：theme=$C_THEME pill_style=$C_STYLE status_page=$C_PAGE"
 fi
@@ -313,7 +338,8 @@ sec 缓存与后台任务
 if [ -n "${CLAUDE_SL_TMP:-}" ]; then
   SLT=$CLAUDE_SL_TMP; src_note="（CLAUDE_SL_TMP）"
 else
-  SLT=${TMPDIR:-/tmp}/claude-sl-${UID:-0}; src_note=""
+  tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}       # TMPDIR 常以 / 结尾，显示时避免 //
+  SLT=$tmpdir/claude-sl-${UID:-0}; src_note=""
 fi
 SLT_OK=0
 if [ ! -e "$SLT" ]; then
@@ -375,13 +401,15 @@ fi
 # token 缓存：只看新鲜度与归属，不读内容
 # 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件 → 判陈旧（渲染侧 tok_ok=0）；
 # 没有 .ts 的旧缓存渲染侧按「新鲜」处理，这里按缓存 mtime 提示（刷新会用 mtime 补回填）。
-tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0
+tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
   [ -O "$f" ] || tok_notmine=$((tok_notmine + 1))
+  _parts=(); IFS=$'\t' read -r -a _parts < "$f" 2>/dev/null
+  [ "${#_parts[@]}" -eq "$TOK_FIELDS" ] || tok_malformed=$((tok_malformed + 1))
   ts=$f.ts
-  if [ -f "$ts" ] && [ -O "$ts" ]; then
+  if [ -f "$ts" ] && [ ! -L "$ts" ] && [ -O "$ts" ]; then
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
@@ -402,6 +430,9 @@ else
   age=$(( NOW - tok_newest ))
   if [ "$tok_notmine" -gt 0 ]; then
     res WARN 缓存/token "$tok_n 个缓存里有 $tok_notmine 个不属于当前用户，会被跳过" "rm -f \"$SLT\"/claude-sl-tok-*"
+  elif [ "$tok_malformed" -gt 0 ]; then
+    res WARN 缓存/token "有 $tok_malformed 个缓存不是 $TOK_FIELDS 段（被截断或旧格式）：对应派生项会错位或消失" \
+      "删掉该会话的 token 缓存，后台会整段重算"
   elif [ "$tok_tsbad" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$\\h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
@@ -413,23 +444,32 @@ else
   fi
 fi
 
-# git 缓存：缺失会同步回退（慢但正确），所以只做粗粒度提示
-gcache_n=0
-for f in "$SLT"/claude-sl-git-*.cache; do [ -f "$f" ] && gcache_n=$((gcache_n + 1)); done
+# git 缓存：缺失会同步回退（慢但正确），所以只做粗粒度提示；格式坏了也会被后台重算
+gcache_n=0; gcache_bad=0
+for f in "$SLT"/claude-sl-git-*.cache; do
+  [ -f "$f" ] || continue
+  gcache_n=$((gcache_n + 1))
+  IFS=$'\t' read -r _r _b _s _t < "$f" 2>/dev/null    # 4 段：根 / 分支 / 旗标 / 写入时刻
+  case "$_t" in ''|*[!0-9]*) gcache_bad=$((gcache_bad + 1)) ;; esac
+done
 if [ -z "$git" ]; then
   res SKIP 缓存/git "git 不可用（见 环境/git）"
 elif [ ! -d "$DIR" ]; then
   res WARN 缓存/git "--dir 指向的目录不存在：$DIR" "传一个存在的项目目录"
 elif ( cd "$DIR" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel >/dev/null 2>&1 ); then
-  res PASS 缓存/git "$DIR 是 git 仓库；缓存 $gcache_n 个（缺失时首次渲染会同步算一次）"
+  badnote=""
+  [ "$gcache_bad" -gt 0 ] && badnote="（${gcache_bad} 个格式异常，后台会重算）"
+  res PASS 缓存/git "$DIR 是 git 仓库；缓存 ${gcache_n} 个${badnote}（缺失时首次渲染会同步算一次）"
 else
   res SKIP 缓存/git "$DIR 不是 git 仓库；缓存 $gcache_n 个"
 fi
 
-# 刷新锁：残锁会被下一轮自动清除，只说明「有一帧没刷新」
-lock_n=0; lock_old=""
+# 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件占住时 mkdir 永远失败、后台刷新
+# 从此每轮直接退出（渲染侧不会自愈），必须当故障报出来
+lock_n=0; lock_old=""; lock_bad=""
 for l in "$SLT"/claude-sl-lock-*; do
-  [ -d "$l" ] || continue
+  [ -e "$l" ] || continue
+  if [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
   lock_n=$((lock_n + 1))
   lt=$(mtime "$l"); lt=${lt:-$NOW}
   age=$(( NOW - lt ))
@@ -437,6 +477,9 @@ for l in "$SLT"/claude-sl-lock-*; do
 done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/锁 "缓存根不可用"
+elif [ -n "$lock_bad" ]; then
+  res FAIL 缓存/锁 "锁路径是普通文件${lock_bad}：mkdir 永远失败，后台刷新会一直退出（不会自愈）" \
+    "rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
   res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：下次刷新会自动清除，无需手工处理"
 elif [ "$lock_n" -gt 0 ]; then
@@ -460,41 +503,50 @@ fi
 
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/后台刷新 "缓存根不可用，后台刷新会整轮放弃写缓存"
+elif [ -z "$py" ]; then
+  res SKIP 缓存/后台刷新 "python3 缺失：后台刷新算不了 token 与色板（见 环境/python3）"
 elif [ -w "$SLT" ]; then
-  res PASS 缓存/后台刷新 "缓存目录可写；python3 ${pver:-?}；刷新不阻塞渲染（脱钩进程）"
+  res PASS 缓存/后台刷新 "缓存目录可写；python3 ${pver}；刷新不阻塞渲染（脱钩进程）"
 else
   res FAIL 缓存/后台刷新 "缓存目录不可写：后台刷新无法落盘" "chown/chmod 修好 \"$SLT\"，或设 CLAUDE_SL_TMP 到可写目录"
 fi
 
 # ═══ 数据来源 ══════════════════════════════════════════════════════════
 sec 数据来源
-# 冒烟：用安全夹具真跑一次已安装脚本（隔离缓存目录、不派生后台刷新、不碰用户数据）
+# 冒烟：用安全夹具真跑一次已安装脚本（隔离缓存目录、不派生后台刷新、不碰用户数据）。
+# 跑两份夹具比对：结果不同才说明 stdin 真的进了渲染——一个只会 echo 的脚本也能「非空」。
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/ccpills-doctor.XXXXXX" 2>/dev/null)
 trap '[ -n "${scratch:-}" ] && rm -rf "$scratch"' EXIT
 smoke=$DEST/statusline-command.sh
 [ -f "$smoke" ] || smoke=$REPO/src/statusline-command.sh
+mkfx() {   # mkfx <已用%> <模型名> <费用> → 打印夹具 JSON（单引号里不能换行续行，反斜杠是字面量）
+  printf '{"session_id":"doctor-fixture","transcript_path":"","cwd":"%s","model":{"display_name":"%s"},"effort":{"level":"high"},"cost":{"total_cost_usd":%s,"total_api_duration_ms":123000},"context_window":{"total_input_tokens":123456,"context_window_size":200000,"used_percentage":%s},"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"5m","expires_at":%s,"recache_tokens_if_cold":1234}}' \
+    "$scratch" "$2" "$3" "$1" "$((NOW + 120))"
+}
+runfx() {  # runfx <夹具> → 全局 RUNOUT
+  RUNOUT=$( cd "$scratch" 2>/dev/null && printf '%s' "$1" | \
+            CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
+            TERM_PROGRAM= LC_TERMINAL= bash "$smoke" 2>/dev/null )
+}
 if [ ! -f "$smoke" ]; then
   res SKIP 数据/stdin "找不到可执行的 statusline-command.sh"
 elif [ -z "$scratch" ]; then
   res SKIP 数据/stdin "无法创建临时目录，跳过冒烟"
 else
-  fixture="{\"session_id\":\"doctor-fixture\",\"transcript_path\":\"\",\"cwd\":\"$scratch\",\
-\"model\":{\"display_name\":\"Opus 5.5\"},\"effort\":{\"level\":\"high\"},\
-\"cost\":{\"total_cost_usd\":1.23,\"total_api_duration_ms\":123000},\
-\"context_window\":{\"total_input_tokens\":123456,\"context_window_size\":200000,\"used_percentage\":37},\
-\"prompt_cache\":{\"warm\":true,\"caching_observed\":true,\"ttl\":\"5m\",\"expires_at\":$((NOW + 120)),\
-\"recache_tokens_if_cold\":1234}}"
-  out=$( cd "$scratch" 2>/dev/null && printf '%s' "$fixture" | \
-         CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
-         TERM_PROGRAM= LC_TERMINAL= bash "$smoke" 2>/dev/null )
-  # 判据不依赖任何具体项：用户配置可能改过降级序列（甚至 drop ctx / 缩短模型名）。
-  # 「非空且不是版本守卫的最简行」就说明主渲染路径真的跑起来了。
-  case "$out" in
+  runfx "$(mkfx 37 'Opus 5.5' 1.23)"; outA=$RUNOUT
+  runfx "$(mkfx 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
+  # 判据不依赖任何具体项（用户可能改过降级序列）：非空 + 不是最简行 + 两份夹具结果不同
+  case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
     'Opus 5.5 · 37%') res FAIL 数据/stdin "只渲染出版本守卫的最简行（模型 · ctx%）：主渲染路径没跑起来" \
                      "看 环境/bash：PATH 里的 bash 需要 ≥${BASH_MIN}，或让脚本换到 ≥5 的 bash" ;;
-    *)             res PASS 数据/stdin "冒烟通过：${#out} 字节（主渲染路径 + 夹具解析都正常，${smoke}）" ;;
+    *) if [ "$outA" = "$outB" ]; then
+         res FAIL 数据/stdin "两份不同夹具渲染出相同结果：stdin 没有真正进入渲染（${smoke}）" \
+           "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本"
+       else
+         res PASS 数据/stdin "冒烟通过：两份夹具结果不同（${#outA} 字符），主渲染路径与字段解析都正常"
+       fi ;;
   esac
 fi
 
@@ -523,6 +575,7 @@ case "$base" in
 esac
 if [ "$relay" = 1 ]; then
   host=${base#*://}; host=${host%%/*}
+  host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕
   note="ANTHROPIC_BASE_URL=${host}（${base_src}）"
 else
   note="未设置自定义 ANTHROPIC_BASE_URL（shell 环境变量与 settings.json 的 env 都查过）"
@@ -536,29 +589,34 @@ elif [ ! -e "$CCSWITCH_DB" ]; then
 elif [ -z "$py" ]; then
   res SKIP 数据/CCSwitch库 "python3 缺失，无法只读校验"
 elif [ ! -r "$CCSWITCH_DB" ]; then
-  res FAIL 数据/CCSwitch库 "$CCSWITCH_DB 不可读" "chmod 644 \"$CCSWITCH_DB\"（只读访问需要读权限）"
+  res WARN 数据/CCSwitch库 "${CCSWITCH_DB} 不可读：中转站费用会回落为 \$x*" "chmod 644 \"$CCSWITCH_DB\"（只读访问需要读权限）"
 else
   probe=$(python3 - "$CCSWITCH_DB" <<'PY' 2>/dev/null
 import sqlite3, sys
 try:
     con = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True, timeout=2)
     n = con.execute('SELECT COUNT(*) FROM proxy_request_logs').fetchone()[0]
-    p = con.execute("SELECT COUNT(*) FROM providers WHERE app_type='claude' AND is_current=1").fetchone()[0]
-    print(n, p)
 except Exception:
-    sys.exit(1)
+    sys.exit(1)                      # 账本表都读不到 = 真的用不了
+try:
+    p = con.execute("SELECT COUNT(*) FROM providers WHERE app_type='claude' AND is_current=1"
+                    ).fetchone()[0]
+except Exception:
+    p = '-'                          # 旧库没有 providers 表：可读，但供应商归属不可确定
+print(n, p)
 PY
   )
   case "$probe" in
-    '') res FAIL 数据/CCSwitch库 "无法只读打开 $CCSWITCH_DB" \
+    '') res WARN 数据/CCSwitch库 "无法只读打开 ${CCSWITCH_DB}：中转站费用会回落为 \$x*（标价估算）" \
           "确认没有被其他进程独占，且文件确实是 SQLite 库；本工具不会写它" ;;
     *)  set -- $probe
-        if [ "${2:-0}" = 1 ]; then
-          res PASS 数据/CCSwitch库 "只读打开成功；代理日志 $1 行；当前供应商唯一（日限额口径可确定）"
-        else
-          res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但当前供应商为 ${2:-0} 个：日限额与预测会隐藏（未知不当 0）" \
-            "在 CC Switch 里选定唯一的当前供应商"
-        fi ;;
+        case "${2:-}" in
+          -) res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但没有 providers 表（旧库）：日限额无法确定、会隐藏" \
+                "与渲染侧同口径：供应商归属未知时不当 0" ;;
+          1) res PASS 数据/CCSwitch库 "只读打开成功；代理日志 $1 行；当前供应商唯一（日限额口径可确定）" ;;
+          *) res WARN 数据/CCSwitch库 "只读打开成功（代理日志 $1 行），但当前供应商为 ${2:-0} 个：日限额与预测会隐藏（未知不当 0）" \
+                "在 CC Switch 里选定唯一的当前供应商" ;;
+        esac ;;
   esac
 fi
 
