@@ -311,6 +311,20 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS')
         self.assertIn('按需', self.sb.detail(r, '缓存/色板'))
 
+    def test_old_cache_without_ts_is_flagged_as_risk_not_hidden(self):
+        """没有 .ts 的旧缓存渲染侧按「新鲜」处理、不会隐藏；文案不能说成「已隐藏」。"""
+        self.sb.install()
+        self.sb.make_cache(tok_age=0)
+        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
+        os.unlink(tok + '.ts')                      # 模拟从旧版本迁移来、还没回填时间戳的缓存
+        old = time.time() - TOK_STALE - 600
+        os.utime(tok, (old, old))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        d = self.sb.detail(r, '缓存/token')
+        self.assertIn('沿用', d)
+        self.assertNotIn('会被隐藏', d)
+
     def test_truncated_token_cache_is_flagged(self):
         """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
         env = self.sb.healthy()
@@ -482,7 +496,7 @@ class Doctor(unittest.TestCase):
         """用户改过降级序列（删掉 ctx / 模型 / 目录）不该让冒烟误报——判据不看具体项。"""
         env = self.sb.healthy()
         with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
-            f.write('step = drop ctx\nstep = drop model\n')
+            f.write('step = drop ctx\nstep = drop model\nstep = drop cost\n')
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
 
@@ -539,6 +553,21 @@ class Doctor(unittest.TestCase):
             m = re.search(rf'^{name}=(\d+)', src, re.M)
             self.assertIsNotNone(m, f'doctor 里没有 {name}')
             self.assertEqual(m.group(1), str(want), f'{name} 与 statusline-command.sh 不一致')
+
+    def test_bak_only_reference_is_not_a_hit(self):
+        """`.bak` 指向的是另一个文件；与真引用混在一条命令里时，也要认出真引用。"""
+        self.sb.install(subagent=False, settings=False)   # 只装主脚本：--check 就不会因面板键未配而红
+        d = self.sb.dest
+        for cmd, want in ((f'bash {d}/statusline-command.sh.bak', 'FAIL'),
+                          (f'bash {d}/statusline-command.sh.bak && bash /elsewhere/statusline-command.sh', 'FAIL'),
+                          (f'cp {d}/statusline-command.sh {d}/statusline-command.sh.bak; '
+                           f'bash {d}/statusline-command.sh', 'PASS')):
+            self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
+            r = self.sb.run()
+            self.assertEqual(self.sb.status(r, '安装/statusLine'), want, f'{cmd}\n{r.stdout}')
+            chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
+                                 text=True, env=self.sb.env)
+            self.assertEqual(chk.returncode == 0, want == 'PASS', f'install --check 与 doctor 不一致：{cmd}')
 
     def test_token_field_count_matches_tokens_module(self):
         with open(DOCTOR, encoding='utf-8') as f:
@@ -647,6 +676,9 @@ class Doctor(unittest.TestCase):
             'bash /elsewhere/statusline-command.sh',
             'statusline-command.sh',
             f'bash {dest}/statusline-command.sh.bak',
+            # 同一命令里既有 .bak 又有真引用：不能因为先命中 .bak 就判未指向
+            f'cp {dest}/statusline-command.sh {dest}/statusline-command.sh.bak; '
+            f'bash {dest}/statusline-command.sh',
             '',
         ]
         for cmd in forms:

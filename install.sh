@@ -64,19 +64,32 @@ settings_cmd() {  # settings_cmd <settings.json 路径> <键> → 打印该键�
 has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
 }
+# 剥掉「文件名后紧跟单词字符」的出现（statusline-command.sh.bak / .tmp 指向的是另一个文件）。
+# 同一命令里可能既有 .bak 又有真引用，所以逐次剥离而不是一次 case。结果在 CLEAN。
+strip_dirty() {
+  local rest=$1 out=""
+  while case "$rest" in *"$2"*) true ;; *) false ;; esac; do
+    out=$out${rest%%"$2"*}
+    rest=${rest#*"$2"}
+    case "$rest" in
+      [A-Za-z0-9_.-]*) ;;
+      *) out=$out$2 ;;
+    esac
+  done
+  CLEAN=$out$rest
+}
 points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 只含名字 / 1 未指向
-  # 文件名后面紧跟单词字符说明是另一个文件（statusline-command.sh.bak / .tmp），不算指向
-  case "$1" in *"$2"[A-Za-z0-9_.-]*) return 1 ;; esac
-  case "$1" in
+  strip_dirty "$1" "$2"
+  case "$CLEAN" in
     *"$3/$2"*)                  return 0 ;;          # 指向已安装副本
     *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;        # 建议写法：运行时展开到同一目录
   esac
   if [ "$3" = "$HOME/.claude" ]; then
-    case "$1" in
+    case "$CLEAN" in
       *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;;   # 默认目录的等价写法
     esac
   fi
-  case "$1" in *"$2"*) return 2 ;; esac              # 只是文件名相同，路径不明
+  case "$CLEAN" in *"$2"*) return 2 ;; esac              # 只是文件名相同，路径不明
   return 1
 }
 

@@ -256,17 +256,33 @@ else
 fi
 
 # 与 install.sh 的 points_to 同一判据：0 明确指向已安装副本 / 2 只含文件名 / 1 未指向
+# 剥掉「文件名后紧跟单词字符」的出现（statusline-command.sh.bak / .tmp 指向的是另一个文件），
+# 剩下的才是真的引用。全都被后缀黏住时结果不含文件名，points_to 判未指向。
+# → 全局 CLEAN。逐次剥离而非一次 case：同一命令里可能既有 .bak 又有真引用。
+strip_dirty() {
+  local rest=$1 out=""
+  while case "$rest" in *"$2"*) true ;; *) false ;; esac; do
+    out=$out${rest%%"$2"*}
+    rest=${rest#*"$2"}
+    case "$rest" in
+      [A-Za-z0-9_.-]*) ;;      # 脏：不把文件名放进结果，后缀留给下一轮
+      *) out=$out$2 ;;         # 干净
+    esac
+  done
+  CLEAN=$out$rest
+}
+
+# 与 install.sh 的 points_to 同一判据：0 明确指向已安装副本 / 2 只含文件名 / 1 未指向
 points_to() {
-  # 文件名后面紧跟单词字符说明是另一个文件（statusline-command.sh.bak / .tmp），不算指向
-  case "$1" in *"$2"[A-Za-z0-9_.-]*) return 1 ;; esac
-  case "$1" in
+  strip_dirty "$1" "$2"
+  case "$CLEAN" in
     *"$3/$2"*) return 0 ;;
     *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;
   esac
   if [ "$3" = "$HOME/.claude" ]; then
-    case "$1" in *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;; esac
+    case "$CLEAN" in *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;; esac
   fi
-  case "$1" in *"$2"*) return 2 ;; esac
+  case "$CLEAN" in *"$2"*) return 2 ;; esac
   return 1
 }
 
@@ -399,9 +415,11 @@ else
 fi
 
 # token 缓存：只看新鲜度与归属，不读内容
-# 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件 → 判陈旧（渲染侧 tok_ok=0）；
-# 没有 .ts 的旧缓存渲染侧按「新鲜」处理，这里按缓存 mtime 提示（刷新会用 mtime 补回填）。
+# 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件 → 判陈旧（tok_ok=0，派生项隐藏）。
+# 没有 .ts 的旧缓存渲染侧按「新鲜」处理（一直沿用），所以这里不能照抄 .ts 的结论：
+# 那种情况报的是「不会自动判陈旧」的风险，而不是「项已消失」。
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0
+tok_old_ts=0; tok_no_ts_old=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
@@ -413,12 +431,13 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
-      *) t=$tv ;;
+      *) t=$tv; [ $(( NOW - tv )) -gt "$TOK_STALE" ] && tok_old_ts=$((tok_old_ts + 1)) ;;
     esac
   elif [ -e "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
   else
     t=$(( $(mtime "$f") ))
+    [ $(( NOW - t )) -gt "$TOK_STALE" ] && tok_no_ts_old=$((tok_no_ts_old + 1))
   fi
   [ "$t" -gt "$tok_newest" ] && tok_newest=$t
 done
@@ -436,9 +455,12 @@ else
   elif [ "$tok_tsbad" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$\\h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
-  elif [ "$age" -gt "$TOK_STALE" ]; then
-    res WARN 缓存/token "最近一次写入 ${age}s 前（超过 TOK_STALE=${TOK_STALE}）：\$\\h、out、hit、io、msgs 会被隐藏" \
+  elif [ "$tok_old_ts" -gt 0 ]; then
+    res WARN 缓存/token "有 $tok_old_ts 个缓存超过 TOK_STALE=${TOK_STALE}：\$\\h、out、hit、io、msgs 会被隐藏" \
       "回到那个会话让它刷新；若持续不更新，看 数据/stdin 与 缓存/后台刷新"
+  elif [ "$tok_no_ts_old" -gt 0 ]; then
+    res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：渲染侧会一直沿用（不会自动判陈旧）" \
+      "让该会话刷新一次即可补写 .ts；不需要手工删"
   else
     res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前"
   fi
@@ -519,12 +541,13 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/ccpills-doctor.XXXXXX" 2>/dev/null)
 trap '[ -n "${scratch:-}" ] && rm -rf "$scratch"' EXIT
 smoke=$DEST/statusline-command.sh
 [ -f "$smoke" ] || smoke=$REPO/src/statusline-command.sh
-mkfx() {   # mkfx <已用%> <模型名> <费用> → 打印夹具 JSON（单引号里不能换行续行，反斜杠是字面量）
-  printf '{"session_id":"doctor-fixture","transcript_path":"","cwd":"%s","model":{"display_name":"%s"},"effort":{"level":"high"},"cost":{"total_cost_usd":%s,"total_api_duration_ms":123000},"context_window":{"total_input_tokens":123456,"context_window_size":200000,"used_percentage":%s},"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"5m","expires_at":%s,"recache_tokens_if_cold":1234}}' \
-    "$scratch" "$2" "$3" "$1" "$((NOW + 120))"
+mkfx() {   # mkfx <cwd> <ctx 总输入> <已用%> <模型名> <费用> → 打印夹具 JSON
+  # 单引号里不能换行续行（反斜杠是字面量），所以整条 JSON 写在一行
+  printf '{"session_id":"doctor-fixture","transcript_path":"","cwd":"%s","model":{"display_name":"%s"},"effort":{"level":"high"},"cost":{"total_cost_usd":%s,"total_api_duration_ms":123000},"context_window":{"total_input_tokens":%s,"context_window_size":200000,"used_percentage":%s},"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"5m","expires_at":%s,"recache_tokens_if_cold":1234}}' \
+    "$1" "$4" "$5" "$2" "$3" "$((NOW + 120))"
 }
-runfx() {  # runfx <夹具> → 全局 RUNOUT
-  RUNOUT=$( cd "$scratch" 2>/dev/null && printf '%s' "$1" | \
+runfx() {  # runfx <夹具> <cwd> → 全局 RUNOUT
+  RUNOUT=$( cd "$2" 2>/dev/null && printf '%s' "$1" | \
             CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
             TERM_PROGRAM= LC_TERMINAL= bash "$smoke" 2>/dev/null )
 }
@@ -533,8 +556,11 @@ if [ ! -f "$smoke" ]; then
 elif [ -z "$scratch" ]; then
   res SKIP 数据/stdin "无法创建临时目录，跳过冒烟"
 else
-  runfx "$(mkfx 37 'Opus 5.5' 1.23)"; outA=$RUNOUT
-  runfx "$(mkfx 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
+  mkdir -p "$scratch/a" "$scratch/b" 2>/dev/null
+  # 两份夹具同时改 dir（cwd）、ctxin（总输入）与 ctx / 模型 / 费用：前两项在默认序列里
+  # 永不丢弃，所以即使用户 drop 了 ctx、模型与费用，差分仍然成立。
+  runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23)" "$scratch/a"; outA=$RUNOUT
+  runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)" "$scratch/b"; outB=$RUNOUT
   # 判据不依赖任何具体项（用户可能改过降级序列）：非空 + 不是最简行 + 两份夹具结果不同
   case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
