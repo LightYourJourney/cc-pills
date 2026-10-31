@@ -1,4 +1,5 @@
 # ═══ 安装一致性 ════════════════════════════════════════════════════════
+# 随 tools/doctor.sh 一起 source；必须保持 bash 3.2 兼容。
 sec 安装一致性
 if [ -d "$DEST" ]; then
   res PASS 安装/目录 "$DEST${CLAUDE_CONFIG_DIR:+（来自 CLAUDE_CONFIG_DIR）}"

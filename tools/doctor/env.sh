@@ -1,4 +1,5 @@
 # ═══ 运行环境 ══════════════════════════════════════════════════════════
+# 随 tools/doctor.sh 一起 source；必须保持 bash 3.2 兼容。
 sec 运行环境
 os=$(uname -s 2>/dev/null); arch=$(uname -m 2>/dev/null)
 osver=""

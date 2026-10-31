@@ -1,4 +1,5 @@
 # ═══ 缓存与后台任务 ════════════════════════════════════════════════════
+# 随 tools/doctor.sh 一起 source；必须保持 bash 3.2 兼容。
 sec 缓存与后台任务
 if [ -n "${CLAUDE_SL_TMP:-}" ]; then
   SLT=$CLAUDE_SL_TMP; src_note="（CLAUDE_SL_TMP）"
@@ -8,7 +9,12 @@ else
 fi
 SLT_OK=0
 if [ ! -e "$SLT" ]; then
-  res SKIP 缓存/根 "$SLT$src_note 不存在；首次后台刷新会以 0700 创建"
+  if [ -n "${CLAUDE_SL_TMP:-}" ]; then
+    res FAIL 缓存/根 "${SLT}（CLAUDE_SL_TMP）不存在：显式路径必须由调用方建好，后台刷新不会创建" \
+      "mkdir -m 700 \"$SLT\"，或取消 CLAUDE_SL_TMP"
+  else
+    res SKIP 缓存/根 "$SLT 不存在；首次后台刷新会以 0700 创建"
+  fi
 elif [ ! -d "$SLT" ]; then
   res FAIL 缓存/根 "$SLT$src_note 存在但不是目录" "删掉它：rm -f \"$SLT\"（下次刷新重建）"
 elif [ ! -O "$SLT" ]; then

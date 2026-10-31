@@ -1,4 +1,5 @@
 # ═══ 数据来源 ══════════════════════════════════════════════════════════
+# 随 tools/doctor.sh 一起 source；必须保持 bash 3.2 兼容。
 sec 数据来源
 # 冒烟：用安全夹具真跑一次已安装脚本（隔离缓存目录、不派生后台刷新、不碰用户数据）。
 # 跑两份夹具比对：结果不同才说明 stdin 真的进了渲染——一个只会 echo 的脚本也能「非空」。
@@ -31,14 +32,19 @@ else
   runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23 20)"; outA=$RUNOUT
   runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
   # 差分只能证明 stdin 进了进程；只提取固定几个字段的占位脚本也会因两份夹具不同而通过。
-  # 目录与 ctxin 是渲染脚本默认不降级的两项，要求它们都出现，才算主渲染路径真的跑了。
+  # ctxin 必须出现，再要求模型 / ctx% / 费用 / 目录任一出现；目录可能被 truncate_length
+  # 截短，不能绑定完整路径。
   dir_a="${scratch##*/}/a"; dir_b="${scratch##*/}/b"
-  ha=0; hb=0; ca=0; cb=0
-  case "$outA" in *"$dir_a"*) ha=1;; esac
+  ca=0; cb=0; oa=0; ob=0
   case "$outA" in *'123k'*) ca=1;; esac
-  case "$outB" in *"$dir_b"*) hb=1;; esac
   case "$outB" in *'654k'*) cb=1;; esac
-  # 非空 + 不是最简行 + 两份夹具结果不同 + 目录与 ctxin 都真的被渲染出来
+  for m in 'Opus 5.5' '37%' '$1.23' "$dir_a"; do
+    case "$outA" in *"$m"*) oa=1; break;; esac
+  done
+  for m in 'Doctor Fixture B' '88%' '$9.87' "$dir_b"; do
+    case "$outB" in *"$m"*) ob=1; break;; esac
+  done
+  # 非空 + 不是最简行 + 两份夹具结果不同 + ctxin 与至少一个可辨识字段真的被渲染出来
   case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
@@ -50,9 +56,9 @@ else
     *) if [ "$outA" = "$outB" ]; then
          res FAIL 数据/stdin "两份不同夹具渲染出相同结果：stdin 没有真正进入渲染（${smoke}）" \
            "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本"
-       elif [ "$ha$ca$hb$cb" != 1111 ]; then
-         res FAIL 数据/stdin "缺少目录或 ctxin 的渲染形态（目录 ${ha}/${hb}，ctxin ${ca}/${cb}）：疑似占位脚本，或显示项被全部 drop（${smoke}）" \
-           "确认该文件是 cc-pills 的 statusline-command.sh；若你确实 drop 了 dir 与 ctxin，可忽略此项"
+       elif [ "$ca" = 0 ] || [ "$cb" = 0 ] || [ "$oa" = 0 ] || [ "$ob" = 0 ]; then
+         res FAIL 数据/stdin "缺少 ctxin 或其余字段的渲染形态（ctxin ${ca}/${cb}，其他 ${oa}/${ob}）：疑似占位脚本，或显示项被全部 drop（${smoke}）" \
+           "确认该文件是 cc-pills 的 statusline-command.sh；若你确实 drop 了 ctxin 与其余可辨识字段，可忽略此项"
        else
          res PASS 数据/stdin "冒烟通过：两份夹具结果不同（${#outA} 字符），主渲染路径与字段解析都正常"
        fi ;;

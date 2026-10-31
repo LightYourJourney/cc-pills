@@ -300,13 +300,8 @@ class Doctor(unittest.TestCase):
 
     def test_bare_filename_is_not_accepted(self):
         """只有文件名、路径不明：install.sh --check 也不认，两边判断必须一致。"""
-        self.sb.install()
-        self.sb.write_settings({'statusLine': {'type': 'command', 'command': 'statusline-command.sh'}})
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '安装/statusLine'), 'FAIL')
-        chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
-                             text=True, env=self.sb.env)
-        self.assertEqual(chk.returncode, 1)
+        self.sb.install(subagent=False, settings=False)
+        self.assertEqual(self._points_to_verdict('statusline-command.sh'), 'FAIL')
 
     def test_subagent_key_missing_warns_when_installed(self):
         self.sb.install(subagent=True, settings=False)
@@ -337,6 +332,13 @@ class Doctor(unittest.TestCase):
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/根'), 'FAIL')
+
+    def test_explicit_tmp_missing_fails(self):
+        """显式 CLAUDE_SL_TMP 不存在时渲染不会创建，不能报「首次刷新会创建」。"""
+        self.sb.install()
+        r = self.sb.run(env={'CLAUDE_SL_TMP': os.path.join(self.sb.d, 'missing-slt')})
+        self.assertEqual(self.sb.status(r, '缓存/根'), 'FAIL')
+        self.assertIn('CLAUDE_SL_TMP', self.sb.detail(r, '缓存/根'))
 
     def test_loose_cache_dir_mode_warns(self):
         self.sb.healthy()
@@ -741,6 +743,14 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
 
+    def test_smoke_tolerates_truncated_directory(self):
+        """truncate_length=1 时目录只剩末段，不能因为匹配不到完整路径就判 FAIL。"""
+        self.sb.healthy()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('truncate_length = 1\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
+
     def test_smoke_render_fails_on_silent_script(self):
         self.sb.install()
         with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
@@ -935,6 +945,16 @@ class Doctor(unittest.TestCase):
         r = subprocess.run([sysbash, DOCTOR], capture_output=True, text=True, env=sb.env)
         self.assertNotIn('unbound variable', r.stderr)
         self.assertIn('汇总', r.stdout)
+
+    def test_missing_module_exits_1(self):
+        """模块缺失不是参数错误：exit 1，并说明缺哪个文件。"""
+        tmp = tempfile.mkdtemp(prefix='ccpills-doctor-')
+        self.addCleanup(shutil.rmtree, tmp, True)
+        shutil.copy(DOCTOR, os.path.join(tmp, 'doctor.sh'))
+        r = subprocess.run([BASE_BASH, os.path.join(tmp, 'doctor.sh')],
+                           capture_output=True, text=True, env=self.sb.env, timeout=30)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn('缺少诊断模块', r.stderr)
 
     def test_points_to_agrees_with_install_check(self):
         """doctor 与 install.sh --check 对同一组命令写法必须给出同一结论。

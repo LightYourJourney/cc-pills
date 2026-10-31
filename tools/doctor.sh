@@ -9,7 +9,7 @@
 # 输出每行「[状态] 分组/项  说明」，状态 ∈ PASS / WARN / FAIL / SKIP / UNKNOWN：
 #   PASS 正常；WARN 能工作但有隐患；FAIL 状态栏很可能不工作；
 #   SKIP 不适用（没装、没配、没用到）；UNKNOWN 取决于运行时数据，这里无法确定。
-# 末行汇总。退出码：0 = 无 FAIL，1 = 有 FAIL，2 = 参数错误。
+# 末行汇总。退出码：0 = 无 FAIL；1 = 有 FAIL 或诊断模块无法加载；2 = 参数错误。
 #
 # 只读承诺
 # --------
@@ -29,7 +29,8 @@
 # install.sh 是写工具（复制 / 备份 / 删除），诊断是读工具；分开才能从结构上保证「默认只读」。
 # install.sh --doctor 只是 exec 别名，不重复任何逻辑。
 #
-# 本文件只在 bash ≥ 3.2 上要求可运行（诊断要在最坏环境里也能跑），因此不用关联数组。
+# 本入口与 tools/doctor/*.sh 只在 bash ≥ 3.2 上要求可运行（诊断要在最坏环境里也能跑），
+# 因此不用关联数组；模块随入口一起 source，同样不得使用 3.2 之后的语法。
 # 下列「与渲染脚本同源」的常量由 tests/test_doctor.py 守护，改了渲染脚本这里要跟着改。
 
 set -u
@@ -165,7 +166,11 @@ fi
 # ── 诊断模块：每组检查一个文件，入口只负责共享状态、加载顺序与汇总 ──────
 DOCTOR_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/doctor
 for _m in env install cache data; do
-  . "$DOCTOR_LIB/$_m.sh" || { echo "缺少诊断模块：$DOCTOR_LIB/$_m.sh" >&2; exit 2; }
+  if [ ! -f "$DOCTOR_LIB/$_m.sh" ]; then
+    echo "缺少诊断模块：$DOCTOR_LIB/$_m.sh" >&2
+    exit 1
+  fi
+  . "$DOCTOR_LIB/$_m.sh" || { echo "诊断模块加载失败：$DOCTOR_LIB/$_m.sh" >&2; exit 1; }
 done
 
 # ═══ 汇总 ══════════════════════════════════════════════════════════════

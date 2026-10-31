@@ -96,7 +96,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 
 每行一个结论：`[PASS] 分组/项  说明`，状态为 PASS / WARN / FAIL / SKIP / UNKNOWN
 （UNKNOWN = 取决于运行时 stdin，命令行里无法判定；SKIP = 不适用），末行汇总。
-退出码：0 无 FAIL，1 有 FAIL，2 参数错误。需要处理时下方会给出可直接照做的「修：」。
+退出码：0 无 FAIL；1 有 FAIL 或诊断模块无法加载；2 参数错误。需要处理时下方会给出可直接照做的「修：」。
 
 | 症状 | 先看哪一项 |
 |---|---|
@@ -133,6 +133,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | token 缓存字段数不是 18 | WARN | `缓存/token` |
 | 刷新锁路径被普通文件 / 符号链接 / 非空目录占住（后台刷新永久失败） | FAIL | `缓存/锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
+| 显式 `CLAUDE_SL_TMP` 指向的目录不存在（渲染不会创建） | FAIL | `缓存/根` |
 | 中转站模式但找不到 CC Switch 库 | WARN | `数据/CCSwitch库` |
 | CC Switch 供应商不唯一 / 日限额值非法 | WARN | `数据/CCSwitch库` |
 | 日限额未设置（当前供应商唯一） | SKIP | `数据/CCSwitch库` |
@@ -140,7 +141,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 已安装脚本坏掉 / 被换成占位脚本 | FAIL | `数据/stdin` |
 | 计费模式 | UNKNOWN | `数据/计费模式` |
 
-退出码：0 = 无 FAIL，1 = 有 FAIL，2 = 参数错误。
+退出码：0 = 无 FAIL；1 = 有 FAIL 或诊断模块无法加载；2 = 参数错误。
 
 ## 目录
 

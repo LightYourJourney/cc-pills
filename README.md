@@ -105,8 +105,8 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<project>/<session>.jsonl
 
 One line per check — `[PASS] group/item  detail` — with PASS / WARN / FAIL / SKIP / UNKNOWN
 (UNKNOWN = undecidable without runtime stdin, SKIP = not applicable), a summary line, and a
-`修:` (fix) line whenever something needs doing. Exit code 0 = no FAIL, 1 = some FAIL, 2 = bad
-arguments.
+`修:` (fix) line whenever something needs doing. Exit code 0 = no FAIL, 1 = some FAIL or the
+diagnostic modules cannot load, 2 = bad arguments.
 
 | Symptom | Look at |
 |---|---|
@@ -143,6 +143,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Token cache not 18 fields | WARN | `缓存/token` |
 | Lock path occupied by a plain file / symlink / non-empty dir (refresh never runs) | FAIL | `缓存/锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
+| Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |
 | CC Switch provider not unique / invalid daily limit | WARN | `数据/CCSwitch库` |
 | Daily limit not set (single current provider) | SKIP | `数据/CCSwitch库` |
@@ -150,7 +151,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Installed script broken or replaced by a stub | FAIL | `数据/stdin` |
 | Billing mode | UNKNOWN | `数据/计费模式` |
 
-Exit code: 0 = no FAIL, 1 = some FAIL, 2 = bad arguments.
+Exit code: 0 = no FAIL, 1 = some FAIL or diagnostic modules cannot load, 2 = bad arguments.
 
 ## Layout
 
