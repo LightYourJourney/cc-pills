@@ -5,6 +5,7 @@
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -127,6 +128,18 @@ class Install(unittest.TestCase):
         active = [l for l in text.splitlines() if l.strip().startswith('step')]
         self.assertEqual(active, [], '安装的配置不应带 active step（否则冻结默认序列）')
         self.assertIn('# step = drop    api', text)
+
+    def test_python_floor_matches_doctor(self):
+        """install.sh 的 python 下限必须跟 doctor 的 PY_MIN 同源，改一处不能漏另一处。"""
+        with open(os.path.join(REPO, 'tools', 'doctor.sh'), encoding='utf-8') as f:
+            m = re.search(r'^PY_MIN=(\d+)\.(\d+)', f.read(), re.M)
+        self.assertIsNotNone(m, 'doctor 里没有 PY_MIN')
+        major, minor = m.group(1), m.group(2)
+        with open(INSTALL, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn(f'sys.version_info >= ({major}, {minor})', src,
+                      'install.sh 的 python 版本比较与 PY_MIN 不一致')
+        self.assertIn(f'≥ {major}.{minor}', src, 'install.sh 的提示文案与 PY_MIN 不一致')
 
     def test_low_python_is_refused(self):
         """安装时就该拦下 <3.9：装完才发现 token / 色板静默失效是最差的失败方式。"""

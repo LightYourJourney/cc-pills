@@ -40,7 +40,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 |---|---|---|
 | macOS + Homebrew bash 5.x | 是 | 主目标 |
 | macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
-| Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑平台敏感子集；无 iTerm profile 时用内置主题 |
+| Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑平台敏感子集（并发写面板状态除外）；无 iTerm profile 时用内置主题 |
 | bash 4.2–4.4 | 是 | 源码编译 bash 4.2.0 后全量 197 项通过；顺带修掉 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
@@ -166,8 +166,9 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | token 缓存超过 15 分钟（按 `.ts` 或文件 mtime 计） | WARN | `缓存/token` |
 | token 缓存字段数不是 18 | WARN | `缓存/token` |
 | token 缓存是符号链接（会被忽略） | WARN | `缓存/token` |
-| 刷新锁路径被普通文件 / 符号链接 / 非空目录占住（后台刷新永久失败） | FAIL | `缓存/锁` |
-| 面板锁被普通文件 / 符号链接 / 非空目录占住（写回永久失败） | FAIL | `缓存/面板锁` |
+| 刷新锁被普通文件 / 符号链接占住（本次刷新失败，下次自行清除） | FAIL | `缓存/锁` |
+| 刷新锁是非空目录（不会自愈，后台刷新永久退出） | FAIL | `缓存/锁` |
+| 面板锁被普通文件 / 符号链接 / 非空目录占住（本次写回失败，下次渲染自行清除） | FAIL | `缓存/面板锁` |
 | 面板锁为空但超过 5 秒（下次渲染自行清除） | WARN | `缓存/面板锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
 | 显式 `CLAUDE_SL_TMP` 指向的目录不存在（渲染不会创建） | FAIL | `缓存/根` |

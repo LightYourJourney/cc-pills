@@ -1139,22 +1139,22 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(self.sb.run(), '安装/配置文件'), 'PASS')
 
     def test_lock_path_occupied_by_file_fails(self):
-        """普通文件占住锁路径时 mkdir 永远失败，后台刷新每轮直接退出，不会自愈。"""
+        """普通文件占住锁路径：本次刷新失败，但下一次会清掉它（与面板锁同口径）。"""
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-lock-doctor'), 'w') as f:
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
-        self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))
+        self.assertIn('下一次刷新会自动清掉', self.sb.detail(r, '缓存/锁'))
 
     def test_lock_path_symlink_fails(self):
-        """符号链接占住锁路径时 mkdir/rmdir 都失败，刷新永不自愈——与普通文件同等对待。"""
+        """符号链接占住锁路径：同上，下一次刷新自愈。"""
         self.sb.healthy()
         os.symlink('/nonexistent-lock-target',
                    os.path.join(self.sb.cache, 'claude-sl-lock-doctor'))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
-        self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))
+        self.assertIn('下一次刷新会自动清掉', self.sb.detail(r, '缓存/锁'))
 
     def test_nonempty_lock_dir_fails(self):
         """渲染侧只用 rmdir，非空锁目录永远删不掉：不能报「下次会自动清除」。"""

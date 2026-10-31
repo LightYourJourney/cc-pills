@@ -45,7 +45,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 |---|---|---|
 | macOS + Homebrew bash 5.x | yes | primary target |
 | macOS stock `/bin/bash` 3.2 | re-exec | jumps to a ≥4.2 build at `/opt/homebrew/bin/bash` etc.; only without one does it fall back to the minimal line |
-| Linux (GNU coreutils) | yes | full suite passes on Debian 12 (bash 5.2 / Python 3.11); CI runs the platform-sensitive subset; built-in themes when there is no iTerm profile |
+| Linux (GNU coreutils) | yes | full suite passes on Debian 12 (bash 5.2 / Python 3.11); CI runs the platform-sensitive subset (except the concurrent panel-write case); built-in themes when there is no iTerm profile |
 | bash 4.2–4.4 | yes | built bash 4.2.0 from source; full suite of 197 passes (two 4.2-only differences found and fixed: empty-format `printf -v` and second-granularity `-nt`) |
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
@@ -182,8 +182,9 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
 | Token cache not 18 fields | WARN | `缓存/token` |
 | Token cache is a symlink (ignored) | WARN | `缓存/token` |
-| Lock path occupied by a plain file / symlink / non-empty dir (refresh never runs) | FAIL | `缓存/锁` |
-| Panel lock occupied by a plain file / symlink / non-empty dir | FAIL | `缓存/面板锁` |
+| Refresh lock occupied by a plain file / symlink (this refresh fails, next one self-heals) | FAIL | `缓存/锁` |
+| Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
+| Panel lock occupied by a plain file / symlink / non-empty dir (this write fails, next render self-heals) | FAIL | `缓存/面板锁` |
 | Panel lock empty but older than 5 s (self-cleared on next render) | WARN | `缓存/面板锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |

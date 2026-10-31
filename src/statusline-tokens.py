@@ -576,7 +576,11 @@ def main():
     state_path = os.path.join(TMP, f'claude-statusline-{os.path.basename(sid)}.json')
     st = dict(EMPTY)
     try:
-        with open(state_path, encoding='utf-8') as f:
+        # 与 bash 侧同一条：只读本人的普通文件，不跟随符号链接（O_NOFOLLOW）。
+        fd = os.open(state_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, encoding='utf-8') as f:
+            if os.fstat(f.fileno()).st_uid != os.getuid():
+                raise OSError
             loaded = json.load(f)
         if loaded.get('v') == STATE_V:     # 约束 5
             st.update(loaded)

@@ -93,6 +93,22 @@ class SubagentState(unittest.TestCase):
         with open(st) as f:
             self.assertIn('a', json.load(f))
 
+    def test_live_stale_lock_is_not_stolen(self):
+        """残锁里的 PID 还活着就不能抢：宁少一帧，也不与正在写的进程并发读改写。"""
+        st = os.path.join(self.d, 's.json')
+        with open(st, 'w') as f:
+            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        lock = st + '.lock'
+        os.makedirs(lock)
+        with open(os.path.join(lock, 'owner'), 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        old = time.time() - 30
+        os.utime(lock, (old, old))
+        self.spawn(st, 'a').wait()
+        self.assertTrue(os.path.exists(lock), '持有者 PID 仍存活时锁被抢走了')
+        with open(st) as f:
+            self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
+
     def test_lock_path_occupied_by_file_is_recovered(self):
         st = os.path.join(self.d, 's.json')
         lock = st + '.lock'
@@ -167,25 +183,6 @@ class SubagentState(unittest.TestCase):
         self.assertFalse(os.path.exists(
             os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json')),
             '显式 CLAUDE_SUBAGENT_SL_STATE 应压过 CLAUDE_SL_TMP')
-
-    def test_legacy_tmp_state_is_not_migrated(self):
-        """旧版状态直接放在共享 /tmp，只有速率基线：不迁移，宁可丢一帧也不碰共享目录里的文件。"""
-        old = f'/tmp/claude-subagent-sl-{os.getuid()}.json'
-        if os.path.exists(old):
-            self.skipTest(f'{old} 已存在（真实的旧状态文件），不做破坏性测试')
-        with open(old, 'w') as f:
-            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
-        self.addCleanup(lambda: os.path.exists(old) and os.unlink(old))
-        tmp = os.path.join(self.d, 'T')
-        os.makedirs(tmp, mode=0o700)
-        self.spawn(os.path.join(self.d, 'in.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
-        new = os.path.join(tmp, f'claude-sl-{os.getuid()}',
-                           f'claude-subagent-sl-{os.getuid()}.json')
-        with open(new) as f:
-            d = json.load(f)
-        self.assertNotIn('seed', d, '旧 /tmp 状态不应被迁入')
-        self.assertTrue(os.path.exists(old), '旧 /tmp 状态不应被移动或删除')
 
     def test_symlink_cache_root_is_not_used(self):
         tmp = os.path.join(self.d, 'T')

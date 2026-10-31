@@ -210,6 +210,13 @@ class Lifecycle(CacheBase):
         for n, f in files.items():
             with open(f, 'w') as fh:
                 fh.write('x\n')
+        # 合法但没有任何 transcript 的会话状态应当被清；损坏 / 读不出的保留（不误删断点）
+        with open(files['claude-statusline-old.json'], 'w') as fh:
+            json.dump({'v': 9, 'files': {}}, fh)
+        corrupt = os.path.join(p, 'claude-statusline-corrupt.json')
+        with open(corrupt, 'w') as fh:
+            fh.write('not json\n')
+        self.old(corrupt)
         for n in ('claude-sl-tok-old.cache', 'claude-sl-tok-old.cache.ts',
                   'claude-sl-skip-old', 'claude-sl-git-k.cache',
                   'claude-statusline-old.json'):
@@ -228,6 +235,7 @@ class Lifecycle(CacheBase):
             self.assertFalse(os.path.exists(files[n]), f'{n} 已超 30 天但没有被清理')
         for n in ('claude-sl-tok-live.cache', 'claude-sl-tok-live.cache.ts') + tuple(keep):
             self.assertTrue(os.path.exists(os.path.join(p, n)), f'{n} 不该被清理')
+        self.assertTrue(os.path.exists(corrupt), '读不出的会话状态被误删（无法确认 transcript 已消失）')
 
     def test_prune_skips_symlinks_and_subdirectories(self):
         p = self.private()
@@ -280,6 +288,17 @@ class Lifecycle(CacheBase):
         self.refresh(dict(self.env, CLAUDE_SL_TMP=slt))
         self.assertTrue(os.path.exists(f), '显式 CLAUDE_SL_TMP 的目录被清理了')
         self.assertFalse(os.path.exists(os.path.join(slt, 'claude-sl-prune.stamp')))
+
+    def test_occupied_refresh_lock_is_cleared(self):
+        """主栏刷新锁被普通文件占住时清掉重试；否则该会话后台永久退出。"""
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        lock = os.path.join(slt, 'claude-sl-lock-life')
+        with open(lock, 'w') as f:
+            f.write('x')
+        r = self.refresh(dict(self.env, CLAUDE_SL_TMP=slt), sid='life')
+        self.assertEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(lock), '被普通文件占住的刷新锁没有被清除')
 
     def test_deleted_cache_dir_is_recreated(self):
         p = self.private()

@@ -181,6 +181,8 @@ PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
 # 否则用每用户私有目录 $TMPDIR/claude-sl-<uid>（0700），不再落到共享 /tmp。
+# 根必须是本人拥有的真实目录：符号链接（哪怕是本人建的）一律不跟随。
+root_ok() { [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
 SLT_OK=0
 if [ -n "${CLAUDE_SL_TMP:-}" ]; then
   SLT=$CLAUDE_SL_TMP
@@ -188,8 +190,7 @@ else
   tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}
   SLT=$tmpdir/claude-sl-${UID:-0}
 fi
-# 根必须是本人拥有的真实目录：符号链接（哪怕是本人建的）一律不跟随。
-[ -d "$SLT" ] && [ ! -L "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+root_ok "$SLT" && SLT_OK=1
 GIT_TTL=5                # git 缓存刷新间隔（秒）；.git/HEAD 或 index 变了立即刷新
 CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 
@@ -268,9 +269,9 @@ else
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi
-# 缓存读取前确认：可读、不是符号链接、且属于当前用户。跨用户预置的同名文件一律不读
-# （-r / -L / -O 都是内建，不 fork）。
-cache_ok() { [ -r "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
+# 缓存读取前确认：是普通文件、可读、不是符号链接、且属于当前用户。跨用户预置的同名
+# 文件一律不读（-f / -r / -L / -O 都是内建，不 fork）。
+cache_ok() { [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
 
 # 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
@@ -333,7 +334,7 @@ if [ "${1:-}" = "--refresh" ]; then
   # 显式 CLAUDE_SL_TMP 也要求目录存在且属于本人（预览 / 测试会自己建好）。
   if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT_OK" != 1 ]; then
     mkdir -m 700 "$SLT" 2>/dev/null
-    [ -d "$SLT" ] && [ ! -L "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+    root_ok "$SLT" && SLT_OK=1
   fi
   [ "$SLT_OK" = 1 ] || exit 0
   [ -z "${CLAUDE_SL_TMP:-}" ] && chmod 700 "$SLT" 2>/dev/null
@@ -360,9 +361,16 @@ if [ "${1:-}" = "--refresh" ]; then
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
   if ! mkdir "$lock" 2>/dev/null; then
-    lt=$(mtime "$lock"); lt=${lt:-$now}
-    [ $((now - lt)) -lt "$LOCK_STALE" ] && exit 0
-    rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null || exit 0
+    # 普通文件 / 符号链接不是进行中的刷新锁：清掉重试，否则后台会永久退出。
+    # 目录仍按 mtime 判残锁、只用 rmdir——不抢可能还活着的持有者。
+    if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
+      rm -f "$lock" 2>/dev/null
+    else
+      lt=$(mtime "$lock"); lt=${lt:-$now}
+      [ $((now - lt)) -lt "$LOCK_STALE" ] && exit 0
+      rmdir "$lock" 2>/dev/null
+    fi
+    mkdir "$lock" 2>/dev/null || exit 0
   fi
   trap 'rmdir "$lock" 2>/dev/null' EXIT
 
@@ -463,8 +471,9 @@ if [ "${1:-}" = "--refresh" ]; then
 
   # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
   # 链接，-maxdepth 1 不递归；锁目录、色板、状态页与面板状态不在清理范围。缓存都可
-  # 重建，误删最多丢一轮加速；会话状态另由 transcript 是否存在把关（见下）。
-  if [ -z "${CLAUDE_SL_TMP:-}" ]; then
+  # 重建，误删最多丢一轮加速；会话状态另由 transcript 是否存在把关（见下）。只读根
+  # 连时间戳都写不了，直接跳过，避免每轮重复扫描。
+  if [ -z "${CLAUDE_SL_TMP:-}" ] && [ -w "$SLT" ]; then
     pstamp="${SLT}/claude-sl-prune.stamp"
     pst=$(mtime "$pstamp"); pst=${pst:-0}
     if [ $((now - pst)) -ge "$PRUNE_GAP" ]; then
@@ -474,16 +483,16 @@ if [ "${1:-}" = "--refresh" ]; then
            -o -name '.claude-sl-*' \) \
         -mtime +"$CACHE_MAX_AGE" -exec rm -f {} + 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
-      # 都不在了才删。读不出（损坏 / 无 jq）时视为没有 transcript——那种状态本来也会
-      # 触发重扫，删掉不损失任何东西。
+      # 都不在了才删。读不出（损坏 / 无 jq）就保留——宁可留一个死文件，也不误删断点。
       cutoff=$((now - CACHE_MAX_AGE * 86400))
       for f in "$SLT"/claude-statusline-*.json; do
         [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || continue
         m=$(mtime "$f"); [ "${m:-0}" -lt "$cutoff" ] || continue
+        paths=$(jq -r '.files | keys[]?' "$f" 2>/dev/null) || continue
         keep=0
         while IFS= read -r p; do
           [ -n "$p" ] && [ -e "$p" ] && { keep=1; break; }
-        done < <(jq -r '.files | keys[]?' "$f" 2>/dev/null)
+        done <<< "$paths"
         [ "$keep" = 0 ] && rm -f "$f"
       done
       ptmp=$(mktemp "${SLT}/.claude-sl-prune.XXXXXX" 2>/dev/null)

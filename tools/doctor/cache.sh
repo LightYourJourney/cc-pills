@@ -218,8 +218,8 @@ elif [ -n "$lock_full" ]; then
   res FAIL 缓存/锁 "锁目录非空${lock_full}：渲染侧只用 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
     "rm -rf \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_bad" ]; then
-  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：mkdir 永远失败，后台刷新会一直退出（不会自愈）" \
-    "rm -f \"$SLT\"/claude-sl-lock-*"
+  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：本次刷新会失败，下一次刷新会自动清掉它" \
+    "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
   res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：下次刷新会自动清除，无需手工处理"
 elif [ "$lock_n" -gt 0 ]; then
@@ -260,18 +260,18 @@ if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
 elif [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/面板锁 "缓存根不可用"
 elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
-  res FAIL 缓存/面板锁 "面板锁被普通文件或符号链接占住：写回会一直失败，速率段缺失" \
-    "rm -f \"$plock\"（面板下次渲染也会自行清除）"
+  res FAIL 缓存/面板锁 "面板锁被普通文件或符号链接占住：本次写回失败，下次渲染会自行清除" \
+    "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
 elif [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
-  res FAIL 缓存/面板锁 "面板锁目录非空：写回会一直失败，速率段缺失" \
-    "rm -rf \"$plock\"（面板下次渲染也会自行清除）"
+  res FAIL 缓存/面板锁 "面板锁目录非空：本次写回失败，下次渲染会自行清除" \
+    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
 else
-  pm=$(mtime "$plock"); pm=${pm:-$NOW}
-  page=$(( NOW - pm ))
-  if [ "$page" -ge "$PANEL_LOCK_STALE" ]; then
-    res WARN 缓存/面板锁 "残锁 ${page}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除"
+  pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
+  pl_age=$(( NOW - pl_mtime ))
+  if [ "$pl_age" -ge "$PANEL_LOCK_STALE" ]; then
+    res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除"
   else
     res PASS 缓存/面板锁 "有面板写回正在进行"
   fi

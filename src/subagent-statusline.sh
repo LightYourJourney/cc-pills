@@ -38,9 +38,10 @@
 #   $CLAUDE_SL_TMP/claude-subagent-sl-<uid>.json（调用方建好目录），或
 #   ${TMPDIR:-/tmp}/claude-sl-<uid>/claude-subagent-sl-<uid>.json（需要时 0700 创建）。
 #   多会话共享：读-改-写全程在同一把 mkdir 锁内，锁内重新读取后再合并（不会用旧快照
-#   覆盖别家条目）；抢锁超过 2s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
+#   覆盖别家条目）；抢锁超过 1s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
 #   原子替换，状态文件 0600；entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
-#   锁路径被普通文件 / 符号链接占住，或残锁超过 5s（含非空目录）时先清掉再重试。
+#   锁路径被普通文件 / 符号链接占住时先清掉再重试；残锁超过 5s 且持有者 PID 已退出才回收。
+#   锁里记 owner（PID.token），释放只删自己的锁。
 #   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
 #   （只有速率基线，丢失代价是一帧）。
 #
@@ -164,6 +165,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # ── 状态写回（共享合并、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
 # 读-改-写全程持锁，锁内重新读取状态：否则两个实例都用开始时的快照，后写者会覆盖
 # 先写者的条目。抢不到锁（1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
+# 锁里记 owner（PID.token）：释放只删自己的锁；残锁超 5s 且持有者 PID 已死才回收。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
@@ -176,13 +178,24 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
     fi
     lt=$(mtime "$lock"); lt=${lt:-0}
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
+      # 只有在持有者已死时才抢残锁：锁里记着持有者 PID，活着就继续等（PID 复用最多让
+      # 本次放弃，不会误删别人的锁）。
+      owner=""; [ -f "$lock/owner" ] && owner=$(< "$lock/owner")
+      pid=${owner%%.*}
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then sleep 0.05; continue; fi
       rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
   done
 fi
+release_lock() {                                  # 只删自己的锁（token 不符时不动）
+  owner=""; [ -f "$lock/owner" ] && owner=$(< "$lock/owner")
+  [ "$owner" = "$tok" ] && rm -rf "$lock" 2>/dev/null
+}
 if [ "$got" = 1 ]; then
-  trap 'rmdir "$lock" 2>/dev/null' EXIT
+  tok="$$.${RANDOM:-0}"
+  printf '%s' "$tok" > "$lock/owner" 2>/dev/null
+  trap release_lock EXIT
   prev='{}'
   [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
   [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
@@ -204,7 +217,7 @@ if [ "$got" = 1 ]; then
     [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null \
       && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   fi
-  rmdir "$lock" 2>/dev/null
+  release_lock
 fi
 
 true
