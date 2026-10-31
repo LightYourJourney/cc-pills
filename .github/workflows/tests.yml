@@ -51,14 +51,13 @@ jobs:
           set +e
           type mkdir
           echo "BASH_ENV=${BASH_ENV:-<unset>}"
-          p=$(mktemp -d)/lock; bad=0
+          d=$(mktemp -d); p=$d/lock; bad=0
           for i in $(seq 1 200); do
             rm -rf "$p"
-            mkdir "$p" & a=$!
-            mkdir "$p" & b=$!
-            wait $a; ra=$?
-            wait $b; rb=$?
-            [ "$ra" = 0 ] && [ "$rb" = 0 ] && bad=$((bad + 1))
+            ( mkdir "$p" 2>/dev/null; echo $? > "$d/a" ) & a=$!
+            ( mkdir "$p" 2>/dev/null; echo $? > "$d/b" ) & b=$!
+            wait $a; wait $b
+            [ "$(cat "$d/a")" = 0 ] && [ "$(cat "$d/b")" = 0 ] && bad=$((bad + 1))
           done
           echo "double-mkdir=$bad/200"
 
