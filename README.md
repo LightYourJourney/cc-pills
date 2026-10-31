@@ -37,8 +37,43 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 ## Requirements
 
 - macOS (iTerm2 profile detection; other terminals fall back to the built-in themes)
-- bash ≥ 4.2 — macOS ships 3.2, so `brew install bash`
-- `jq`, `python3`, `git`; `curl` is only used when `status_page = on`
+- bash ≥ 4.2 — macOS ships 3.2, so `brew install bash` (the script re-execs into a ≥4.2
+  build at `/opt/homebrew/bin/bash` and friends when it finds one)
+- `jq`, `python3` ≥ 3.9 (`str.removesuffix`), `git`; `curl` is only used when `status_page = on`
+
+| Environment | Supported | Notes |
+|---|---|---|
+| macOS + Homebrew bash 5.x | yes | primary target |
+| macOS stock `/bin/bash` 3.2 | re-exec | jumps to a ≥4.2 build at `/opt/homebrew/bin/bash` etc.; only without one does it fall back to the minimal line |
+| Linux (GNU coreutils) | yes | built-in themes when there is no iTerm profile; `stat` tries GNU `-c` first |
+| BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
+| `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
+| python3 ≥ 3.9 | yes | below 3.9 the installer refuses and the diagnostic reports FAIL |
+
+## Cache
+
+The main line and the subagent panel share one per-user private directory,
+`${TMPDIR:-/tmp}/claude-sl-<uid>` (directory 0700, files 0600): palette, git, token, status
+page, refresh lock, and the panel's rate state. Every read checks that the file belongs to
+you, is a regular file, and is **not a symlink** — symlinks are never followed. Every write
+is `mktemp` (O_EXCL) + atomic `mv`; the Python side uses `mkstemp` + `os.replace`.
+
+| Variable | Effect | Lifecycle |
+|---|---|---|
+| `CLAUDE_SL_TMP=<dir>` | Moves the whole root (preview / tests). The directory must already exist and be yours; the renderer never creates it | Caller's; **never** auto-pruned |
+| `CLAUDE_SUBAGENT_SL_STATE=<file>` | Overrides only the panel state file; wins over `CLAUDE_SL_TMP` | Caller's |
+
+**Automatic pruning**: in the default root, token / skip-marker / git / session-state files
+and stray temp files untouched for 30 days are removed once a day by the background refresh.
+It uses `find -maxdepth 1 -type f`: no recursion, no symlink following, and it never touches
+the lock directory, palette, status page, or panel state. All of it is rebuildable, so the
+worst case is one slow refresh.
+
+**Migration**: the legacy `/tmp` token / skip-marker / session-state files for a live session
+move into the private root on the first refresh; the legacy panel state is *not* migrated
+(only rate baselines — losing it costs one frame). **Rollback**: delete the whole cache
+directory to cold-start; it is recreated on the next refresh. An explicit `CLAUDE_SL_TMP`
+is not recreated for you (the diagnostic reports FAIL).
 
 ## Install
 
@@ -136,11 +171,14 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Installed copy drifts from the repo | WARN | `安装/副本-*` |
 | Unknown key / bad value / misspelled `step` | WARN | `安装/配置文件` |
 | Cache directory not 0700 | WARN | `缓存/权限` |
+| Cache root is a symlink (renderer never follows it) | FAIL | `缓存/根` |
+| Panel state not 0600 / not a regular file / not yours | WARN | `缓存/面板状态` |
 | Palette cache missing / header mismatch / invalid `P_CTX` | WARN | `缓存/色板` |
 | Palette generation failing (backing off) | WARN | `缓存/退避` |
 | Status page cache older than 10 min / corrupt / missing indicator / not a regular file | WARN | `缓存/状态页` |
 | Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
 | Token cache not 18 fields | WARN | `缓存/token` |
+| Token cache is a symlink (ignored) | WARN | `缓存/token` |
 | Lock path occupied by a plain file / symlink / non-empty dir (refresh never runs) | FAIL | `缓存/锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |

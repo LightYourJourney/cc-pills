@@ -32,8 +32,38 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 ## 依赖
 
 - macOS（用于读取 iTerm2 profile；其他终端回落内置主题）
-- bash ≥ 4.2（macOS 自带 3.2，需 `brew install bash`）
-- `jq`、`python3`、`git`；`curl` 仅在 `status_page = on` 时使用
+- bash ≥ 4.2（macOS 自带 3.2，需 `brew install bash`；脚本会先尝试
+  `/opt/homebrew/bin/bash` 等位置的 ≥4.2 版本重跑）
+- `jq`、`python3` ≥ 3.9（`str.removesuffix`）、`git`；`curl` 仅在 `status_page = on` 时使用
+
+| 环境 | 支持 | 说明 |
+|---|---|---|
+| macOS + Homebrew bash 5.x | 是 | 主目标 |
+| macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
+| Linux（GNU coreutils） | 是 | 无 iTerm profile 时用内置主题；`stat` 先试 GNU `-c` |
+| BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
+| `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
+| python3 ≥ 3.9 | 是 | 低于 3.9 安装会拒绝，doctor 报 FAIL |
+
+## 缓存
+
+主栏与 subagent 面板共用同一个每用户私有目录 `${TMPDIR:-/tmp}/claude-sl-<uid>`
+（目录 0700、文件 0600）：色板、git、token、状态页、刷新锁，以及面板的速率状态。
+读取前校验「属于本人、是普通文件、不是符号链接」——符号链接一律不跟随；写入一律
+`mktemp`（O_EXCL）+ 原子 `mv`，Python 侧用 `mkstemp` + `os.replace`。
+
+| 变量 | 作用 | 生命周期 |
+|---|---|---|
+| `CLAUDE_SL_TMP=<目录>` | 整体换根（预览 / 测试用），目录必须已存在且属于本人，渲染不代为创建 | 由调用方负责，**不做**自动清理 |
+| `CLAUDE_SUBAGENT_SL_STATE=<文件>` | 只覆盖面板状态文件，优先级高于 `CLAUDE_SL_TMP` | 由调用方负责 |
+
+**自动清理**：默认根里 30 天没动过的 token / 跳过标记 / git / 会话状态与残留临时文件，
+由后台刷新每天清一次。用 `find -maxdepth 1 -type f`，不递归、不跟随符号链接，不碰锁目录、
+色板、状态页与面板状态。所有缓存都能重建，删掉最多让下一轮慢一次。
+
+**迁移**：旧版写在 `/tmp` 的本会话 token / 跳过标记 / 会话状态在首次刷新时搬入；旧的面板
+状态不迁移（只有速率基线，丢失代价是一帧）。**回滚**：删掉整个缓存目录即回到冷启动，
+下一轮自动重建；显式 `CLAUDE_SL_TMP` 删掉后需自己重建（doctor 会报 FAIL）。
 
 ## 安装
 
@@ -126,11 +156,14 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 线上副本与仓库不一致 | WARN | `安装/副本-*` |
 | 配置里有不认识的键 / 非法值 / 写错的 `step` | WARN | `安装/配置文件` |
 | 缓存目录权限不是 0700 | WARN | `缓存/权限` |
+| 缓存根是符号链接（渲染不跟随） | FAIL | `缓存/根` |
+| 面板状态权限不是 0600 / 不是普通文件 / 不属于本人 | WARN | `缓存/面板状态` |
 | 色板缓存缺失 / 首行与配置不符 / `P_CTX` 非法 | WARN | `缓存/色板` |
 | 色板生成失败（仍在退避） | WARN | `缓存/退避` |
 | 状态页缓存超过 10 分钟 / 格式损坏 / 缺少 indicator / 不是普通文件 | WARN | `缓存/状态页` |
 | token 缓存超过 15 分钟（按 `.ts` 或文件 mtime 计） | WARN | `缓存/token` |
 | token 缓存字段数不是 18 | WARN | `缓存/token` |
+| token 缓存是符号链接（会被忽略） | WARN | `缓存/token` |
 | 刷新锁路径被普通文件 / 符号链接 / 非空目录占住（后台刷新永久失败） | FAIL | `缓存/锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
 | 显式 `CLAUDE_SL_TMP` 指向的目录不存在（渲染不会创建） | FAIL | `缓存/根` |
