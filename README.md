@@ -109,7 +109,7 @@ arguments.
 
 | Symptom | Look at |
 |---|---|
-| Empty line | `环境/jq`, `环境/bash`, `数据/stdin` (runs the installed script once on a fixture, in a temp dir) |
+| Empty line | `环境/jq`, `环境/bash`, `数据/stdin` (runs the installed script on two fixtures in a temp dir; outputs must differ and render several fields) |
 | Text but no pill colours | `缓存/色板`, `缓存/退避`, `环境/终端` |
 | No `$/h`, `hit`, `io`, `msgs`, `out` | `缓存/token` (older than `TOK_STALE` drops derived items) |
 | No branch / directory | `环境/git`, `缓存/git` |
@@ -136,9 +136,10 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Cache directory not 0700 | WARN | `缓存/权限` |
 | Palette cache missing / header mismatch / invalid `P_CTX` | WARN | `缓存/色板` |
 | Palette generation failing (backing off) | WARN | `缓存/退避` |
+| Status page cache older than 10 min / corrupt | WARN | `缓存/状态页` |
 | Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
 | Token cache not 18 fields | WARN | `缓存/token` |
-| Lock path occupied by a plain file (refresh never runs) | FAIL | `缓存/锁` |
+| Lock path occupied by a plain file / symlink / non-empty dir (refresh never runs) | FAIL | `缓存/锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |
 | CC Switch provider not unique / invalid daily limit | WARN | `数据/CCSwitch库` |

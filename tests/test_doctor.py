@@ -38,6 +38,7 @@ def read_const(name, path=os.path.join(SRC, 'statusline-command.sh')):
 PALETTE_V = read_const('PALETTE_V')
 THEME_TTL = int(read_const('THEME_TTL'))
 TOK_STALE = int(read_const('TOK_STALE'))
+STATUS_STALE = int(read_const('STATUS_STALE'))
 LOCK_STALE = int(read_const('LOCK_STALE'))
 
 
@@ -214,14 +215,21 @@ class Doctor(unittest.TestCase):
 
     def test_low_bash_is_reported(self):
         """PATH 里是 3.2 时必须报出来。本机若另装了 ≥5 的 bash，脚本的换壳守卫能接管，
-        此时正确结论是 WARN；没有替代才是 FAIL——两种都算「查到了」，所以这里只断言不 PASS。
-        （确定性覆盖 FAIL 分支的是 test_low_python_is_fail。）"""
+        此时正确结论是 WARN；没有替代才是 FAIL——两种都算「查到了」，不能一律 FAIL。"""
         self.sb.install()
         b = self.sb.minimal_path()
         self.sb.fake(b, 'bash', '#!/bin/sh\n'
                                 'case "$1" in -c) echo "3.2";; *) echo "GNU bash, version 3.2.57(1)-release";; esac\n')
         r = self.sb.run(env={'PATH': b})
-        self.assertIn(self.sb.status(r, '环境/bash'), ('WARN', 'FAIL'))
+        alt = False
+        for p in ('/opt/homebrew/bin/bash', '/usr/local/bin/bash', '/usr/bin/bash'):
+            if os.access(p, os.X_OK):
+                v = subprocess.run([p, '-c', 'echo "${BASH_VERSINFO[0]}"'],
+                                   capture_output=True, text=True).stdout.strip()
+                if v.isdigit() and int(v) >= 5:
+                    alt = True
+                    break
+        self.assertEqual(self.sb.status(r, '环境/bash'), 'WARN' if alt else 'FAIL', r.stdout)
         self.assertIn('4.2', r.stdout)
 
     # ── 2. settings.json：缺失 / 损坏 / 路径错误 ────────────────────────
@@ -340,6 +348,46 @@ class Doctor(unittest.TestCase):
         self.assertIn('回填', d)
         self.assertIn('隐藏', d)
 
+    def test_fresh_status_cache_passes(self):
+        self.sb.healthy()
+        p = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(p, 'w') as f:
+            f.write(f'{int(time.time())}\tminor\n')
+        os.chmod(p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'PASS')
+
+    def test_stale_status_cache_warns(self):
+        self.sb.healthy()
+        p = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(p, 'w') as f:
+            f.write(f'{int(time.time()) - STATUS_STALE - 60}\tminor\n')
+        os.chmod(p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
+        self.assertIn('隐藏', self.sb.detail(r, '缓存/状态页'))
+
+    def test_corrupt_status_cache_warns(self):
+        self.sb.healthy()
+        p = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(p, 'w') as f:
+            f.write('garbage\n')
+        os.chmod(p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
+        self.assertIn('损坏', self.sb.detail(r, '缓存/状态页'))
+
+    def test_status_page_off_skips_cache_check(self):
+        self.sb.healthy()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('status_page = off\n')
+        p = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(p, 'w') as f:
+            f.write(f'{int(time.time()) - STATUS_STALE - 60}\tminor\n')
+        os.chmod(p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'SKIP')
+
     def test_truncated_token_cache_is_flagged(self):
         """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
         env = self.sb.healthy()
@@ -441,6 +489,19 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('settings.json', self.sb.detail(r, '数据/CCSwitch库'))
         self.assertNotIn('tok_live_should_not_leak', r.stdout)
+
+    def test_relay_from_settings_env_beats_shell_official(self):
+        """Claude Code 把 settings 的 env 注入状态栏进程；shell 里的旧官方地址不能盖掉它。"""
+        self.sb.healthy()
+        s = {'statusLine': {'type': 'command',
+                            'command': f'bash {self.sb.dest}/statusline-command.sh'},
+             'env': {'ANTHROPIC_BASE_URL': 'https://relay.example/v1'}}
+        self.sb.write_settings(s)
+        r = self.sb.run(env={'ANTHROPIC_BASE_URL': 'https://api.anthropic.com'})
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
+        d = self.sb.detail(r, '数据/CCSwitch库')
+        self.assertIn('relay.example', d)
+        self.assertIn('settings.json', d)
 
     def test_db_is_not_opened_in_subscription_mode(self):
         """订阅模式渲染侧从不打开 CC Switch 库（tokens.py 约束 7），诊断也不该打开。"""
@@ -654,6 +715,15 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('原文', self.sb.detail(r, '数据/stdin'))
 
+    def test_smoke_detects_single_field_extractor(self):
+        """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，必须要求多个字段。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
+            f.write('#!/usr/bin/env bash\njq -r .model.display_name\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertIn('字段', self.sb.detail(r, '数据/stdin'))
+
     def test_smoke_is_independent_of_custom_steps(self):
         """用户改过降级序列（删掉 ctx / 模型 / 目录）不该让冒烟误报——判据不看具体项。"""
         env = self.sb.healthy()
@@ -702,6 +772,21 @@ class Doctor(unittest.TestCase):
         self.assertIn('sk-***', r.stdout)
         self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')
 
+    def test_quoted_and_query_credentials_are_scrubbed(self):
+        """DECISIONS 承诺「值可带引号」；URL query 里的 token 也不能漏。"""
+        self.sb.install()
+        self.sb.write_settings({'statusLine': {
+            'type': 'command',
+            'command': 'Bearer "tok_secret"; api_key="low secret"; x-api-key: "key secret"; '
+                       'Authorization: Basic "auth secret"; '
+                       'curl "https://relay.example/x?token=SECRET987&key=SECRET888"; '
+                       'bash /wrong/statusline-command.sh'}})
+        r = self.sb.run()
+        for s in ('tok_secret', 'low secret', 'key secret', 'auth secret',
+                  'SECRET987', 'SECRET888'):
+            self.assertNotIn(s, r.stdout, f'{s!r} 泄露到诊断输出')
+        self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')
+
     def test_no_network(self):
         self.sb.install()
         marker = os.path.join(self.sb.d, 'curl-was-called')
@@ -714,6 +799,7 @@ class Doctor(unittest.TestCase):
         with open(DOCTOR) as f:
             src = f.read()
         for name, want in (('THEME_TTL', THEME_TTL), ('TOK_STALE', TOK_STALE),
+                           ('STATUS_STALE', STATUS_STALE),
                            ('LOCK_STALE', LOCK_STALE), ('PALETTE_V', PALETTE_V)):
             m = re.search(rf'^{name}=(\d+)', src, re.M)
             self.assertIsNotNone(m, f'doctor 里没有 {name}')
@@ -885,6 +971,17 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
         self.assertIn('mkdir', self.sb.detail(r, '缓存/锁'))
+
+    def test_nonempty_lock_dir_fails(self):
+        """渲染侧只用 rmdir，非空锁目录永远删不掉：不能报「下次会自动清除」。"""
+        self.sb.healthy()
+        d = os.path.join(self.sb.cache, 'claude-sl-lock-doctor')
+        os.makedirs(d)
+        with open(os.path.join(d, 'junk'), 'w') as f:
+            f.write('x')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+        self.assertIn('非空', self.sb.detail(r, '缓存/锁'))
 
     def test_credentials_in_base_url_are_stripped(self):
         self.sb.healthy(relay=True)

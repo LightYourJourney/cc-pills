@@ -18,8 +18,9 @@
 # - CC Switch 数据库只用 `file:<path>?mode=ro` 打开（与 statusline-tokens.py 约束 7 同口径），
 #   且只在中转站模式下打开。WAL 模式的库即使只读打开，SQLite 也可能在库旁建 -wal / -shm
 #   旁文件——生产脚本是同样的访问方式，诊断不额外写库内容。
-# - 不打印环境变量全集；ANTHROPIC_BASE_URL 只给 scheme://host（连 user:pass@ 一并去掉）；
-#   settings 里的命令行经 scrub() 抹掉 sk-… / *_KEY=… / *_TOKEN=… / URL 凭据 / Bearer … 后显示。
+# - 不打印环境变量全集；中转站备注里的 ANTHROPIC_BASE_URL 只给 host（连 user:pass@ 一并去掉）；
+#   settings 里的命令行经 scrub() 抹掉 sk-… / *_KEY=… / *_TOKEN=… / URL 凭据与 query 参数 /
+#   Bearer … 后显示。
 # - 正常渲染路径不调用本脚本（statusline-command.sh 与 subagent-statusline.sh 都不引用它，
 #   由 tests/test_doctor.py 的契约测试守护）。
 #
@@ -41,6 +42,7 @@ CCSWITCH_DB=$HOME/.cc-switch/cc-switch.db
 # ── 与 statusline-command.sh 同源的常量（契约测试比对）──────────────────
 THEME_TTL=300        # 色板重算间隔
 TOK_STALE=900        # token 缓存超此秒数即判陈旧（派生项隐藏）
+STATUS_STALE=600     # 状态页缓存超此秒数未更新即隐藏
 LOCK_STALE=30        # 后台刷新残锁的判定秒数
 PALETTE_V=4          # 色板缓存格式版本
 TOK_FIELDS=18        # 18 段 token 协议（与 statusline-tokens.py 的 FIELDS 一致）
@@ -81,11 +83,12 @@ sec() { printf '\n── %s ──\n' "$1"; }
 scrub() {
   sed -E \
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
-    -e 's/([A-Za-z0-9_]*(KEY|TOKEN)=)[^ ]+/\1***/g' \
+    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=)([\"'][^\"']*[\"']|[^ ;]+)/\\1***/g" \
     -e 's#//[^/@ ]+@#//***@#g' \
-    -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*[\"']?)[^ \";']+/\1***/g" \
-    -e "s/([Aa]uthorization[ ]*:[ ]*[A-Za-z]+[ ]+[\"']?)[^ \";']+/\1***/g" \
-    -e 's/([Bb]earer )[A-Za-z0-9._~+\/-]+/\1***/g'
+    -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/([Aa]uthorization[ ]*:[ ]*[A-Za-z]+[ ]+)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/([Bb]earer )([\"']?)[^ \"';]+/\\1\\2***/g" \
+    -e "s/([?&#])([A-Za-z0-9_.-]+)=[^ ;\"']+/\\1\\2=***/g"
 }
 
 if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
@@ -104,7 +107,8 @@ ver_ge() {
   case "$a1$b1" in ''|*[!0-9]*) return 1 ;; esac
   [ "$a1" -gt "$b1" ] && return 0
   [ "$a1" -lt "$b1" ] && return 1
-  a2=${1#*.}; a2=${a2%%.*}; b2=${2#*.}; b2=${b2%%.*}
+  a2=${1#*.}; [ "$a2" = "$1" ] && a2=0; a2=${a2%%.*}      # 阈值写成 5 时 minor 按 0
+  b2=${2#*.}; [ "$b2" = "$2" ] && b2=0; b2=${b2%%.*}
   case "$a2$b2" in ''|*[!0-9]*) return 1 ;; esac
   [ "$a2" -ge "$b2" ]
 }
@@ -513,12 +517,39 @@ else
   res SKIP 缓存/git "$DIR 不是 git 仓库；缓存 $gcache_n 个"
 fi
 
+# 状态页缓存：只报年龄，不主动拉取（默认不联网）。缺失 / status_page=off 都是 SKIP。
+stf="${SLT}/claude-sl-status.cache"
+if [ "$SLT_OK" != 1 ]; then
+  res SKIP 缓存/状态页 "缓存根不可用"
+elif [ "$C_PAGE" = off ]; then
+  res SKIP 缓存/状态页 "配置 status_page = off，不使用状态页"
+elif [ ! -f "$stf" ]; then
+  res SKIP 缓存/状态页 "暂无状态缓存（后台刷新还没拉取过）"
+elif [ ! -O "$stf" ]; then
+  res WARN 缓存/状态页 "状态缓存不属于当前用户，会被忽略" "rm -f \"$stf\""
+else
+  st_ts=""; IFS=$'\t' read -r st_ts _ < "$stf" 2>/dev/null
+  case "$st_ts" in
+    ''|*[!0-9]*) res WARN 缓存/状态页 "状态缓存格式损坏：服务状态项会被隐藏" "删掉它，后台会重新拉取" ;;
+    *) age=$(( NOW - st_ts ))
+       if [ "$age" -gt "$STATUS_STALE" ]; then
+         res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
+           "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
+       else
+         res PASS 缓存/状态页 "${age}s 前更新"
+       fi ;;
+  esac
+fi
+
 # 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件占住时 mkdir 永远失败、后台刷新
 # 从此每轮直接退出（渲染侧不会自愈），必须当故障报出来
-lock_n=0; lock_old=""; lock_bad=""
+lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
   if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
+  if [ -n "$(find "$l" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+    lock_full="$lock_full ${l##*/}"; continue
+  fi
   lock_n=$((lock_n + 1))
   lt=$(mtime "$l"); lt=${lt:-$NOW}
   age=$(( NOW - lt ))
@@ -526,6 +557,9 @@ for l in "$SLT"/claude-sl-lock-*; do
 done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/锁 "缓存根不可用"
+elif [ -n "$lock_full" ]; then
+  res FAIL 缓存/锁 "锁目录非空${lock_full}：渲染侧只用 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
+    "rm -rf \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_bad" ]; then
   res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：mkdir 永远失败，后台刷新会一直退出（不会自愈）" \
     "rm -f \"$SLT\"/claude-sl-lock-*"
@@ -594,7 +628,16 @@ else
   # 前两项在默认序列里永不丢弃，所以即使用户 drop 了 ctx、模型与费用，差分仍然成立。
   runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23 20)"; outA=$RUNOUT
   runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
-  # 判据不依赖任何具体项（用户可能改过降级序列）：非空 + 不是最简行 + 两份夹具结果不同
+  # 差分只能证明 stdin 进了进程；只提取单个字段的占位脚本（jq -r .model.display_name）也会
+  # 因两份夹具不同而通过。再要求每份夹具至少两个字段的渲染形态出现。
+  hits=0; hits_b=0
+  for m in 'Opus 5.5' '37%' '123k' '$1.23' '/a'; do
+    case "$outA" in *"$m"*) hits=$((hits + 1));; esac
+  done
+  for m in 'Doctor Fixture B' '88%' '654k' '$9.87' '/b'; do
+    case "$outB" in *"$m"*) hits_b=$((hits_b + 1));; esac
+  done
+  # 非空 + 不是最简行 + 两份夹具结果不同 + 每份至少两个字段真的被渲染出来
   case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
@@ -606,6 +649,9 @@ else
     *) if [ "$outA" = "$outB" ]; then
          res FAIL 数据/stdin "两份不同夹具渲染出相同结果：stdin 没有真正进入渲染（${smoke}）" \
            "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本"
+       elif [ "$hits" -lt 2 ] || [ "$hits_b" -lt 2 ]; then
+         res FAIL 数据/stdin "两份夹具只解析出 ${hits}/${hits_b} 个字段：疑似只提取单个字段的占位脚本（${smoke}）" \
+           "确认该文件是 cc-pills 的 statusline-command.sh，而不是只读取 stdin 的包装脚本"
        else
          res PASS 数据/stdin "冒烟通过：两份夹具结果不同（${#outA} 字符），主渲染路径与字段解析都正常"
        fi ;;
@@ -624,11 +670,15 @@ fi
 
 # 计费模式只看运行时 stdin 才能确定；这里只做「配置层面」的推断，供 CC Switch 检查用。
 # CC Switch 的标准写法是把 ANTHROPIC_BASE_URL 写进 settings.json 的 env，Claude Code 启动后
-# 才注入到状态栏进程；只查 shell 变量会在最常见的部署方式上得出相反结论。
-base=${ANTHROPIC_BASE_URL:-}; base_src="shell 环境变量"
-if [ -z "$base" ] && [ "$SJ_OK" = 1 ]; then
+# 才注入到状态栏进程；因此 settings 有值时以它为准（shell 里的同名变量可能只是旧的官方地址），
+# 没有 settings 值时才回退到 shell。
+base=""; base_src=""
+if [ "$SJ_OK" = 1 ]; then
   base=$(jq -r '.env.ANTHROPIC_BASE_URL // empty' "$sj" 2>/dev/null)
   [ -n "$base" ] && base_src="settings.json 的 env"
+fi
+if [ -z "$base" ]; then
+  base=${ANTHROPIC_BASE_URL:-}; base_src="shell 环境变量"
 fi
 relay=0
 case "$base" in
@@ -639,8 +689,10 @@ if [ "$relay" = 1 ]; then
   host=${base#*://}; host=${host%%/*}
   host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕
   note="ANTHROPIC_BASE_URL=${host}（${base_src}）"
-else
+elif [ "$SJ_OK" = 1 ]; then
   note="未设置自定义 ANTHROPIC_BASE_URL（shell 环境变量与 settings.json 的 env 都查过）"
+else
+  note="未设置自定义 ANTHROPIC_BASE_URL（shell 环境变量已查；settings.json 无法读取）"
 fi
 if [ "$relay" = 0 ]; then
   # 订阅模式下渲染侧从不打开 CC Switch 库（statusline-tokens.py 约束 7），诊断也不打开
