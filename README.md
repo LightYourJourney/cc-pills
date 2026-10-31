@@ -45,7 +45,8 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 |---|---|---|
 | macOS + Homebrew bash 5.x | yes | primary target |
 | macOS stock `/bin/bash` 3.2 | re-exec | jumps to a ≥4.2 build at `/opt/homebrew/bin/bash` etc.; only without one does it fall back to the minimal line |
-| Linux (GNU coreutils) | yes | built-in themes when there is no iTerm profile; `stat` tries GNU `-c` first |
+| Linux (GNU coreutils) | yes | full suite passes on Debian 12 (bash 5.2 / Python 3.11); CI runs the platform-sensitive subset; built-in themes when there is no iTerm profile |
+| bash 4.2–4.4 | yes | built bash 4.2.0 from source; full suite of 197 passes (two 4.2-only differences found and fixed: empty-format `printf -v` and second-granularity `-nt`) |
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
 | python3 ≥ 3.9 | yes | below 3.9 the installer refuses and the diagnostic reports FAIL |
@@ -63,11 +64,13 @@ is `mktemp` (O_EXCL) + atomic `mv`; the Python side uses `mkstemp` + `os.replace
 | `CLAUDE_SL_TMP=<dir>` | Moves the whole root (preview / tests). The directory must already exist and be yours; the renderer never creates it | Caller's; **never** auto-pruned |
 | `CLAUDE_SUBAGENT_SL_STATE=<file>` | Overrides only the panel state file; wins over `CLAUDE_SL_TMP` | Caller's |
 
-**Automatic pruning**: in the default root, token / skip-marker / git / session-state files
-and stray temp files untouched for 30 days are removed once a day by the background refresh.
-It uses `find -maxdepth 1 -type f`: no recursion, no symlink following, and it never touches
-the lock directory, palette, status page, or panel state. All of it is rebuildable, so the
-worst case is one slow refresh.
+**Automatic pruning**: in the default root, token caches, skip markers, git caches, and
+stray temp files untouched for 30 days are removed once a day by the background refresh.
+Session state (`claude-statusline-*.json`, the resume checkpoint that avoids a full
+re-scan) has one extra guard: it is deleted only when every transcript it records is gone.
+The scan uses `find -maxdepth 1 -type f`: no recursion, no symlink following, and it never
+touches the lock directory, palette, status page, or panel state. The 30-day threshold is a
+constant — there is no config knob.
 
 **Migration**: the legacy `/tmp` token / skip-marker / session-state files for a live session
 move into the private root on the first refresh; the legacy panel state is *not* migrated

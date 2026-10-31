@@ -40,7 +40,8 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 |---|---|---|
 | macOS + Homebrew bash 5.x | 是 | 主目标 |
 | macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
-| Linux（GNU coreutils） | 是 | 无 iTerm profile 时用内置主题；`stat` 先试 GNU `-c` |
+| Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑平台敏感子集；无 iTerm profile 时用内置主题 |
+| bash 4.2–4.4 | 是 | 源码编译 bash 4.2.0 后全量 197 项通过；顺带修掉 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
 | python3 ≥ 3.9 | 是 | 低于 3.9 安装会拒绝，doctor 报 FAIL |
@@ -57,9 +58,10 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | `CLAUDE_SL_TMP=<目录>` | 整体换根（预览 / 测试用），目录必须已存在且属于本人，渲染不代为创建 | 由调用方负责，**不做**自动清理 |
 | `CLAUDE_SUBAGENT_SL_STATE=<文件>` | 只覆盖面板状态文件，优先级高于 `CLAUDE_SL_TMP` | 由调用方负责 |
 
-**自动清理**：默认根里 30 天没动过的 token / 跳过标记 / git / 会话状态与残留临时文件，
-由后台刷新每天清一次。用 `find -maxdepth 1 -type f`，不递归、不跟随符号链接，不碰锁目录、
-色板、状态页与面板状态。所有缓存都能重建，删掉最多让下一轮慢一次。
+**自动清理**：默认根里 30 天没动过的 token 缓存、跳过标记、git 缓存与残留临时文件，
+由后台刷新每天清一次。会话状态（`claude-statusline-*.json`，躲开整段重扫的断点）另加一道
+条件：只有它记录里的 transcript 全部不存在时才删。用 `find -maxdepth 1 -type f`，不递归、
+不跟随符号链接，不碰锁目录、色板、状态页与面板状态。阈值写死 30 天，不提供配置项。
 
 **迁移**：旧版写在 `/tmp` 的本会话 token / 跳过标记 / 会话状态在首次刷新时搬入；旧的面板
 状态不迁移（只有速率基线，丢失代价是一帧）。**回滚**：删掉整个缓存目录即回到冷启动，
