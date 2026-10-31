@@ -396,7 +396,10 @@ if [ "${1:-}" = "--refresh" ]; then
     case "$gts" in ''|*[!0-9]*) gts=0 ;; esac
     if [ $((now - gts)) -lt "$GIT_TTL" ]; then
       need=0
-      [ -d "$groot/.git" ] && { [ "$groot/.git/HEAD" -nt "$gc" ] || [ "$groot/.git/index" -nt "$gc" ]; } && need=1
+      # -nt / -ot 在 bash 4.2 只比较到秒：同一秒内的切换会被当成「没变」而沿用旧缓存
+      # （5.3 精确到纳秒，所以 macOS 上看不出来）。改成「不比缓存旧」即算变，代价是
+      # HEAD / index 刚改过后的一秒内多算几次 git（仅后台）。
+      [ -d "$groot/.git" ] && { [ ! "$groot/.git/HEAD" -ot "$gc" ] || [ ! "$groot/.git/index" -ot "$gc" ]; } && need=1
     fi
   fi
   if [ "$need" = 1 ]; then
@@ -563,7 +566,7 @@ IFS=$'\t' read -r dir model eff ctx ctxlv ctxin ctxwin q5 q5r q5arg q7 q7r q7arg
   sp spr sparg spper spusd splim <<< "$fields"
 for v in dir model eff ctx ctxlv ctxin ctxwin q5 q5r q5arg q7 q7r q7arg costraw dur apidur cache recache hit hit0 tp sid \
   sp spr sparg spper spusd splim; do
-  [ "${!v}" = "-" ] && printf -v "$v" ''
+  [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
 done
 # 模式（见头部「费用口径」）：有 5h / 7d → 订阅；否则非官方 ANTHROPIC_BASE_URL → 中转站；都没有 → 订阅
 mode=sub
@@ -657,7 +660,7 @@ if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; 
     r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "$tokf"
 fi
 for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout msgs; do
-  [ "${!v}" = "-" ] && printf -v "$v" ''
+  [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
   printf -v "$v" '%s' "${!v//[[:cntrl:]]/}"       # 约束 16：缓存内容同样不可信
 done
 # 跨窗口一致性：当前 stdin 已用 <100% 时，缓存里的「用尽」不可能属于这个窗口，

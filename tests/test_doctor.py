@@ -1061,6 +1061,21 @@ class Doctor(unittest.TestCase):
                     and re.search(r'\$[A-Za-z_0-9][A-Za-z0-9_]*[^\x00-\x7f]', l)]
         self.assertEqual(bad, [], '这些行要改成 ${var} 写法')
 
+    def test_no_empty_printf_v(self):
+        """bash 4.2 的 `printf -v var ''` 不清空变量（5.x 才赋值空串）；必须给 '%s' 格式。
+
+        实测 4.2.0：`v=-; printf -v v ''` 之后 v 仍是 `-`，占位符不会被清掉，状态栏
+        会多出「5h -%」「out -」「hit -%」。"""
+        bad = []
+        for base in (SRC, os.path.join(REPO, 'tools'), os.path.join(REPO, 'tools', 'doctor')):
+            for p in sorted(glob.glob(os.path.join(base, '*.sh'))):
+                with open(p, encoding='utf-8') as f:
+                    lines = f.read().splitlines()
+                bad += [f'{os.path.basename(p)}:{i}: {l.strip()}' for i, l in enumerate(lines, 1)
+                        if not l.lstrip().startswith('#')
+                        and re.search(r"printf -v \S+ (''|\"\")(\s|$)", l)]
+        self.assertEqual(bad, [], "printf -v 的格式不能是空串（bash 4.2 不赋值）")
+
     def test_runs_under_system_bash(self):
         """macOS 自带 /bin/bash 是 3.2，症状最重的环境里诊断必须还能跑。"""
         sysbash = '/bin/bash'

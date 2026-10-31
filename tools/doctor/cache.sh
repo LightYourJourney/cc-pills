@@ -268,7 +268,8 @@ elif [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; th
   res FAIL 缓存/面板锁 "面板锁目录非空：写回会一直失败，速率段缺失" \
     "rm -rf \"$plock\"（面板下次渲染也会自行清除）"
 else
-  page=$(( NOW - $(mtime "$plock") ))
+  pm=$(mtime "$plock"); pm=${pm:-$NOW}
+  page=$(( NOW - pm ))
   if [ "$page" -ge "$PANEL_LOCK_STALE" ]; then
     res WARN 缓存/面板锁 "残锁 ${page}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除"
   else
