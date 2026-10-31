@@ -99,6 +99,18 @@ class DefaultDir(CacheBase):
         for n in names:
             self.assertTrue(os.path.isfile(os.path.join(p, n)), f'{n} 未迁移')
             self.assertFalse(os.path.exists(os.path.join('/tmp', n)), f'/tmp/{n} 仍在')
+        # 重复迁移要幂等：第二次刷新既不能把文件搬回去，也不能覆盖已迁移的内容
+        def read(n):
+            with open(os.path.join(p, n)) as f:
+                return f.read()
+        before = {n: read(n) for n in names}
+        r = subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
+                           env=self.env, capture_output=True)
+        self.assertEqual(r.returncode, 0)
+        for n in names:
+            self.assertTrue(os.path.isfile(os.path.join(p, n)), f'重复刷新后 {n} 消失')
+            self.assertFalse(os.path.exists(os.path.join('/tmp', n)), f'重复刷新把 {n} 搬回了 /tmp')
+        self.assertEqual(read(names[1]), before[names[1]], '重复迁移覆盖了已迁移的跳过标记')
 
 
 class Modes(CacheBase):
@@ -249,6 +261,24 @@ class Lifecycle(CacheBase):
         self.refresh(self.env)
         self.assertTrue(os.path.isdir(p), '缓存目录被删后没有自动重建')
         self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o700)
+
+    def test_read_only_cache_dir_degrades_quietly(self):
+        """无写权限的缓存根：渲染照常出（读得到的缓存仍生效），刷新静默退出，不报错。"""
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        with open(os.path.join(p, 'claude-sl-tok-ro.cache'), 'w') as f:
+            f.write(tok_line(**{'in': '555M'}, msgs='77'))
+        with open(os.path.join(p, 'claude-sl-tok-ro.cache.ts'), 'w') as f:
+            f.write(f'{int(time.time())}\n')
+        os.chmod(p, 0o500)
+        try:
+            out = self.render('ro')
+            self.assertIn('↑555M', out, '只读根里已缓存的项应当照常生效')
+            r = self.refresh(self.env)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stderr, b'', '只读缓存根不应向状态栏输出错误')
+        finally:
+            os.chmod(p, 0o700)
 
 
 class Hardening(CacheBase):

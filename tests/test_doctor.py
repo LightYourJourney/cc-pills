@@ -410,6 +410,17 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/权限'), 'WARN')
         self.assertIn('chmod 700', r.stdout)
 
+    def test_read_only_cache_root_is_fail(self):
+        """缓存目录不可写 → 后台刷新永远落不了盘，必须 FAIL（渲染本身仍能读旧缓存）。"""
+        self.sb.healthy()
+        os.chmod(self.sb.cache, 0o500)
+        try:
+            r = self.sb.run()
+            self.assertEqual(self.sb.status(r, '缓存/后台刷新'), 'FAIL')
+            self.assertIn('不可写', self.sb.detail(r, '缓存/后台刷新'))
+        finally:
+            os.chmod(self.sb.cache, 0o700)
+
     def test_stale_token_cache_warns(self):
         env = self.sb.healthy(tok_age=TOK_STALE + 60)
         r = self.sb.run(env=env)
