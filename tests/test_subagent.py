@@ -73,6 +73,45 @@ class SubagentState(unittest.TestCase):
         self.assertIn('a', d)
         self.assertIn('seed', d)
 
+    def test_non_empty_stale_lock_is_recovered(self):
+        """锁目录里被塞了文件时 rmdir 永远失败：超时后必须连内容一起清掉。"""
+        st = os.path.join(self.d, 's.json')
+        lock = st + '.lock'
+        os.makedirs(lock)
+        with open(os.path.join(lock, 'junk'), 'w') as f:
+            f.write('x')
+        old = time.time() - 10
+        os.utime(lock, (old, old))
+        self.spawn(st, 'a').wait()
+        self.assertFalse(os.path.exists(lock), '非空残锁没有被清除')
+        with open(st) as f:
+            self.assertIn('a', json.load(f))
+
+    def test_lock_path_occupied_by_file_is_recovered(self):
+        st = os.path.join(self.d, 's.json')
+        lock = st + '.lock'
+        with open(lock, 'w') as f:
+            f.write('not a lock')
+        self.spawn(st, 'a').wait()
+        self.assertFalse(os.path.exists(lock), '被普通文件占住的锁路径没有被清除')
+        with open(st) as f:
+            self.assertIn('a', json.load(f))
+
+    def test_lock_path_occupied_by_symlink_is_recovered(self):
+        st = os.path.join(self.d, 's.json')
+        lock = st + '.lock'
+        victim = os.path.join(self.d, 'victim')
+        os.makedirs(victim)
+        with open(os.path.join(victim, 'keep'), 'w') as f:
+            f.write('x')
+        os.symlink(victim, lock)
+        self.spawn(st, 'a').wait()
+        self.assertFalse(os.path.lexists(lock), '被符号链接占住的锁路径没有被清除')
+        self.assertTrue(os.path.isfile(os.path.join(victim, 'keep')),
+                        '清锁跟随了符号链接，删掉了目标目录里的文件')
+        with open(st) as f:
+            self.assertIn('a', json.load(f))
+
     def test_state_file_is_owner_only(self):
         st = os.path.join(self.d, 's.json')
         self.spawn(st, 'a').wait()

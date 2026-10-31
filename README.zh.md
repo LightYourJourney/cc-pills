@@ -165,6 +165,8 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | token 缓存字段数不是 18 | WARN | `缓存/token` |
 | token 缓存是符号链接（会被忽略） | WARN | `缓存/token` |
 | 刷新锁路径被普通文件 / 符号链接 / 非空目录占住（后台刷新永久失败） | FAIL | `缓存/锁` |
+| 面板锁被普通文件 / 符号链接 / 非空目录占住（写回永久失败） | FAIL | `缓存/面板锁` |
+| 面板锁为空但超过 5 秒（下次渲染自行清除） | WARN | `缓存/面板锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
 | 显式 `CLAUDE_SL_TMP` 指向的目录不存在（渲染不会创建） | FAIL | `缓存/根` |
 | 中转站模式但找不到 CC Switch 库 | WARN | `数据/CCSwitch库` |

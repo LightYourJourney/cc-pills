@@ -252,6 +252,30 @@ else
   fi
 fi
 
+# 面板锁：异常占位或残锁会让写回永久失败 / 短暂延迟。面板会自行清除，所以只有
+# 「清不掉」的普通文件、符号链接与非空目录才是 FAIL；空锁超时只是 WARN。
+plock="$sstate.lock"
+if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
+  res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
+elif [ "$SLT_OK" != 1 ]; then
+  res SKIP 缓存/面板锁 "缓存根不可用"
+elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
+  res FAIL 缓存/面板锁 "面板锁被普通文件或符号链接占住：写回会一直失败，速率段缺失" \
+    "rm -f \"$plock\"（面板下次渲染也会自行清除）"
+elif [ ! -e "$plock" ]; then
+  res PASS 缓存/面板锁 "无锁残留"
+elif [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+  res FAIL 缓存/面板锁 "面板锁目录非空：写回会一直失败，速率段缺失" \
+    "rm -rf \"$plock\"（面板下次渲染也会自行清除）"
+else
+  page=$(( NOW - $(mtime "$plock") ))
+  if [ "$page" -ge "$PANEL_LOCK_STALE" ]; then
+    res WARN 缓存/面板锁 "残锁 ${page}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除"
+  else
+    res PASS 缓存/面板锁 "有面板写回正在进行"
+  fi
+fi
+
 failf=$tc.fail
 if [ -L "$failf" ]; then
   res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""

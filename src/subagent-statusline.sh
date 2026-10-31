@@ -40,6 +40,7 @@
 #   多会话共享：读-改-写全程在同一把 mkdir 锁内，锁内重新读取后再合并（不会用旧快照
 #   覆盖别家条目）；抢锁超过 1s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
 #   原子替换，状态文件 0600；entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
+#   锁路径被普通文件 / 符号链接占住，或残锁超过 5s（含非空目录）时先清掉再重试。
 #   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
 #   （只有速率基线，丢失代价是一帧）。
 #
@@ -169,9 +170,13 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     if mkdir "$lock" 2>/dev/null; then got=1; break; fi
     [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
+    # 锁路径被普通文件 / 符号链接占住时 mkdir 永远失败：不是我们的锁，直接清掉重试。
+    if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
+      rm -f "$lock" 2>/dev/null; continue
+    fi
     lt=$(mtime "$lock"); lt=${lt:-0}
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      rmdir "$lock" 2>/dev/null; continue          # 残锁（被杀进程遗留）
+      rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
   done

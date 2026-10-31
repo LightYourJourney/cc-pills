@@ -396,6 +396,42 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')
         self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
+    def test_panel_lock_occupied_by_file_fails(self):
+        self.sb.healthy()
+        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        with open(plock, 'w') as f:
+            f.write('x')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
+        self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_non_empty_dir_fails(self):
+        self.sb.healthy()
+        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        os.makedirs(plock)
+        with open(os.path.join(plock, 'junk'), 'w') as f:
+            f.write('x')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
+        self.assertIn('非空', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_stale_and_fresh(self):
+        self.sb.healthy()
+        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        os.makedirs(plock)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
+        old = time.time() - 30
+        os.utime(plock, (old, old))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_skipped_with_explicit_state(self):
+        self.sb.healthy()
+        r = self.sb.run(env={'CLAUDE_SUBAGENT_SL_STATE': os.path.join(self.sb.d, 'own.json')})
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'SKIP')
+
     def test_explicit_tmp_missing_fails(self):
         """显式 CLAUDE_SL_TMP 不存在时渲染不会创建，不能报「首次刷新会创建」。"""
         self.sb.install()
@@ -970,6 +1006,17 @@ class Doctor(unittest.TestCase):
                 if 'if ver_ge "$v" "$BASH_MIN"; then alt=' in f.read():
                     alt.append(p)
         self.assertTrue(alt, 'doctor 的替代 bash 判定没有用 BASH_MIN')
+
+    def test_panel_lock_stale_matches_panel_script(self):
+        with open(os.path.join(SRC, 'subagent-statusline.sh'), encoding='utf-8') as f:
+            src = f.read()
+        m = re.search(r'nowsec - lt\)\) -ge (\d+)', src)
+        self.assertIsNotNone(m, '没找到面板脚本的残锁判定')
+        with open(DOCTOR, encoding='utf-8') as f:
+            doc = f.read()
+        d = re.search(r'^PANEL_LOCK_STALE=(\d+)', doc, re.M)
+        self.assertIsNotNone(d, 'doctor 里没有 PANEL_LOCK_STALE')
+        self.assertEqual(d.group(1), m.group(1))
 
     def test_theme_cache_key_matches_renderer(self):
         """让真实渲染脚本写一次色板缓存，doctor 必须找到同一个文件名（不是测试自己编的名字）。"""

@@ -180,6 +180,8 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Token cache not 18 fields | WARN | `缓存/token` |
 | Token cache is a symlink (ignored) | WARN | `缓存/token` |
 | Lock path occupied by a plain file / symlink / non-empty dir (refresh never runs) | FAIL | `缓存/锁` |
+| Panel lock occupied by a plain file / symlink / non-empty dir | FAIL | `缓存/面板锁` |
+| Panel lock empty but older than 5 s (self-cleared on next render) | WARN | `缓存/面板锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |

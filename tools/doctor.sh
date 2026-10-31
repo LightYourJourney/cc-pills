@@ -45,6 +45,7 @@ THEME_TTL=300        # 色板重算间隔
 TOK_STALE=900        # token 缓存超此秒数即判陈旧（派生项隐藏）
 STATUS_STALE=600     # 状态页缓存超此秒数未更新即隐藏
 LOCK_STALE=30        # 后台刷新残锁的判定秒数
+PANEL_LOCK_STALE=5   # 面板锁的残锁判定秒数（subagent-statusline.sh 同一条）
 PALETTE_V=4          # 色板缓存格式版本
 TOK_FIELDS=18        # 18 段 token 协议（与 statusline-tokens.py 的 FIELDS 一致）
 BASH_MIN=4.2         # 渲染脚本要求的最低 bash
