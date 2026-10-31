@@ -85,6 +85,30 @@ jobs:
                   pass
           print('py-oexcl=%d/200' % bad)
           PY
+          python3 - <<'PY'
+          import os, tempfile, threading
+          def race(fn, rounds=500):
+              bad = 0
+              for _ in range(rounds):
+                  d = tempfile.mkdtemp(); p = os.path.join(d, 'lock')
+                  res = []; bar = threading.Barrier(3)
+                  def go():
+                      bar.wait()
+                      try:
+                          fn(p); res.append(0)
+                      except OSError:
+                          res.append(1)
+                  ts = [threading.Thread(target=go) for _ in range(2)]
+                  for t in ts: t.start()
+                  bar.wait()
+                  for t in ts: t.join()
+                  bad += res == [0, 0]
+              return bad
+          def mk(p): os.mkdir(p)
+          def ex(p): os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+          print('thread-mkdir=%d/500' % race(mk))
+          print('thread-oexcl=%d/500' % race(ex))
+          PY
           uname -a; stat -f -c '%T' /tmp || true
 
       - name: 平台敏感子集
