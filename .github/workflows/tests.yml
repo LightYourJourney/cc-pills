@@ -51,9 +51,9 @@ jobs:
           set +e
           type mkdir
           echo "BASH_ENV=${BASH_ENV:-<unset>}"
-          d=$(mktemp -d); p=$d/lock; bad=0
+          d=$(mktemp -d); bad=0
           for i in $(seq 1 200); do
-            rm -rf "$p"
+            p=$d/lock$i
             ( mkdir "$p" 2>/dev/null; echo $? > "$d/a" ) & a=$!
             ( mkdir "$p" 2>/dev/null; echo $? > "$d/b" ) & b=$!
             wait $a; wait $b
