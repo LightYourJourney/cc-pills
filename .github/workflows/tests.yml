@@ -72,6 +72,19 @@ jobs:
               bad += (a.returncode == 0 and b.returncode == 0)
           print('py-double-mkdir=%d/200' % bad)
           PY
+          python3 - <<'PY'
+          import os, tempfile
+          bad = 0
+          for i in range(200):
+              d = tempfile.mkdtemp(); p = os.path.join(d, 'lock')
+              os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+              try:
+                  os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                  bad += 1
+              except FileExistsError:
+                  pass
+          print('py-oexcl=%d/200' % bad)
+          PY
           uname -a; stat -f -c '%T' /tmp || true
 
       - name: 平台敏感子集
