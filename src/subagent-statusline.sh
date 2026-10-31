@@ -166,7 +166,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # 先写者的条目。抢不到锁（>1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
-dbg() { [ -n "${CLAUDE_SUBAGENT_SL_DEBUG:-}" ] && printf 'slpanel[%s] %s\n' "$$" "$*" >&2; }
+dbg() { [ -n "${CLAUDE_SUBAGENT_SL_DEBUG:-}" ] && printf 'slpanel[%s] t=%s %s\n' "$$" "${EPOCHREALTIME:-?}" "$*" >&2; }
 dbg "state=$STATE sdir=$sdir exists=$([ -e "$STATE" ] && echo y || echo n) isdir=$([ -d "$STATE" ] && echo y || echo n) sdir_ok=$([ -d "$sdir" ] && echo y || echo n)"
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   # 40 次 × 50ms ≈ 2s：2 核 CI runner 上 1s 窗口在 30 轮并发里会丢 2 轮（实测），
@@ -189,9 +189,11 @@ fi
 dbg "got=$got"
 if [ "$got" = 1 ]; then
   trap 'rmdir "$lock" 2>/dev/null' EXIT
+  dbg "locked initlen=${#initprev}"
   prev='{}'
   [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
   [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
+  dbg "reread len=${#prev} same=$([ "$prev" = "$initprev" ] && echo y || echo n)"
   new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
     now as $n
     | ($prev | with_entries(select(
@@ -207,10 +209,15 @@ if [ "$got" = 1 ]; then
   ' 2>/dev/null)
   if [ -n "$new" ]; then
     tmp=$(mktemp "$STATE.XXXXXX" 2>/dev/null)
-    [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null \
-      && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    if [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null; then
+      dbg "wrote keys=$(printf '%s' "$new" | jq -r 'keys|join(",")' 2>/dev/null)"
+    else
+      dbg "write-failed tmp=${tmp:-none}"
+      rm -f "$tmp" 2>/dev/null
+    fi
   fi
   rmdir "$lock" 2>/dev/null
+  dbg "released"
 fi
 
 true
