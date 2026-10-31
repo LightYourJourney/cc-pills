@@ -85,9 +85,9 @@ bash tools/preview.sh tint tokyo-glass
 
 状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它不改写你的配置 / 缓存 / 数据库
 内容，不联网，不打印环境变量全集；`settings.json` 里的命令行会先抹掉
-`sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL 里的 `user:pass@` / `Bearer …` 再显示。唯一的写是冒烟
-用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时可能生成 `-wal`/`-shm` 旁文件，与
-渲染脚本自己的读取方式相同。
+`sk-…` / `*_KEY=…` / `*_TOKEN=…`（大小写不敏感、值可带引号）/ URL 凭据与 query 参数 /
+`Bearer …` 再显示。唯一的写是冒烟用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时
+可能生成 `-wal`/`-shm` 旁文件，与渲染脚本自己的读取方式相同。
 
 ```bash
 bash tools/doctor.sh                                      # 或 bash install.sh --doctor
@@ -104,6 +104,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 只有文字、没有胶囊底色 | `缓存/色板`、`缓存/退避`、`环境/终端` |
 | 少了 `$/h`、`hit`、`io`、`msgs`、`out` | `缓存/token`（超过 `TOK_STALE` 会丢弃派生项） |
 | 少了分支 / 目录 | `环境/git`、`缓存/git` |
+| 少了服务状态 | `缓存/状态页`（超过 `STATUS_STALE` 会隐藏） |
 | 中转站显示 `$x*` | `数据/CCSwitch库`（只读打开，不改库） |
 | 改了配置没生效 | `安装/配置文件`（认不出的键与非法值会被静默忽略） |
 | 面板没有自定义行 | `安装/subagentStatusLine` |

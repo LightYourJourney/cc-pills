@@ -92,10 +92,11 @@ live session's caches.
 
 When an item disappears, the line loses its colours, or nothing renders at all, run the
 diagnostic first. It never modifies your config, cache or database content, makes no network
-requests, never dumps the environment, and scrubs `sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL
-credentials / `Bearer …` out of the `settings.json` command before printing it. Its only write
-is a throwaway temp dir; a WAL-mode SQLite database may get `-wal`/`-shm` sidecars on read-only
-open, exactly as the renderer's own read does.
+requests, never dumps the environment, and scrubs `sk-…` / `*_KEY=…` / `*_TOKEN=…`
+(case-insensitive, quoted values included) / URL credentials and query parameters / `Bearer …`
+out of the `settings.json` command before printing it. Its only write is a throwaway temp dir;
+a WAL-mode SQLite database may get `-wal`/`-shm` sidecars on read-only open, exactly as the
+renderer's own read does.
 
 ```bash
 bash tools/doctor.sh                                      # alias: bash install.sh --doctor
@@ -113,6 +114,7 @@ arguments.
 | Text but no pill colours | `缓存/色板`, `缓存/退避`, `环境/终端` |
 | No `$/h`, `hit`, `io`, `msgs`, `out` | `缓存/token` (older than `TOK_STALE` drops derived items) |
 | No branch / directory | `环境/git`, `缓存/git` |
+| Service status missing | `缓存/状态页` (older than `STATUS_STALE` hides it) |
 | Relay shows `$x*` | `数据/CCSwitch库` (opened read-only; never modified) |
 | Config change has no effect | `安装/配置文件` (unknown keys and bad values are ignored silently) |
 | Panel has no custom lines | `安装/subagentStatusLine` |
