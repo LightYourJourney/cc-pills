@@ -160,7 +160,8 @@ src/statusline-tokens.py      transcript aggregation, rates, quota pacing, relay
 src/statusline-theme.py       palette generation and contrast validation
 src/subagent-statusline.sh    the agent panel's per-subagent lines
 tools/preview.sh              side-by-side style preview
-tools/doctor.sh               read-only diagnostics (install / cache / data sources)
+tools/doctor.sh               read-only diagnostics (entry point)
+tools/doctor/*.sh             check groups: env / install / cache / data
 tests/                        unit + golden + property + contrast-matrix tests
 install.sh  run_tests.sh
 ```

@@ -150,7 +150,8 @@ src/statusline-tokens.py      transcript 聚合、速率、额度节奏、中转
 src/statusline-theme.py       色板生成与对比度验收
 src/subagent-statusline.sh    agent 面板里每个 subagent 的状态行
 tools/preview.sh              并排预览
-tools/doctor.sh               只读诊断（安装 / 缓存 / 数据来源）
+tools/doctor.sh               只读诊断（入口）
+tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
 install.sh  run_tests.sh
 ```

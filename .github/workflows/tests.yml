@@ -24,7 +24,7 @@ jobs:
         run: |
           BASH=/bin/bash
           for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH=$b && break; done
-          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh; do "$BASH" -n "$f"; done
+          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh; do "$BASH" -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
       - name: 跑测试（隔离沙箱，不联网）
         run: bash run_tests.sh

@@ -5,6 +5,7 @@
 文件模拟。先建一份「健康」安装，再逐项破坏——诊断工具最常见的毛病是误报，所以健康态
 必须零 FAIL 也是用例之一。
 """
+import glob
 import hashlib
 import json
 import os
@@ -19,8 +20,13 @@ import unittest
 from _util import REPO, THEME, TOKENS
 
 DOCTOR = os.path.join(REPO, 'tools', 'doctor.sh')
+DOCTOR_LIB = os.path.join(REPO, 'tools', 'doctor')
 INSTALL = os.path.join(REPO, 'install.sh')
 SRC = os.path.join(REPO, 'src')
+
+def doctor_sources():
+    """入口 + 四组检查模块：契约测试要覆盖全部源码。"""
+    return [DOCTOR] + sorted(glob.glob(os.path.join(DOCTOR_LIB, '*.sh')))
 # 测试自身必须用真 bash 启动 doctor：PATH 会被换成假的，不能靠 PATH 解析
 BASE_BASH = os.path.realpath(shutil.which('bash') or '/bin/bash')
 BASE_PATH = os.environ.get('PATH', '/usr/bin:/bin')
@@ -117,6 +123,31 @@ class DoctorSandbox:
             for q in (p, ts):
                 os.chmod(q, 0o600)
         return self.cache
+
+    def make_ccswitch(self, rows=(), columns='full'):
+        """建 CC Switch 库；rows=(id, app_type, is_current, [limit, [meta]])。
+
+        columns: full（含 meta）/ no_meta（旧库缺 meta 列）/ minimal（只到 is_current）/
+        None（不建 providers 表）。代理日志表只被 COUNT(*)，不需要具体列。
+        """
+        db = os.path.join(self.home, '.cc-switch', 'cc-switch.db')
+        os.makedirs(os.path.dirname(db), exist_ok=True)
+        if os.path.exists(db):
+            os.unlink(db)
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE proxy_request_logs (x)')
+        if columns:
+            cols = {
+                'full': 'id TEXT, app_type TEXT, is_current INTEGER, limit_daily_usd REAL, meta TEXT',
+                'no_meta': 'id TEXT, app_type TEXT, is_current INTEGER, limit_daily_usd REAL',
+                'minimal': 'id TEXT, app_type TEXT, is_current INTEGER',
+            }[columns]
+            con.execute(f'CREATE TABLE providers ({cols})')
+            for row in rows:
+                con.execute('INSERT INTO providers VALUES (' + ','.join('?' * len(row)) + ')', row)
+        con.commit()
+        con.close()
+        return db
 
     def healthy(self, relay=False, tok_age=0):
         """健康态：装好副本、settings 两个键、私有缓存目录、新鲜色板与 token 缓存。"""
@@ -537,13 +568,7 @@ class Doctor(unittest.TestCase):
     def test_db_is_not_opened_in_subscription_mode(self):
         """订阅模式渲染侧从不打开 CC Switch 库（tokens.py 约束 7），诊断也不该打开。"""
         self.sb.healthy()
-        d = os.path.join(self.sb.home, '.cc-switch')
-        os.makedirs(d)
-        db = os.path.join(d, 'cc-switch.db')
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (x)')
-        con.commit()
-        con.close()
+        d = os.path.dirname(self.sb.make_ccswitch(columns=None))
         before = sorted(os.listdir(d))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'SKIP')
@@ -568,16 +593,7 @@ class Doctor(unittest.TestCase):
     def test_db_is_opened_read_only(self):
         """真实库只允许只读：跑完之后字节完全不变。"""
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT, provider_id TEXT, '
-                    'app_type TEXT, created_at INTEGER, total_cost_usd TEXT)')
-        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
-                    'limit_daily_usd REAL, meta TEXT)')
-        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1, 50, '{\"limitDailyUsd\": 50}')")
-        con.commit()
-        con.close()
+        db = self.sb.make_ccswitch([('p1', 'claude', 1, 50, '{"limitDailyUsd": 50}')])
         os.chmod(db, 0o600)
         with open(db, 'rb') as f:
             before = hashlib.sha256(f.read()).hexdigest()
@@ -591,12 +607,7 @@ class Doctor(unittest.TestCase):
     def test_db_without_providers_table_warns(self):
         """旧库没有 providers 表：渲染侧容忍（只是隐藏日限额），诊断不能判 FAIL。"""
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
-        con.commit()
-        con.close()
+        self.sb.make_ccswitch(columns=None)
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('providers', self.sb.detail(r, '数据/CCSwitch库'))
@@ -604,14 +615,7 @@ class Doctor(unittest.TestCase):
     def test_db_without_limit_column_warns(self):
         """providers 缺 limit_daily_usd 列时渲染侧返回 (None, None)、隐藏日限额。"""
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
-        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER)')
-        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1)")
-        con.commit()
-        con.close()
+        self.sb.make_ccswitch([('p1', 'claude', 1)], columns='minimal')
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
@@ -619,15 +623,7 @@ class Doctor(unittest.TestCase):
     def test_db_without_limit_is_skip(self):
         """供应商唯一但没有日限额：日限额项本来就不显示，属正常配置，不该报 WARN。"""
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
-        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
-                    'limit_daily_usd REAL, meta TEXT)')
-        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1, NULL, NULL)")
-        con.commit()
-        con.close()
+        self.sb.make_ccswitch([('p1', 'claude', 1, None, None)])
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'SKIP')
         self.assertIn('正常', self.sb.detail(r, '数据/CCSwitch库'))
@@ -635,15 +631,7 @@ class Doctor(unittest.TestCase):
     def test_db_with_invalid_limit_warns(self):
         """限额为 0 / 非数字时渲染侧按「未设置」处理，诊断不能说「口径可确定」。"""
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT)')
-        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
-                    'limit_daily_usd REAL, meta TEXT)')
-        con.execute("INSERT INTO providers VALUES ('p1', 'claude', 1, 0, NULL)")
-        con.commit()
-        con.close()
+        self.sb.make_ccswitch([('p1', 'claude', 1, 0, None)])
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
@@ -655,36 +643,24 @@ class Doctor(unittest.TestCase):
         至于报 SKIP 还是 WARN 是诊断自身的分级，不在这里约束。
         """
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db), exist_ok=True)
         cases = [
-            ('meta TEXT', '{"limitDailyUsd": 50}', 99),      # meta 压过旧列
-            ('meta TEXT', '{"limitDailyUsd": "abc"}', 50),   # 非法值不回落旧列
-            ('meta TEXT', '{}', 50),                         # 空对象回落旧列
-            ('meta TEXT', None, 50),                         # 没有 meta 回落旧列
-            ('meta TEXT', '[1]', 50),                        # meta 不是对象
-            ('meta TEXT', '{"limitDailyUsd": null}', 50),    # 明确写 null
-            ('', None, 50),                                  # 旧库没有 meta 列
+            ('full', '{"limitDailyUsd": 50}', 99),      # meta 压过旧列
+            ('full', '{"limitDailyUsd": "abc"}', 50),   # 非法值不回落旧列
+            ('full', '{}', 50),                         # 空对象回落旧列
+            ('full', None, 50),                         # 没有 meta 回落旧列
+            ('full', '[1]', 50),                        # meta 不是对象
+            ('full', '{"limitDailyUsd": null}', 50),    # 明确写 null
+            ('no_meta', None, 50),                      # 旧库没有 meta 列
         ]
-        for coldef, meta, col in cases:
+        for columns, meta, col in cases:
             with self.subTest(meta=meta, col=col):
-                if os.path.exists(db):
-                    os.unlink(db)
-                con = sqlite3.connect(db)
-                con.execute('CREATE TABLE proxy_request_logs (x)')
-                cols = 'id TEXT, app_type TEXT, is_current INTEGER, limit_daily_usd REAL'
-                if coldef:
-                    cols += ', ' + coldef
-                con.execute(f'CREATE TABLE providers ({cols})')
-                vals = ['p1', 'claude', 1, col] + ([meta] if coldef else [])
-                con.execute('INSERT INTO providers VALUES (' + ','.join('?' * len(vals)) + ')', vals)
-                con.commit()
+                row = ('p1', 'claude', 1, col) + ((meta,) if columns == 'full' else ())
+                db = self.sb.make_ccswitch([row], columns=columns)
                 ro = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
                 try:
                     _, lim = TOKENS.current_provider(ro)
                 finally:
                     ro.close()
-                con.close()
                 r = self.sb.run(env=env)
                 st = self.sb.status(r, '数据/CCSwitch库')
                 if lim is not None:
@@ -694,15 +670,7 @@ class Doctor(unittest.TestCase):
 
     def test_relay_without_unique_provider_warns(self):
         env = self.sb.healthy(relay=True)
-        db = os.path.join(self.sb.home, '.cc-switch', 'cc-switch.db')
-        os.makedirs(os.path.dirname(db))
-        con = sqlite3.connect(db)
-        con.execute('CREATE TABLE proxy_request_logs (session_id TEXT, provider_id TEXT, '
-                    'app_type TEXT, created_at INTEGER, total_cost_usd TEXT)')
-        con.execute('CREATE TABLE providers (id TEXT, app_type TEXT, is_current INTEGER, '
-                    'limit_daily_usd REAL, meta TEXT)')
-        con.commit()
-        con.close()
+        self.sb.make_ccswitch([])
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
         self.assertIn('供应商', self.sb.detail(r, '数据/CCSwitch库'))
@@ -847,6 +815,17 @@ class Doctor(unittest.TestCase):
             self.assertIsNotNone(m, f'doctor 里没有 {name}')
             self.assertEqual(m.group(1), str(want), f'{name} 与 statusline-command.sh 不一致')
 
+    def _points_to_verdict(self, cmd):
+        """写 settings → 跑 doctor 与 install --check，断言两者一致，返回 doctor 结论。"""
+        self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
+        d = self.sb.run()
+        chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
+                             text=True, env=self.sb.env)
+        got = self.sb.status(d, '安装/statusLine')
+        self.assertEqual(chk.returncode == 0, got == 'PASS',
+                         f'写法 {cmd!r}：install --check rc={chk.returncode}，doctor={got}\n{chk.stdout}')
+        return got
+
     def test_bak_only_reference_is_not_a_hit(self):
         """`.bak` 指向的是另一个文件；与真引用混在一条命令里时，也要认出真引用。"""
         self.sb.install(subagent=False, settings=False)   # 只装主脚本：--check 就不会因面板键未配而红
@@ -855,12 +834,7 @@ class Doctor(unittest.TestCase):
                           (f'bash {d}/statusline-command.sh.bak && bash /elsewhere/statusline-command.sh', 'FAIL'),
                           (f'cp {d}/statusline-command.sh {d}/statusline-command.sh.bak; '
                            f'bash {d}/statusline-command.sh', 'PASS')):
-            self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
-            r = self.sb.run()
-            self.assertEqual(self.sb.status(r, '安装/statusLine'), want, f'{cmd}\n{r.stdout}')
-            chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
-                                 text=True, env=self.sb.env)
-            self.assertEqual(chk.returncode == 0, want == 'PASS', f'install --check 与 doctor 不一致：{cmd}')
+            self.assertEqual(self._points_to_verdict(cmd), want, cmd)
 
     def test_token_field_count_matches_tokens_module(self):
         with open(DOCTOR, encoding='utf-8') as f:
@@ -882,8 +856,12 @@ class Doctor(unittest.TestCase):
     def test_official_url_list_matches_renderer(self):
         """中转站判定用的「官方地址」白名单必须与渲染脚本逐字一致。"""
         pat = re.compile(r"''\|((?:https://[^\s|)]+)(?:\|https://[^\s|)]+)*)\)")
-        with open(DOCTOR, encoding='utf-8') as f:
-            doc = pat.search(f.read())
+        doc = None
+        for p in doctor_sources():
+            with open(p, encoding='utf-8') as f:
+                doc = pat.search(f.read())
+            if doc:
+                break
         with open(os.path.join(SRC, 'statusline-command.sh'), encoding='utf-8') as f:
             src = pat.search(f.read())
         self.assertIsNotNone(doc, 'doctor 里没找到官方地址白名单')
@@ -934,11 +912,13 @@ class Doctor(unittest.TestCase):
     def test_no_bare_var_before_multibyte(self):
         """`$var` 紧跟多字节字符时，bash 会把首字节吞进变量名（渲染脚本约束 6 同一条坑）。
         在 zh_CN.UTF-8 + bash 3.2 上会直接 unbound variable，所以一律写 ${var}。"""
-        with open(DOCTOR, encoding='utf-8') as f:
-            lines = f.read().splitlines()
-        bad = [f'{i}: {l.strip()}' for i, l in enumerate(lines, 1)
-               if not l.lstrip().startswith('#')
-               and re.search(r'\$[A-Za-z_0-9][A-Za-z0-9_]*[^\x00-\x7f]', l)]
+        bad = []
+        for p in doctor_sources():
+            with open(p, encoding='utf-8') as f:
+                lines = f.read().splitlines()
+            bad += [f'{os.path.basename(p)}:{i}: {l.strip()}' for i, l in enumerate(lines, 1)
+                    if not l.lstrip().startswith('#')
+                    and re.search(r'\$[A-Za-z_0-9][A-Za-z0-9_]*[^\x00-\x7f]', l)]
         self.assertEqual(bad, [], '这些行要改成 ${var} 写法')
 
     def test_runs_under_system_bash(self):
@@ -978,13 +958,7 @@ class Doctor(unittest.TestCase):
             '',
         ]
         for cmd in forms:
-            self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
-            d = self.sb.run()
-            chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
-                                 text=True, env=self.sb.env)
-            self.assertEqual(chk.returncode == 0, self.sb.status(d, '安装/statusLine') == 'PASS',
-                             f'写法 {cmd!r}：install --check rc={chk.returncode}，'
-                             f'doctor={self.sb.status(d, "安装/statusLine")}\n{chk.stdout}')
+            self._points_to_verdict(cmd)
 
     def test_invalid_step_is_flagged(self):
         """渲染器会静默忽略写错的 step；配置检查必须指出来（合法项名从渲染脚本的 ITEM_IDS 取）。"""
