@@ -48,7 +48,8 @@ jobs:
       # （golden 与配色矩阵是平台无关的纯计算，改它们时 macOS 作业会覆盖）。
       - name: 探针：mkdir 解析与并发原子性（临时）
         run: |
-          type mkdir || true
+          set +e
+          type mkdir
           echo "BASH_ENV=${BASH_ENV:-<unset>}"
           p=$(mktemp -d)/lock; bad=0
           for i in $(seq 1 200); do
