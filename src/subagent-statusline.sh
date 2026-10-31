@@ -166,6 +166,8 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # 先写者的条目。抢不到锁（>1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
+dbg() { [ -n "${CLAUDE_SUBAGENT_SL_DEBUG:-}" ] && printf 'slpanel[%s] %s\n' "$$" "$*" >&2; }
+dbg "state=$STATE sdir=$sdir exists=$([ -e "$STATE" ] && echo y || echo n) isdir=$([ -d "$STATE" ] && echo y || echo n) sdir_ok=$([ -d "$sdir" ] && echo y || echo n)"
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   # 40 次 × 50ms ≈ 2s：2 核 CI runner 上 1s 窗口在 30 轮并发里会丢 2 轮（实测），
   # 而丢一轮就是少一帧速率。锁本身只持有几十到几百毫秒，2s 足够，又不至于卡住面板。
@@ -177,12 +179,14 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
       rm -f "$lock" 2>/dev/null; continue
     fi
     lt=$(mtime "$lock"); lt=${lt:-0}
+    dbg "mkdir-fail kind=$([ -L "$lock" ] && echo link || { [ -d "$lock" ] && echo dir || echo other; }) mtime=$lt now=$nowsec empty=$([ -z "$(find "$lock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ] && echo y || echo n)"
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
       rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
   done
 fi
+dbg "got=$got"
 if [ "$got" = 1 ]; then
   trap 'rmdir "$lock" 2>/dev/null' EXIT
   prev='{}'

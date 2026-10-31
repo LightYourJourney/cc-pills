@@ -33,30 +33,44 @@ class SubagentState(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
 
-    def spawn(self, state, ident, env=None):
+    def spawn(self, state, ident, env=None, err=None):
         p = os.path.join(self.d, f'in-{ident}.json')
         with open(p, 'w') as f:
             f.write(task(ident))
         e = dict(self.env, CLAUDE_SUBAGENT_SL_STATE=state)
         e.update(env or {})
         with open(p) as f:
+            if err:
+                with open(err, 'w') as ef:
+                    return subprocess.Popen(['bash', SCRIPT], stdin=f, stdout=subprocess.DEVNULL,
+                                            stderr=ef, env=e)
             return subprocess.Popen(['bash', SCRIPT], stdin=f,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=e)
 
     def test_concurrent_writes_do_not_lose_entries(self):
-        lost = 0
+        lost = []
         for n in range(30):
             st = os.path.join(self.d, f's{n}.json')
             with open(st, 'w') as f:
                 json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
-            a = self.spawn(st, 'a')
-            b = self.spawn(st, 'b')
+            a = self.spawn(st, 'a', env={'CLAUDE_SUBAGENT_SL_DEBUG': '1'}, err=st + '.a.err')
+            b = self.spawn(st, 'b', env={'CLAUDE_SUBAGENT_SL_DEBUG': '1'}, err=st + '.b.err')
             a.wait()
             b.wait()
             with open(st) as f:
                 d = json.load(f)
-            lost += not ('a' in d and 'b' in d and 'seed' in d)
-        self.assertEqual(lost, 0, f'{lost}/30 次并发写入丢失了另一实例的条目')
+            if not ('a' in d and 'b' in d and 'seed' in d):
+                # 失败现场：留下了哪个条目、锁是否残留、两个进程的锁日志
+                logs = {}
+                for k in ('a', 'b'):
+                    try:
+                        with open(st + f'.{k}.err') as f:
+                            logs[k] = f.read().strip().splitlines()
+                    except OSError:
+                        logs[k] = []
+                lost.append({'round': n, 'keys': sorted(d),
+                             'lock': os.path.exists(st + '.lock'), 'logs': logs})
+        self.assertEqual(lost, [], f'{len(lost)}/30 次并发写入丢失了另一实例的条目：{lost}')
 
     def test_stale_lock_is_recovered(self):
         st = os.path.join(self.d, 's.json')
