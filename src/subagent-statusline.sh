@@ -167,7 +167,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
 dbg() { [ -n "${CLAUDE_SUBAGENT_SL_DEBUG:-}" ] && printf 'slpanel[%s] t=%s %s\n' "$$" "${EPOCHREALTIME:-?}" "$*" >&2; }
-dbg "state=$STATE sdir=$sdir exists=$([ -e "$STATE" ] && echo y || echo n) isdir=$([ -d "$STATE" ] && echo y || echo n) sdir_ok=$([ -d "$sdir" ] && echo y || echo n)"
+dbg "state=$STATE lock=$lock sdir=$sdir exists=$([ -e "$STATE" ] && echo y || echo n) isdir=$([ -d "$STATE" ] && echo y || echo n) sdir_ok=$([ -d "$sdir" ] && echo y || echo n)"
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   # 40 次 × 50ms ≈ 2s：2 核 CI runner 上 1s 窗口在 30 轮并发里会丢 2 轮（实测），
   # 而丢一轮就是少一帧速率。锁本身只持有几十到几百毫秒，2s 足够，又不至于卡住面板。

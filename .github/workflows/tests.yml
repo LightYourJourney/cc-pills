@@ -46,11 +46,10 @@ jobs:
           python3 -m py_compile src/*.py tests/*.py
       # 子集：平台敏感的缓存 / 面板 / 时效 / 安装 / 诊断。完整套件留在 macOS runner
       # （golden 与配色矩阵是平台无关的纯计算，改它们时 macOS 作业会覆盖）。
-      - name: 平台敏感子集
-        run: bash run_tests.sh cache subagent freshness install doctor
-
-      - name: 探针：同路径并发 mkdir 的原子性（临时）
+      - name: 探针：mkdir 解析与并发原子性（临时）
         run: |
+          type mkdir || true
+          echo "BASH_ENV=${BASH_ENV:-<unset>}"
           p=$(mktemp -d)/lock; bad=0
           for i in $(seq 1 200); do
             rm -rf "$p"
@@ -61,3 +60,6 @@ jobs:
             [ "$ra" = 0 ] && [ "$rb" = 0 ] && bad=$((bad + 1))
           done
           echo "double-mkdir=$bad/200"
+
+      - name: 平台敏感子集
+        run: bash run_tests.sh cache subagent freshness install doctor
