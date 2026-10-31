@@ -60,6 +60,19 @@ jobs:
             [ "$(cat "$d/a")" = 0 ] && [ "$(cat "$d/b")" = 0 ] && bad=$((bad + 1))
           done
           echo "double-mkdir=$bad/200"
+          python3 - <<'PY'
+          import os, subprocess, tempfile
+          bad = 0
+          for i in range(200):
+              d = tempfile.mkdtemp()
+              p = os.path.join(d, 'lock')
+              a = subprocess.Popen(['mkdir', p])
+              b = subprocess.Popen(['mkdir', p])
+              a.wait(); b.wait()
+              bad += (a.returncode == 0 and b.returncode == 0)
+          print('py-double-mkdir=%d/200' % bad)
+          PY
+          uname -a; stat -f -c '%T' /tmp || true
 
       - name: 平台敏感子集
         run: bash run_tests.sh cache subagent freshness install doctor
