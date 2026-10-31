@@ -172,16 +172,16 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   # 40 次 × 50ms ≈ 2s：2 核 CI runner 上 1s 窗口在 30 轮并发里会丢 2 轮（实测），
   # 而丢一轮就是少一帧速率。锁本身只持有几十到几百毫秒，2s 足够，又不至于卡住面板。
   for _ in {1..40}; do
-    if mkdir "$lock" 2>/dev/null; then got=1; break; fi
+    if mkdir "$lock" 2>/dev/null; then got=1; dbg "mkdir-ok i=$_"; break; fi
     [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
+    lt=$(mtime "$lock"); lt=${lt:-0}
+    dbg "mkdir-fail i=$_ kind=$([ -L "$lock" ] && echo link || { [ -d "$lock" ] && echo dir || echo other; }) mtime=$lt now=$nowsec empty=$([ -z "$(find "$lock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ] && echo y || echo n)"
     # 锁路径被普通文件 / 符号链接占住时 mkdir 永远失败：不是我们的锁，直接清掉重试。
     if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
-      rm -f "$lock" 2>/dev/null; continue
+      dbg "heal-rmf"; rm -f "$lock" 2>/dev/null; continue
     fi
-    lt=$(mtime "$lock"); lt=${lt:-0}
-    dbg "mkdir-fail kind=$([ -L "$lock" ] && echo link || { [ -d "$lock" ] && echo dir || echo other; }) mtime=$lt now=$nowsec empty=$([ -z "$(find "$lock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ] && echo y || echo n)"
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
+      dbg "heal-rmrf age=$((nowsec - lt))"; rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
   done
