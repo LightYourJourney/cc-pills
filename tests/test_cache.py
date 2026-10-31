@@ -171,6 +171,34 @@ class Lifecycle(CacheBase):
         return subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
                               capture_output=True, env=env)
 
+    def test_prune_keeps_session_state_while_transcript_exists(self):
+        """会话状态是重扫断点：transcript 还在就不能删，哪怕状态文件很旧。"""
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        tp = os.path.join(self.d, 'live session.jsonl')
+        with open(tp, 'w') as f:
+            f.write('{}\n')
+        state = os.path.join(p, 'claude-statusline-live.json')
+        with open(state, 'w') as f:
+            json.dump({'v': 9, 'files': {tp: {'off': 3}}}, f)
+        self.old(state, days=400)
+        dead = os.path.join(p, 'claude-statusline-dead.json')
+        with open(dead, 'w') as f:
+            json.dump({'v': 9, 'files': {os.path.join(self.d, 'gone.jsonl'): {'off': 3}}}, f)
+        self.old(dead, days=400)
+        self.refresh(self.env)
+        self.assertTrue(os.path.exists(state), 'transcript 仍在的会话状态被清理了')
+        self.assertFalse(os.path.exists(dead), 'transcript 已不存在的死会话状态没有被清理')
+
+    def test_prune_keeps_recent_dead_session_state(self):
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        dead = os.path.join(p, 'claude-statusline-recent.json')
+        with open(dead, 'w') as f:
+            json.dump({'v': 9, 'files': {os.path.join(self.d, 'gone.jsonl'): {'off': 3}}}, f)
+        self.refresh(self.env)
+        self.assertTrue(os.path.exists(dead), '未超过 30 天的会话状态不应被清理')
+
     def test_prune_removes_only_stale_files_in_default_root(self):
         p = self.private()
         os.makedirs(p, mode=0o700)

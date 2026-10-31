@@ -175,7 +175,8 @@ THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
 TOK_STALE=900            # token 缓存超过此秒数判陈旧：派生项隐藏（宁缺勿假）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
-CACHE_MAX_AGE=30         # 默认根内死会话 / 路径缓存的保留天数（后台每天清一次）
+CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存与残留临时文件的保留天数
+                         # （会话状态另外要求记录里的 transcript 已不存在；后台每天清一次）
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
@@ -459,7 +460,7 @@ if [ "${1:-}" = "--refresh" ]; then
 
   # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
   # 链接，-maxdepth 1 不递归；锁目录、色板、状态页与面板状态不在清理范围。缓存都可
-  # 重建，误删最多丢一轮加速，因此 30 天阈值可以取得足够保守。
+  # 重建，误删最多丢一轮加速；会话状态另由 transcript 是否存在把关（见下）。
   if [ -z "${CLAUDE_SL_TMP:-}" ]; then
     pstamp="${SLT}/claude-sl-prune.stamp"
     pst=$(mtime "$pstamp"); pst=${pst:-0}
@@ -467,8 +468,21 @@ if [ "${1:-}" = "--refresh" ]; then
       find "$SLT" -mindepth 1 -maxdepth 1 -type f \
         \( -name 'claude-sl-tok-*.cache' -o -name 'claude-sl-tok-*.cache.ts' \
            -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
-           -o -name 'claude-statusline-*.json' -o -name '.claude-sl-*' \) \
+           -o -name '.claude-sl-*' \) \
         -mtime +"$CACHE_MAX_AGE" -exec rm -f {} + 2>/dev/null
+      # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
+      # 都不在了才删。读不出（损坏 / 无 jq）时视为没有 transcript——那种状态本来也会
+      # 触发重扫，删掉不损失任何东西。
+      cutoff=$((now - CACHE_MAX_AGE * 86400))
+      for f in "$SLT"/claude-statusline-*.json; do
+        [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || continue
+        m=$(mtime "$f"); [ "${m:-0}" -lt "$cutoff" ] || continue
+        keep=0
+        while IFS= read -r p; do
+          [ -n "$p" ] && [ -e "$p" ] && { keep=1; break; }
+        done < <(jq -r '.files | keys[]?' "$f" 2>/dev/null)
+        [ "$keep" = 0 ] && rm -f "$f"
+      done
       ptmp=$(mktemp "${SLT}/.claude-sl-prune.XXXXXX" 2>/dev/null)
       [ -n "$ptmp" ] && printf '%s\n' "$now" > "$ptmp" 2>/dev/null \
         && mv -f "$ptmp" "$pstamp" 2>/dev/null || rm -f "$ptmp" 2>/dev/null
