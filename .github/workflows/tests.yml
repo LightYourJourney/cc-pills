@@ -46,70 +46,9 @@ jobs:
           python3 -m py_compile src/*.py tests/*.py
       # 子集：平台敏感的缓存 / 面板 / 时效 / 安装 / 诊断。完整套件留在 macOS runner
       # （golden 与配色矩阵是平台无关的纯计算，改它们时 macOS 作业会覆盖）。
-      - name: 探针：mkdir 解析与并发原子性（临时）
-        run: |
-          set +e
-          type mkdir
-          echo "BASH_ENV=${BASH_ENV:-<unset>}"
-          d=$(mktemp -d); bad=0
-          for i in $(seq 1 200); do
-            p=$d/lock$i
-            ( mkdir "$p" 2>/dev/null; echo $? > "$d/a" ) & a=$!
-            ( mkdir "$p" 2>/dev/null; echo $? > "$d/b" ) & b=$!
-            wait $a; wait $b
-            [ "$(cat "$d/a")" = 0 ] && [ "$(cat "$d/b")" = 0 ] && bad=$((bad + 1))
-          done
-          echo "double-mkdir=$bad/200"
-          python3 - <<'PY'
-          import os, subprocess, tempfile
-          bad = 0
-          for i in range(200):
-              d = tempfile.mkdtemp()
-              p = os.path.join(d, 'lock')
-              a = subprocess.Popen(['mkdir', p])
-              b = subprocess.Popen(['mkdir', p])
-              a.wait(); b.wait()
-              bad += (a.returncode == 0 and b.returncode == 0)
-          print('py-double-mkdir=%d/200' % bad)
-          PY
-          python3 - <<'PY'
-          import os, tempfile
-          bad = 0
-          for i in range(200):
-              d = tempfile.mkdtemp(); p = os.path.join(d, 'lock')
-              os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-              try:
-                  os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-                  bad += 1
-              except FileExistsError:
-                  pass
-          print('py-oexcl=%d/200' % bad)
-          PY
-          python3 - <<'PY'
-          import os, tempfile, threading
-          def race(fn, rounds=500):
-              bad = 0
-              for _ in range(rounds):
-                  d = tempfile.mkdtemp(); p = os.path.join(d, 'lock')
-                  res = []; bar = threading.Barrier(3)
-                  def go():
-                      bar.wait()
-                      try:
-                          fn(p); res.append(0)
-                      except OSError:
-                          res.append(1)
-                  ts = [threading.Thread(target=go) for _ in range(2)]
-                  for t in ts: t.start()
-                  bar.wait()
-                  for t in ts: t.join()
-                  bad += res == [0, 0]
-              return bad
-          def mk(p): os.mkdir(p)
-          def ex(p): os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-          print('thread-mkdir=%d/500' % race(mk))
-          print('thread-oexcl=%d/500' % race(ex))
-          PY
-          uname -a; stat -f -c '%T' /tmp || true
-
       - name: 平台敏感子集
+        env:
+          # 该 runner 上两个独立进程能在约 2µs 内同时 mkdir 同一条路径成功（实测，见
+          # docs/DECISIONS.md），锁语义无法在这里验证；并发用例仍由 macOS 全量覆盖。
+          CCPILLS_SKIP_CONCURRENCY: '1'
         run: bash run_tests.sh cache subagent freshness install doctor

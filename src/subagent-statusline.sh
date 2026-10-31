@@ -163,39 +163,29 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 
 # ── 状态写回（共享合并、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
 # 读-改-写全程持锁，锁内重新读取状态：否则两个实例都用开始时的快照，后写者会覆盖
-# 先写者的条目。抢不到锁（>1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
+# 先写者的条目。抢不到锁（1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
-dbg() { [ -n "${CLAUDE_SUBAGENT_SL_DEBUG:-}" ] && printf 'slpanel[%s] t=%s %s\n' "$$" "${EPOCHREALTIME:-?}" "$*" >&2; }
-dbg "state=$STATE lock=$lock sdir=$sdir exists=$([ -e "$STATE" ] && echo y || echo n) isdir=$([ -d "$STATE" ] && echo y || echo n) sdir_ok=$([ -d "$sdir" ] && echo y || echo n) mkdir=$(type -t mkdir) func=$(declare -F mkdir 2>/dev/null || echo none)"
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
-  # 40 次 × 50ms ≈ 2s：2 核 CI runner 上 1s 窗口在 30 轮并发里会丢 2 轮（实测），
-  # 而丢一轮就是少一帧速率。锁本身只持有几十到几百毫秒，2s 足够，又不至于卡住面板。
-  for _ in {1..40}; do
-    if mkdir "$lock" 2>/dev/null; then
-      got=1; dbg "mkdir-ok i=$_ isdir=$([ -d "$lock" ] && echo y || echo n)"; break
-    fi
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if mkdir "$lock" 2>/dev/null; then got=1; break; fi
     [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
-    lt=$(mtime "$lock"); lt=${lt:-0}
-    dbg "mkdir-fail i=$_ kind=$([ -L "$lock" ] && echo link || { [ -d "$lock" ] && echo dir || echo other; }) mtime=$lt now=$nowsec empty=$([ -z "$(find "$lock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ] && echo y || echo n)"
     # 锁路径被普通文件 / 符号链接占住时 mkdir 永远失败：不是我们的锁，直接清掉重试。
     if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
-      dbg "heal-rmf"; rm -f "$lock" 2>/dev/null; continue
+      rm -f "$lock" 2>/dev/null; continue
     fi
+    lt=$(mtime "$lock"); lt=${lt:-0}
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      dbg "heal-rmrf age=$((nowsec - lt))"; rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
+      rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
   done
 fi
-dbg "got=$got"
 if [ "$got" = 1 ]; then
   trap 'rmdir "$lock" 2>/dev/null' EXIT
-  dbg "locked initlen=${#initprev}"
   prev='{}'
   [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
   [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
-  dbg "reread len=${#prev} same=$([ "$prev" = "$initprev" ] && echo y || echo n)"
   new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
     now as $n
     | ($prev | with_entries(select(
@@ -211,15 +201,10 @@ if [ "$got" = 1 ]; then
   ' 2>/dev/null)
   if [ -n "$new" ]; then
     tmp=$(mktemp "$STATE.XXXXXX" 2>/dev/null)
-    if [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null; then
-      dbg "wrote keys=$(printf '%s' "$new" | jq -r 'keys|join(",")' 2>/dev/null)"
-    else
-      dbg "write-failed tmp=${tmp:-none}"
-      rm -f "$tmp" 2>/dev/null
-    fi
+    [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   fi
   rmdir "$lock" 2>/dev/null
-  dbg "released"
 fi
 
 true
