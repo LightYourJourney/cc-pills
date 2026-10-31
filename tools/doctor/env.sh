@@ -6,7 +6,7 @@ osver=""
 [ "$os" = Darwin ] && osver=" $(sw_vers -productVersion 2>/dev/null)"
 res PASS 环境/系统 "$os$osver $arch"
 
-# Claude Code 用 PATH 里的 bash 执行 statusLine 命令；渲染脚本自带 ≥5 的换壳守卫
+# Claude Code 用 PATH 里的 bash 执行 statusLine 命令；渲染脚本自带 ≥4.2 的换壳守卫
 bbash=$(command -v bash 2>/dev/null)
 bver=""
 [ -n "$bbash" ] && bver=$("$bbash" -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"' 2>/dev/null)
@@ -19,13 +19,13 @@ else
   for b in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
     [ -x "$b" ] || continue
     v=$("$b" -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"' 2>/dev/null)
-    if ver_ge "$v" 5; then alt="$b $v"; break; fi
+    if ver_ge "$v" "$BASH_MIN"; then alt="$b $v"; break; fi
   done
   if [ -n "$alt" ]; then
     res WARN 环境/bash "PATH 里的 bash 是 ${bver}，低于 ${BASH_MIN}；渲染脚本会换用 $alt" \
       "把新版 bash 放到 PATH 前面：brew install bash"
   else
-    res FAIL 环境/bash "PATH 里的 bash 是 ${bver}，低于 ${BASH_MIN}，且找不到 ≥5 的替代" \
+    res FAIL 环境/bash "PATH 里的 bash 是 ${bver}，低于 ${BASH_MIN}，且找不到 ≥${BASH_MIN} 的替代" \
       "brew install bash（脚本会退化成「模型 · ctx%」最简行）"
   fi
 fi

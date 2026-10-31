@@ -19,7 +19,8 @@
 #   → 按降级序列缩短 / 丢弃、放得下后按逆序回填 → 组装输出 → 脱钩后台刷新进程 → 退出。
 # 后台刷新（--refresh 模式，本脚本自调用；同会话同一时刻只跑一个，见约束 9）：
 #   （下列文件都在 $SLT：默认 ${TMPDIR:-/tmp}/claude-sl-<uid>（0700，只读本人）；
-#     预览 / 测试用 CLAUDE_SL_TMP 指定隔离目录。旧版写在 /tmp 的本会话文件在首次刷新时迁入）
+#     预览 / 测试用 CLAUDE_SL_TMP 指定隔离目录。旧版写在 /tmp 的本会话文件在首次刷新时迁入；
+#     默认根内 30 天没动过的会话 / 路径缓存由后台每天清一次，显式根由调用方负责）
 #     $SLT/claude-sl-theme-<终端键>.cache  （statusline-theme.py 产出的完整色板，首行
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     $SLT/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
@@ -121,7 +122,7 @@
 #      不报错但结果是错的，顺序不能反
 #  13. 显示宽度：CJK / 全角字符占两列而 ${#s} 只算一个，dw() 按 UTF-8 字节数推算
 #      （三字节字符除已知的窄符号外按宽字符计）；每种写法的宽度在 item() 里算一次存入 VW
-#  14. 需要 bash ≥ 4.2（关联数组、${!var} 间接展开）；低于 4.2 时开头的守卫换用 ≥ 5 的
+#  14. 需要 bash ≥ 4.2（关联数组、${!var} 间接展开）；低于 4.2 时开头的守卫换用 ≥ 4.2 的
 #      新版 bash 重跑，找不到则降级为最简行
 #  15. 配置文件只按白名单逐行解析，绝不 source（避免把配置当代码执行）
 #  16. 输出用 printf '%s'、转义序列用真实 ESC 字节拼接，外部文本（路径 / 分支 / 模型名）
@@ -130,17 +131,20 @@
 #      唯一例外：某目录首次渲染、还没有 git 缓存时同步跑一次 git_data（约 4 个进程）
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
+#  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件，
+#      不递归、不碰锁 / 色板 / 状态页，显式 CLAUDE_SL_TMP 不清理
 #
 # 开发：bash run_tests.sh（隔离沙箱，不碰线上缓存）；安装：bash install.sh
 # 调试渲染：CLAUDE_SL_NO_REFRESH=1 bash install.sh 后手工喂 stdin（见 tests/_util.py）
 #
 
 # ── bash 版本守卫（约束 14）─────────────────────────────────────────────
-# 关联数组与 printf %()T 需要 bash ≥ 4.2；macOS 自带 /bin/bash 是 3.2。
-# 先换用常见位置的新版 bash 重跑，找不到就只输出「模型 · ctx%」的最简行。
+# 关联数组需要 bash ≥ 4.2；macOS 自带 /bin/bash 是 3.2。
+# 先换用常见位置的 ≥4.2 bash 重跑，找不到就只输出「模型 · ctx%」的最简行。
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
   for b in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
-    [ -x "$b" ] && "$b" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ]' 2>/dev/null && exec "$b" "$0" "$@"
+    [ -x "$b" ] && "$b" -c 'v=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1])); [ "$v" -ge 402 ]' 2>/dev/null \
+      && exec "$b" "$0" "$@"
   done
   [ "${1:-}" = "--refresh" ] && exit 0
   jq -r '[.model.display_name, ((.context_window.used_percentage // empty | round | tostring) + "%")] | map(select(. != null)) | join(" · ")' 2>/dev/null
@@ -171,15 +175,20 @@ THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
 TOK_STALE=900            # token 缓存超过此秒数判陈旧：派生项隐藏（宁缺勿假）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
+CACHE_MAX_AGE=30         # 默认根内死会话 / 路径缓存的保留天数（后台每天清一次）
+PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
 # 否则用每用户私有目录 $TMPDIR/claude-sl-<uid>（0700），不再落到共享 /tmp。
+SLT_OK=0
 if [ -n "${CLAUDE_SL_TMP:-}" ]; then
-  SLT=$CLAUDE_SL_TMP; SLT_OK=1
+  SLT=$CLAUDE_SL_TMP
 else
-  SLT=${TMPDIR:-/tmp}/claude-sl-${UID:-0}; SLT_OK=0
-  [ -d "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+  tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}
+  SLT=$tmpdir/claude-sl-${UID:-0}
 fi
+# 根必须是本人拥有的真实目录：符号链接（哪怕是本人建的）一律不跟随。
+[ -d "$SLT" ] && [ ! -L "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
 GIT_TTL=5                # git 缓存刷新间隔（秒）；.git/HEAD 或 index 变了立即刷新
 CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 
@@ -258,8 +267,9 @@ else
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi
-# 缓存读取前确认：可读且属于当前用户。跨用户预置的同名文件一律不读（-O 是内建，不 fork）。
-cache_ok() { [ -r "$1" ] && [ -O "$1" ]; }
+# 缓存读取前确认：可读、不是符号链接、且属于当前用户。跨用户预置的同名文件一律不读
+# （-r / -L / -O 都是内建，不 fork）。
+cache_ok() { [ -r "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
 
 # 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
@@ -322,9 +332,9 @@ if [ "${1:-}" = "--refresh" ]; then
   # 显式 CLAUDE_SL_TMP 也要求目录存在且属于本人（预览 / 测试会自己建好）。
   if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT_OK" != 1 ]; then
     mkdir -m 700 "$SLT" 2>/dev/null
-    [ -d "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
+    [ -d "$SLT" ] && [ ! -L "$SLT" ] && [ -O "$SLT" ] && SLT_OK=1
   fi
-  [ "$SLT_OK" = 1 ] && [ -d "$SLT" ] && [ -O "$SLT" ] || exit 0
+  [ "$SLT_OK" = 1 ] || exit 0
   [ -z "${CLAUDE_SL_TMP:-}" ] && chmod 700 "$SLT" 2>/dev/null
   # 旧版本把缓存写在共享 /tmp：把本会话的 token / 跳过标记 / 状态迁到私有目录，
   # 避免整段重扫。只搬自己的普通文件（非符号链接），目标已存在则不覆盖。
@@ -444,6 +454,24 @@ if [ "${1:-}" = "--refresh" ]; then
       stmp=$(mktemp "${SLT}/.claude-sl-status.XXXXXX" 2>/dev/null)
       [ -n "$stmp" ] && printf '%s\t%s\n' "$now" "$ind" > "$stmp" 2>/dev/null &&
         mv -f "$stmp" "${SLT}/claude-sl-status.cache" 2>/dev/null || rm -f "$stmp" 2>/dev/null
+    fi
+  fi
+
+  # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
+  # 链接，-maxdepth 1 不递归；锁目录、色板、状态页与面板状态不在清理范围。缓存都可
+  # 重建，误删最多丢一轮加速，因此 30 天阈值可以取得足够保守。
+  if [ -z "${CLAUDE_SL_TMP:-}" ]; then
+    pstamp="${SLT}/claude-sl-prune.stamp"
+    pst=$(mtime "$pstamp"); pst=${pst:-0}
+    if [ $((now - pst)) -ge "$PRUNE_GAP" ]; then
+      find "$SLT" -mindepth 1 -maxdepth 1 -type f \
+        \( -name 'claude-sl-tok-*.cache' -o -name 'claude-sl-tok-*.cache.ts' \
+           -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
+           -o -name 'claude-statusline-*.json' -o -name '.claude-sl-*' \) \
+        -mtime +"$CACHE_MAX_AGE" -exec rm -f {} + 2>/dev/null
+      ptmp=$(mktemp "${SLT}/.claude-sl-prune.XXXXXX" 2>/dev/null)
+      [ -n "$ptmp" ] && printf '%s\n' "$now" > "$ptmp" 2>/dev/null \
+        && mv -f "$ptmp" "$pstamp" 2>/dev/null || rm -f "$ptmp" 2>/dev/null
     fi
   fi
   exit 0

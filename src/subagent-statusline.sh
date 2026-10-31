@@ -34,10 +34,14 @@
 #   - 时长段仅在 startTime 为可信 epoch 毫秒（>1e12）且任务 running/pending
 #     时显示；速率段仅在有上次状态、间隔 ≥1s、增量非负且 ≥1 tok/s 时显示
 #
-# 状态文件：${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-<uid>.json}
+# 状态文件：显式 CLAUDE_SUBAGENT_SL_STATE 优先；否则跟随主栏缓存根——
+#   $CLAUDE_SL_TMP/claude-subagent-sl-<uid>.json（调用方建好目录），或
+#   ${TMPDIR:-/tmp}/claude-sl-<uid>/claude-subagent-sl-<uid>.json（需要时 0700 创建）。
 #   多会话共享：读-改-写全程在同一把 mkdir 锁内，锁内重新读取后再合并（不会用旧快照
 #   覆盖别家条目）；抢锁超过 1s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
 #   原子替换，状态文件 0600；entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
+#   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
+#   （只有速率基线，丢失代价是一帧）。
 #
 # 工程约束（修改时必须保留）
 # --------------------------
@@ -51,7 +55,22 @@
 command -v jq >/dev/null 2>&1 || { while IFS= read -r _; do :; done; exit 0; }  # 纯 builtin 排空 stdin，不依赖 PATH
 
 umask 077                                    # 状态文件只给本人读写
-STATE="${CLAUDE_SUBAGENT_SL_STATE:-${TMPDIR:-/tmp}/claude-subagent-sl-${UID:-0}.json}"
+# 显式 CLAUDE_SUBAGENT_SL_STATE 最高优先；否则与主栏共用私有根，让
+# CLAUDE_SL_TMP（预览 / 测试）只设一处就能同时隔离两套缓存。
+state_ok=0; make_root=0
+if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
+  STATE=$CLAUDE_SUBAGENT_SL_STATE; state_ok=1   # 显式文件：父目录由调用方负责
+else
+  if [ -n "${CLAUDE_SL_TMP:-}" ]; then
+    sroot=${CLAUDE_SL_TMP%/}
+  else
+    t=${TMPDIR:-/tmp}; t=${t%/}
+    sroot="$t/claude-sl-${UID:-0}"; make_root=1
+  fi
+  STATE="$sroot/claude-subagent-sl-${UID:-0}.json"
+  [ "$make_root" = 1 ] && [ ! -d "$sroot" ] && mkdir -m 700 "$sroot" 2>/dev/null
+  [ -d "$sroot" ] && [ ! -L "$sroot" ] && [ -O "$sroot" ] && state_ok=1
+fi
 
 # 残锁判定：lock 目录的 mtime（BSD / GNU stat 顺序同主脚本，不能反）
 if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
@@ -63,7 +82,9 @@ fi
 input=$(cat 2>/dev/null)
 
 prev='{}'
-[ -r "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")   # $(<file) 是内建读，不 fork
+# $(<file) 是内建读，不 fork；状态文件必须是本人的普通文件（不跟随符号链接）。
+[ "$state_ok" = 1 ] && [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] &&
+  prev=$(< "$STATE")
 printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'
 initprev=$prev                              # 锁内重读后与它比较：未变就省一次 jq
 
@@ -144,7 +165,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # 先写者的条目。抢不到锁（>1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
-if [ -d "$sdir" ]; then
+if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     if mkdir "$lock" 2>/dev/null; then got=1; break; fi
     [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
@@ -158,7 +179,7 @@ fi
 if [ "$got" = 1 ]; then
   trap 'rmdir "$lock" 2>/dev/null' EXIT
   prev='{}'
-  [ -r "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
+  [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
   [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
   new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
     now as $n

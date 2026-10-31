@@ -8,7 +8,9 @@ else
   SLT=$tmpdir/claude-sl-${UID:-0}; src_note=""
 fi
 SLT_OK=0
-if [ ! -e "$SLT" ]; then
+if [ -L "$SLT" ]; then
+  res FAIL 缓存/根 "$SLT$src_note 是符号链接：渲染不会跟随" "换成真实目录，或删掉链接后让刷新重建"
+elif [ ! -e "$SLT" ]; then
   if [ -n "${CLAUDE_SL_TMP:-}" ]; then
     res FAIL 缓存/根 "${SLT}（CLAUDE_SL_TMP）不存在：显式路径必须由调用方建好，后台刷新不会创建" \
       "mkdir -m 700 \"$SLT\"，或取消 CLAUDE_SL_TMP"
@@ -50,8 +52,8 @@ if [ "$SLT_OK" != 1 ]; then
 elif [ ! -e "$tc" ]; then
   res WARN 缓存/色板 "本终端（${PKEY}）没有色板缓存：整行会无色，等下一轮后台刷新（约 2 秒）" \
     "若持续无色，检查 环境/python3 与 缓存/退避"
-elif [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
-  res WARN 缓存/色板 "色板缓存不是属于本人的普通文件，渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
+elif [ -L "$tc" ] || [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
+  res WARN 缓存/色板 "色板缓存不是属于本人的普通文件（目录或符号链接），渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
 else
   # 上色的实际条件（statusline-command.sh:536-543）：
   #   1) 某行 THEME=<主题>/… 的主题部分等于当前 theme；
@@ -92,9 +94,10 @@ fi
 # 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件（含悬空符号链接）→ 判陈旧
 # （tok_ok=0，派生项隐藏）。没有 .ts 的旧缓存本轮按「新鲜」处理，但后台刷新会按缓存 mtime
 # 补写 .ts，下一轮就判陈旧并隐藏派生项（3a8679e）；这里报的是刷新前这段静默陈旧。
-tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0
+tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
 tok_old_ts=0; tok_no_ts_old=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
+  if [ -L "$f" ]; then tok_link=$((tok_link + 1)); continue; fi
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
   [ -O "$f" ] || tok_notmine=$((tok_notmine + 1))
@@ -117,6 +120,8 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
 done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/token "缓存根不可用"
+elif [ "$tok_link" -gt 0 ]; then
+  res WARN 缓存/token "有 $tok_link 个 token 缓存是符号链接，渲染会拒绝读取" "rm -f \"$SLT\"/claude-sl-tok-*"
 elif [ "$tok_n" = 0 ]; then
   res SKIP 缓存/token "暂无 token 缓存（还没有会话渲染过）"
 else
@@ -141,8 +146,9 @@ else
 fi
 
 # git 缓存：缺失会同步回退（慢但正确），所以只做粗粒度提示；格式坏了也会被后台重算
-gcache_n=0; gcache_bad=0
+gcache_n=0; gcache_bad=0; gcache_link=0
 for f in "$SLT"/claude-sl-git-*.cache; do
+  if [ -L "$f" ]; then gcache_link=$((gcache_link + 1)); continue; fi
   [ -f "$f" ] || continue
   gcache_n=$((gcache_n + 1))
   IFS=$'\t' read -r _r _b _s _t < "$f" 2>/dev/null    # 4 段：根 / 分支 / 旗标 / 写入时刻
@@ -154,7 +160,8 @@ elif [ ! -d "$DIR" ]; then
   res WARN 缓存/git "--dir 指向的目录不存在：$DIR" "传一个存在的项目目录"
 elif ( cd "$DIR" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel >/dev/null 2>&1 ); then
   badnote=""
-  [ "$gcache_bad" -gt 0 ] && badnote="（${gcache_bad} 个格式异常，后台会重算）"
+  [ "$gcache_link" -gt 0 ] && badnote="（${gcache_link} 个符号链接会被后台原子替换）"
+  [ "$gcache_bad" -gt 0 ] && badnote="${badnote}（${gcache_bad} 个格式异常，后台会重算）"
   res PASS 缓存/git "$DIR 是 git 仓库；缓存 ${gcache_n} 个${badnote}（缺失时首次渲染会同步算一次）"
 else
   res SKIP 缓存/git "$DIR 不是 git 仓库；缓存 $gcache_n 个"
@@ -168,8 +175,8 @@ elif [ "$C_PAGE" = off ]; then
   res SKIP 缓存/状态页 "配置 status_page = off，不使用状态页"
 elif [ ! -e "$stf" ] && [ ! -L "$stf" ]; then
   res SKIP 缓存/状态页 "暂无状态缓存（后台刷新还没拉取过）"
-elif [ ! -f "$stf" ]; then
-  res WARN 缓存/状态页 "状态缓存不是普通文件（目录或悬空符号链接）：服务状态项会被隐藏" \
+elif [ -L "$stf" ] || [ ! -f "$stf" ]; then
+  res WARN 缓存/状态页 "状态缓存不是普通文件（目录或符号链接）：服务状态项会被隐藏" \
     "rm -rf \"$stf\""
 elif [ ! -O "$stf" ]; then
   res WARN 缓存/状态页 "状态缓存不属于当前用户，会被忽略" "rm -f \"$stf\""
@@ -221,8 +228,34 @@ else
   res PASS 缓存/锁 "无锁残留"
 fi
 
+# 面板共享状态（subagent-statusline.sh）：与主栏共用缓存根，文件名固定带 uid。
+# 只判归属、类型与权限，不读内容（里面只有每个 task 的速率基线）。
+sstate="$SLT/claude-subagent-sl-${UID:-0}.json"
+if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
+  res SKIP 缓存/面板状态 "CLAUDE_SUBAGENT_SL_STATE 指定了文件，归属与生命周期由调用方负责"
+elif [ "$SLT_OK" != 1 ]; then
+  res SKIP 缓存/面板状态 "缓存根不可用"
+elif [ ! -e "$sstate" ] && [ ! -L "$sstate" ]; then
+  res SKIP 缓存/面板状态 "暂无面板状态（还没渲染过 subagent 行）"
+elif [ -L "$sstate" ] || [ ! -f "$sstate" ]; then
+  res WARN 缓存/面板状态 "面板状态不是普通文件（目录或符号链接）：渲染会忽略它，速率段一直缺失" \
+    "rm -rf \"$sstate\""
+elif [ ! -O "$sstate" ]; then
+  res WARN 缓存/面板状态 "面板状态不属于当前用户，会被忽略：速率段缺失" "rm -f \"$sstate\""
+else
+  smode=$(stat_mode "$sstate")
+  if [ "$smode" = 600 ]; then
+    res PASS 缓存/面板状态 "0600，$(( NOW - $(mtime "$sstate") ))s 前写入"
+  else
+    res WARN 缓存/面板状态 "面板状态权限 ${smode}，应为 600（同机其他用户可读你的 agent 活动）" \
+      "chmod 600 \"$sstate\""
+  fi
+fi
+
 failf=$tc.fail
-if [ -e "$failf" ]; then
+if [ -L "$failf" ]; then
+  res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
+elif [ -e "$failf" ]; then
   ft=""; read -r ft < "$failf" 2>/dev/null
   case "$ft" in ''|*[!0-9]*) ft=$NOW ;; esac
   if [ "$COLOUR_OK" = 1 ]; then

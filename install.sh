@@ -46,6 +46,12 @@ check_deps() {
   for c in bash jq python3 git; do
     command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖：$c" >&2; miss=1; }
   done
+  # 与 tools/doctor.sh 的 PY_MIN 一致：statusline-tokens.py 用到 str.removesuffix（3.9）。
+  if command -v python3 >/dev/null 2>&1 &&
+     ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+    echo "需要 python3 ≥ 3.9（当前 $(python3 -V 2>&1)）：后台 token / 色板助手无法运行" >&2
+    miss=1
+  fi
   # curl 只在 status_page = on 时用到（见 README），缺了只提示，不拦安装
   command -v curl >/dev/null 2>&1 || \
     echo "提示：未找到 curl；status_page = on（默认）时状态页不可用，可设 status_page = off" >&2

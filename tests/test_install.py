@@ -128,6 +128,20 @@ class Install(unittest.TestCase):
         self.assertEqual(active, [], '安装的配置不应带 active step（否则冻结默认序列）')
         self.assertIn('# step = drop    api', text)
 
+    def test_low_python_is_refused(self):
+        """安装时就该拦下 <3.9：装完才发现 token / 色板静默失效是最差的失败方式。"""
+        b = os.path.join(self.d, 'bin')
+        os.makedirs(b, exist_ok=True)
+        with open(os.path.join(b, 'python3'), 'w') as f:
+            # -c 版本探针按 <3.9 失败，-V 报出具体版本供提示使用
+            f.write('#!/bin/sh\ncase "$1" in -c) exit 1;; -V) echo "Python 3.7.9";; esac\nexit 0\n')
+        os.chmod(os.path.join(b, 'python3'), 0o755)
+        r = self.run_sh(env=dict(self.env, PATH=b + os.pathsep + self.env['PATH']))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('3.9', r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'statusline-command.sh')),
+                         '依赖不满足时不应安装任何副本')
+
 
 if __name__ == '__main__':
     unittest.main()

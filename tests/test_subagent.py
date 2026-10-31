@@ -28,6 +28,7 @@ class SubagentState(unittest.TestCase):
         self.d = tempfile.mkdtemp(prefix='ccpills-sub-')
         self.env = dict(os.environ)
         self.env.pop('CLAUDE_SUBAGENT_SL_STATE', None)
+        self.env.pop('CLAUDE_SL_TMP', None)      # 默认路径用例不应被外层隔离变量干扰
 
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
@@ -94,11 +95,73 @@ class SubagentState(unittest.TestCase):
     def test_default_state_path_is_per_user(self):
         tmp = os.path.join(self.d, 'T')
         os.makedirs(tmp, mode=0o700)
+        # 空值等同上界未设置；TMPDIR 带尾斜杠也要归一成同一个私有根。
         self.spawn(os.path.join(tmp, 'unused.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
-        # 空值等同上界未设置：脚本应回落到 ${TMPDIR}/claude-subagent-sl-<uid>.json
-        want = os.path.join(tmp, f'claude-subagent-sl-{os.getuid()}.json')
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp + os.sep}).wait()
+        root = os.path.join(tmp, f'claude-sl-{os.getuid()}')
+        want = os.path.join(root, f'claude-subagent-sl-{os.getuid()}.json')
         self.assertTrue(os.path.isfile(want), '默认状态路径没有按用户隔离')
+        self.assertEqual(stat.S_IMODE(os.stat(root).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(want).st_mode), 0o600)
+
+    def test_claude_sl_tmp_isolates_panel_state(self):
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt)
+        self.spawn(os.path.join(self.d, 'unused.json'), 'a',
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'CLAUDE_SL_TMP': slt}).wait()
+        want = os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json')
+        self.assertTrue(os.path.isfile(want), 'CLAUDE_SL_TMP 没有同时隔离面板状态')
+
+    def test_explicit_state_file_wins(self):
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt)
+        st = os.path.join(self.d, 'own.json')
+        self.spawn(st, 'a', env={'CLAUDE_SL_TMP': slt,
+                                 'CLAUDE_SUBAGENT_SL_STATE': st}).wait()
+        self.assertTrue(os.path.isfile(st))
+        self.assertFalse(os.path.exists(
+            os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json')),
+            '显式 CLAUDE_SUBAGENT_SL_STATE 应压过 CLAUDE_SL_TMP')
+
+    def test_legacy_tmp_state_is_not_migrated(self):
+        """旧版状态直接放在共享 /tmp，只有速率基线：不迁移，宁可丢一帧也不碰共享目录里的文件。"""
+        old = f'/tmp/claude-subagent-sl-{os.getuid()}.json'
+        if os.path.exists(old):
+            self.skipTest(f'{old} 已存在（真实的旧状态文件），不做破坏性测试')
+        with open(old, 'w') as f:
+            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        self.addCleanup(lambda: os.path.exists(old) and os.unlink(old))
+        tmp = os.path.join(self.d, 'T')
+        os.makedirs(tmp, mode=0o700)
+        self.spawn(os.path.join(self.d, 'in.json'), 'a',
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
+        new = os.path.join(tmp, f'claude-sl-{os.getuid()}',
+                           f'claude-subagent-sl-{os.getuid()}.json')
+        with open(new) as f:
+            d = json.load(f)
+        self.assertNotIn('seed', d, '旧 /tmp 状态不应被迁入')
+        self.assertTrue(os.path.exists(old), '旧 /tmp 状态不应被移动或删除')
+
+    def test_symlink_cache_root_is_not_used(self):
+        tmp = os.path.join(self.d, 'T')
+        target = os.path.join(self.d, 'target')
+        os.makedirs(tmp, mode=0o700)
+        os.makedirs(target)
+        os.symlink(target, os.path.join(tmp, f'claude-sl-{os.getuid()}'))
+        self.spawn(os.path.join(self.d, 'in.json'), 'a',
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
+        self.assertFalse(os.path.exists(
+            os.path.join(target, f'claude-subagent-sl-{os.getuid()}.json')),
+            '状态被写进了符号链接指向的目录')
+
+    def test_cache_path_with_spaces_and_unicode(self):
+        tmp = os.path.join(self.d, 'T 空 格')
+        os.makedirs(tmp, mode=0o700)
+        self.spawn(os.path.join(self.d, 'in.json'), 'a',
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
+        want = os.path.join(tmp, f'claude-sl-{os.getuid()}',
+                            f'claude-subagent-sl-{os.getuid()}.json')
+        self.assertTrue(os.path.isfile(want), '含空格 / 中文的缓存路径不可用')
 
 
 if __name__ == '__main__':

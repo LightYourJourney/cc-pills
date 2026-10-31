@@ -245,7 +245,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('3.7.9', self.sb.detail(r, '缓存/后台刷新'))
 
     def test_low_bash_is_reported(self):
-        """PATH 里是 3.2 时必须报出来。本机若另装了 ≥5 的 bash，脚本的换壳守卫能接管，
+        """PATH 里是 3.2 时必须报出来。本机若另装了 ≥4.2 的 bash，脚本的换壳守卫能接管，
         此时正确结论是 WARN；没有替代才是 FAIL——两种都算「查到了」，不能一律 FAIL。"""
         self.sb.install()
         b = self.sb.minimal_path()
@@ -255,9 +255,13 @@ class Doctor(unittest.TestCase):
         alt = False
         for p in ('/opt/homebrew/bin/bash', '/usr/local/bin/bash', '/usr/bin/bash'):
             if os.access(p, os.X_OK):
-                v = subprocess.run([p, '-c', 'echo "${BASH_VERSINFO[0]}"'],
+                v = subprocess.run([p, '-c', 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'],
                                    capture_output=True, text=True).stdout.strip()
-                if v.isdigit() and int(v) >= 5:
+                try:
+                    major, minor = (int(x) for x in v.split('.'))
+                except ValueError:
+                    continue
+                if (major, minor) >= (4, 2):
                     alt = True
                     break
         self.assertEqual(self.sb.status(r, '环境/bash'), 'WARN' if alt else 'FAIL', r.stdout)
@@ -332,6 +336,65 @@ class Doctor(unittest.TestCase):
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/根'), 'FAIL')
+
+    def test_cache_root_symlink_is_fail(self):
+        """渲染不跟随符号链接：根是链接时整轮放弃写缓存，必须当故障报出来。"""
+        self.sb.install()
+        target = os.path.join(self.sb.d, 'target')
+        os.makedirs(target)
+        os.symlink(target, self.sb.cache)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/根'), 'FAIL')
+        self.assertIn('符号链接', self.sb.detail(r, '缓存/根'))
+
+    def test_symlinked_token_cache_warns(self):
+        self.sb.healthy()
+        cache = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
+        real = os.path.join(self.sb.d, 'real-tok')
+        shutil.move(cache, real)
+        os.symlink(real, cache)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('符号链接', self.sb.detail(r, '缓存/token'))
+
+    def test_panel_state_lives_in_cache_root(self):
+        """面板状态与主栏共用缓存根：路径必须与 subagent-statusline.sh 的推导一致。"""
+        self.sb.healthy()
+        st = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')   # 还没渲染过
+        with open(st, 'w') as f:
+            f.write('{}')
+        os.chmod(st, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'PASS', r.stdout)
+
+    def test_panel_state_loose_mode_warns(self):
+        self.sb.healthy()
+        st = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json')
+        with open(st, 'w') as f:
+            f.write('{}')
+        os.chmod(st, 0o644)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'WARN')
+        self.assertIn('chmod 600', r.stdout)
+
+    def test_panel_state_symlink_warns(self):
+        self.sb.healthy()
+        st = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json')
+        real = os.path.join(self.sb.d, 'panel.json')
+        with open(real, 'w') as f:
+            f.write('{}')
+        os.symlink(real, st)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'WARN')
+        self.assertIn('符号链接', self.sb.detail(r, '缓存/面板状态'))
+
+    def test_panel_state_skipped_when_explicit(self):
+        self.sb.healthy()
+        r = self.sb.run(env={'CLAUDE_SUBAGENT_SL_STATE': os.path.join(self.sb.d, 'own.json')})
+        self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')
+        self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
     def test_explicit_tmp_missing_fails(self):
         """显式 CLAUDE_SL_TMP 不存在时渲染不会创建，不能报「首次刷新会创建」。"""
@@ -885,8 +948,17 @@ class Doctor(unittest.TestCase):
         minor = re.search(r'BASH_VERSINFO\[1\]\}" -lt (\d+)', src)
         self.assertIsNotNone(major)
         self.assertIsNotNone(minor)
+        # 换壳守卫与 doctor 的替代版判定必须用同一条下限（4.2），不能一边要求 ≥5
+        self.assertIn('402', src)
         with open(DOCTOR, encoding='utf-8') as f:
-            self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', f.read())
+            doc = f.read()
+        self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', doc)
+        alt = []
+        for p in doctor_sources():
+            with open(p, encoding='utf-8') as f:
+                if 'if ver_ge "$v" "$BASH_MIN"; then alt=' in f.read():
+                    alt.append(p)
+        self.assertTrue(alt, 'doctor 的替代 bash 判定没有用 BASH_MIN')
 
     def test_theme_cache_key_matches_renderer(self):
         """让真实渲染脚本写一次色板缓存，doctor 必须找到同一个文件名（不是测试自己编的名字）。"""

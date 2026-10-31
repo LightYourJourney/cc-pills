@@ -148,5 +148,153 @@ class ContentSafety(CacheBase):
         self.assertNotIn('\x1b]0;', out, '色板缓存里的非数值被拼进了 SGR')
 
 
+class Lifecycle(CacheBase):
+    """缓存生命周期：默认根里 30 天没动的缓存由后台每天清一次，显式根不清理。"""
+
+    def old(self, path, days=40):
+        t = time.time() - days * 86400
+        os.utime(path, (t, t))
+
+    def refresh(self, env, sid='life'):
+        return subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
+                              capture_output=True, env=env)
+
+    def test_prune_removes_only_stale_files_in_default_root(self):
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        files = {n: os.path.join(p, n) for n in (
+            'claude-sl-tok-old.cache', 'claude-sl-tok-old.cache.ts',
+            'claude-sl-skip-old', 'claude-sl-git-k.cache',
+            'claude-statusline-old.json',
+            'claude-sl-tok-live.cache', 'claude-sl-tok-live.cache.ts')}
+        for n, f in files.items():
+            with open(f, 'w') as fh:
+                fh.write('x\n')
+        for n in ('claude-sl-tok-old.cache', 'claude-sl-tok-old.cache.ts',
+                  'claude-sl-skip-old', 'claude-sl-git-k.cache',
+                  'claude-statusline-old.json'):
+            self.old(files[n])
+        # 不在清理名单里的东西即使很旧也不能删
+        keep = {'claude-sl-theme-term-other.cache': 'THEME=dracula/12/tint/v4\n',
+                'claude-sl-status.cache': '1\tnone\n'}
+        for n, body in keep.items():
+            with open(os.path.join(p, n), 'w') as fh:
+                fh.write(body)
+            self.old(os.path.join(p, n))
+        self.refresh(self.env)
+        for n in ('claude-sl-tok-old.cache', 'claude-sl-tok-old.cache.ts',
+                  'claude-sl-skip-old', 'claude-sl-git-k.cache',
+                  'claude-statusline-old.json'):
+            self.assertFalse(os.path.exists(files[n]), f'{n} 已超 30 天但没有被清理')
+        for n in ('claude-sl-tok-live.cache', 'claude-sl-tok-live.cache.ts') + tuple(keep):
+            self.assertTrue(os.path.exists(os.path.join(p, n)), f'{n} 不该被清理')
+
+    def test_prune_skips_symlinks_and_subdirectories(self):
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        victim = os.path.join(self.d, 'victim.txt')
+        with open(victim, 'w') as f:
+            f.write('keep me')
+        self.old(victim)
+        link = os.path.join(p, 'claude-sl-tok-link.cache')
+        os.symlink(victim, link)
+        self.old(link)
+        sub = os.path.join(p, 'claude-sl-tok-sub.cache')
+        os.makedirs(sub)
+        self.old(sub)
+        inside = os.path.join(sub, 'nested')
+        with open(inside, 'w') as f:
+            f.write('x')
+        self.old(inside)
+        self.refresh(self.env)
+        self.assertTrue(os.path.exists(victim), '清理跟随符号链接删掉了缓存目录之外的文件')
+        self.assertTrue(os.path.islink(link))
+        self.assertTrue(os.path.isfile(inside), '清理递归进了子目录')
+
+    def test_prune_runs_at_most_once_a_day(self):
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        f = os.path.join(p, 'claude-sl-tok-old.cache')
+        with open(f, 'w') as fh:
+            fh.write('x\n')
+        self.old(f)
+        self.refresh(self.env)
+        self.assertFalse(os.path.exists(f))
+        stamp = os.path.join(p, 'claude-sl-prune.stamp')
+        self.assertTrue(os.path.isfile(stamp), '清理后没有留下时间戳')
+        # 同一天内新建的过期文件不触发第二次清理
+        again = os.path.join(p, 'claude-sl-tok-old2.cache')
+        with open(again, 'w') as fh:
+            fh.write('x\n')
+        self.old(again)
+        self.refresh(self.env)
+        self.assertTrue(os.path.exists(again), '同一天内又跑了一次清理')
+
+    def test_explicit_cache_dir_is_never_pruned(self):
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        f = os.path.join(slt, 'claude-sl-tok-old.cache')
+        with open(f, 'w') as fh:
+            fh.write('x\n')
+        self.old(f)
+        self.refresh(dict(self.env, CLAUDE_SL_TMP=slt))
+        self.assertTrue(os.path.exists(f), '显式 CLAUDE_SL_TMP 的目录被清理了')
+        self.assertFalse(os.path.exists(os.path.join(slt, 'claude-sl-prune.stamp')))
+
+    def test_deleted_cache_dir_is_recreated(self):
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        self.refresh(self.env)
+        shutil.rmtree(p)
+        self.refresh(self.env)
+        self.assertTrue(os.path.isdir(p), '缓存目录被删后没有自动重建')
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o700)
+
+
+class Hardening(CacheBase):
+    def test_symlinked_cache_root_is_not_used(self):
+        target = os.path.join(self.d, 'target')
+        os.makedirs(target)
+        os.symlink(target, self.private())
+        out = self.render()
+        self.assertNotIn('↑', out)
+        self.assertEqual(os.listdir(target), [], '把缓存写进了符号链接指向的目录')
+
+    def test_symlinked_token_cache_is_ignored(self):
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        real = os.path.join(self.d, 'tok')
+        with open(real, 'w') as f:
+            f.write(tok_line(**{'in': '777M'}, msgs='999'))
+        self.old_ts(slt, 'sym')
+        os.symlink(real, os.path.join(slt, 'claude-sl-tok-sym.cache'))
+        out = self.render('sym', {'CLAUDE_SL_TMP': slt})
+        self.assertNotIn('↑777M', out, '符号链接被当作 token 缓存读取了')
+
+    def old_ts(self, slt, sid, age=0):
+        with open(os.path.join(slt, f'claude-sl-tok-{sid}.cache.ts'), 'w') as f:
+            f.write(f'{int(time.time()) - age}\n')
+
+    def test_tmpdir_trailing_slash_and_unicode(self):
+        t = os.path.join(self.d, 'T M P 空')
+        os.makedirs(t, mode=0o700)
+        env = dict(self.env, TMPDIR=t + os.sep)
+        subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', 'x', 'sub'],
+                       capture_output=True, env=env)
+        want = os.path.join(t, f'claude-sl-{os.getuid()}')
+        self.assertTrue(os.path.isdir(want), f'含空格 / 中文的 TMPDIR 未归一（{want}）')
+
+    def test_unset_tmpdir_falls_back_to_tmp(self):
+        """TMPDIR 未设置时用 /tmp 下的私有目录——只核对渲染器与 token 助手同源，不写真实缓存。"""
+        with open(SCRIPT, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('tmpdir=${TMPDIR:-/tmp}', src)
+        with open(os.path.join(os.path.dirname(SCRIPT), 'statusline-tokens.py'),
+                  encoding='utf-8') as f:
+            toks = f.read()
+        self.assertIn("os.environ.get('TMPDIR') or '/tmp'", toks)
+        self.assertIn("f'claude-sl-{os.getuid()}'", toks)
+
+
 if __name__ == '__main__':
     unittest.main()
