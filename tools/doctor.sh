@@ -83,12 +83,12 @@ sec() { printf '\n── %s ──\n' "$1"; }
 scrub() {
   sed -E \
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
-    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=)([\"'][^\"']*[\"']|[^ ;]+)/\\1***/g" \
+    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=)([\"'][^\"']*[\"']|[^ ;\"&#']+)/\\1***/g" \
     -e 's#//[^/@ ]+@#//***@#g' \
     -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
     -e "s/([Aa]uthorization[ ]*:[ ]*[A-Za-z]+[ ]+)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
     -e "s/([Bb]earer )([\"']?)[^ \"';]+/\\1\\2***/g" \
-    -e "s/([?&#])([A-Za-z0-9_.-]+)=[^ ;\"']+/\\1\\2=***/g"
+    -e "s/([?&#])([A-Za-z0-9_.-]+)=[^ ;\"&#']+/\\1\\2=***/g"
 }
 
 if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
@@ -128,7 +128,7 @@ done
 C_THEME=auto; C_CHROMA=12; C_STYLE=tint; C_PAGE=on
 CFG_BAD=""; CFG_UNKNOWN=""; CFG_READABLE=0
 CONF_KEYS_ONE=" $(echo $CONF_KEYS) "     # 折叠成一行，下面逐行比对时不必每行 fork
-if [ -r "$CONF" ]; then
+if [ -f "$CONF" ] && [ -r "$CONF" ]; then
   CFG_READABLE=1
   while IFS='=' read -r k v; do
     k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
@@ -349,8 +349,11 @@ for f in statusline-command.sh statusline-tokens.py statusline-theme.py subagent
   fi
 done
 
-if [ ! -e "$CONF" ]; then
+if [ ! -e "$CONF" ] && [ ! -L "$CONF" ]; then
   res SKIP 安装/配置文件 "$CONF 不存在（全部使用内置默认）"
+elif [ ! -f "$CONF" ]; then
+  res WARN 安装/配置文件 "$CONF 不是普通文件（目录或悬空符号链接）；渲染会静默改用内置默认" \
+    "修好该路径：删除它，或让 $CONF 指向一个普通文件"
 elif [ "$CFG_READABLE" = 0 ]; then
   res WARN 安装/配置文件 "$CONF 存在但不可读；渲染会静默改用内置默认，状态栏照常工作" "chmod 600 \"$CONF\""
 elif [ -n "$CFG_UNKNOWN" ]; then
@@ -523,20 +526,27 @@ if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/状态页 "缓存根不可用"
 elif [ "$C_PAGE" = off ]; then
   res SKIP 缓存/状态页 "配置 status_page = off，不使用状态页"
-elif [ ! -f "$stf" ]; then
+elif [ ! -e "$stf" ] && [ ! -L "$stf" ]; then
   res SKIP 缓存/状态页 "暂无状态缓存（后台刷新还没拉取过）"
+elif [ ! -f "$stf" ]; then
+  res WARN 缓存/状态页 "状态缓存不是普通文件（目录或悬空符号链接）：服务状态项会被隐藏" \
+    "rm -rf \"$stf\""
 elif [ ! -O "$stf" ]; then
   res WARN 缓存/状态页 "状态缓存不属于当前用户，会被忽略" "rm -f \"$stf\""
 else
-  st_ts=""; IFS=$'\t' read -r st_ts _ < "$stf" 2>/dev/null
+  st_ts=""; st_ind=""; IFS=$'\t' read -r st_ts st_ind < "$stf" 2>/dev/null
   case "$st_ts" in
     ''|*[!0-9]*) res WARN 缓存/状态页 "状态缓存格式损坏：服务状态项会被隐藏" "删掉它，后台会重新拉取" ;;
-    *) age=$(( NOW - st_ts ))
-       if [ "$age" -gt "$STATUS_STALE" ]; then
-         res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
-           "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
+    *) if [ -z "$st_ind" ]; then
+         res WARN 缓存/状态页 "状态缓存缺少 indicator：服务状态项会被隐藏" "删掉它，后台会重新拉取"
        else
-         res PASS 缓存/状态页 "${age}s 前更新"
+         age=$(( NOW - st_ts ))
+         if [ "$age" -gt "$STATUS_STALE" ]; then
+           res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
+             "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
+         else
+           res PASS 缓存/状态页 "${age}s 前更新"
+         fi
        fi ;;
   esac
 fi
@@ -628,16 +638,15 @@ else
   # 前两项在默认序列里永不丢弃，所以即使用户 drop 了 ctx、模型与费用，差分仍然成立。
   runfx "$(mkfx "$scratch/a" 123456 37 'Opus 5.5' 1.23 20)"; outA=$RUNOUT
   runfx "$(mkfx "$scratch/b" 654321 88 'Doctor Fixture B' 9.87)"; outB=$RUNOUT
-  # 差分只能证明 stdin 进了进程；只提取单个字段的占位脚本（jq -r .model.display_name）也会
-  # 因两份夹具不同而通过。再要求每份夹具至少两个字段的渲染形态出现。
-  hits=0; hits_b=0
-  for m in 'Opus 5.5' '37%' '123k' '$1.23' '/a'; do
-    case "$outA" in *"$m"*) hits=$((hits + 1));; esac
-  done
-  for m in 'Doctor Fixture B' '88%' '654k' '$9.87' '/b'; do
-    case "$outB" in *"$m"*) hits_b=$((hits_b + 1));; esac
-  done
-  # 非空 + 不是最简行 + 两份夹具结果不同 + 每份至少两个字段真的被渲染出来
+  # 差分只能证明 stdin 进了进程；只提取固定几个字段的占位脚本也会因两份夹具不同而通过。
+  # 目录与 ctxin 是渲染脚本默认不降级的两项，要求它们都出现，才算主渲染路径真的跑了。
+  dir_a="${scratch##*/}/a"; dir_b="${scratch##*/}/b"
+  ha=0; hb=0; ca=0; cb=0
+  case "$outA" in *"$dir_a"*) ha=1;; esac
+  case "$outA" in *'123k'*) ca=1;; esac
+  case "$outB" in *"$dir_b"*) hb=1;; esac
+  case "$outB" in *'654k'*) cb=1;; esac
+  # 非空 + 不是最简行 + 两份夹具结果不同 + 目录与 ctxin 都真的被渲染出来
   case "$outA" in
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
@@ -649,9 +658,9 @@ else
     *) if [ "$outA" = "$outB" ]; then
          res FAIL 数据/stdin "两份不同夹具渲染出相同结果：stdin 没有真正进入渲染（${smoke}）" \
            "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本"
-       elif [ "$hits" -lt 2 ] || [ "$hits_b" -lt 2 ]; then
-         res FAIL 数据/stdin "两份夹具只解析出 ${hits}/${hits_b} 个字段：疑似只提取单个字段的占位脚本（${smoke}）" \
-           "确认该文件是 cc-pills 的 statusline-command.sh，而不是只读取 stdin 的包装脚本"
+       elif [ "$ha$ca$hb$cb" != 1111 ]; then
+         res FAIL 数据/stdin "缺少目录或 ctxin 的渲染形态（目录 ${ha}/${hb}，ctxin ${ca}/${cb}）：疑似占位脚本，或显示项被全部 drop（${smoke}）" \
+           "确认该文件是 cc-pills 的 statusline-command.sh；若你确实 drop 了 dir 与 ctxin，可忽略此项"
        else
          res PASS 数据/stdin "冒烟通过：两份夹具结果不同（${#outA} 字符），主渲染路径与字段解析都正常"
        fi ;;
@@ -688,6 +697,7 @@ esac
 if [ "$relay" = 1 ]; then
   host=${base#*://}; host=${host%%/*}
   host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕
+  host=${host%%[?#]*}                    # query / fragment 也不进屏幕，只给 host
   note="ANTHROPIC_BASE_URL=${host}（${base_src}）"
 elif [ "$SJ_OK" = 1 ]; then
   note="未设置自定义 ANTHROPIC_BASE_URL（shell 环境变量与 settings.json 的 env 都查过）"

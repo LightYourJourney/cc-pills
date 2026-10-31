@@ -388,6 +388,23 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/状态页'), 'SKIP')
 
+    def test_status_cache_directory_warns(self):
+        self.sb.healthy()
+        os.makedirs(os.path.join(self.sb.cache, 'claude-sl-status.cache'))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
+        self.assertIn('普通文件', self.sb.detail(r, '缓存/状态页'))
+
+    def test_status_cache_without_indicator_warns(self):
+        self.sb.healthy()
+        p = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(p, 'w') as f:
+            f.write(f'{int(time.time())}\t\n')
+        os.chmod(p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
+        self.assertIn('indicator', self.sb.detail(r, '缓存/状态页'))
+
     def test_truncated_token_cache_is_flagged(self):
         """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
         env = self.sb.healthy()
@@ -427,6 +444,17 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
         self.assertIn('默认', self.sb.detail(r, '安装/配置文件'))
+
+    def test_config_path_directory_warns(self):
+        """配置路径是目录时重定向会失败、配置被忽略；不能因为 -r 通过就报 PASS。"""
+        self.sb.healthy()
+        conf = os.path.join(self.sb.cfg, 'claude-statusline.conf')
+        if os.path.exists(conf):
+            os.unlink(conf)
+        os.makedirs(conf)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
+        self.assertIn('普通文件', self.sb.detail(r, '安装/配置文件'))
 
     def test_invalid_p_ctx_is_not_colourable(self):
         """渲染侧只接受 [0-9;] 的 P_CTX，非法值等于没有：此时整行无色，不能报 PASS。"""
@@ -482,12 +510,15 @@ class Doctor(unittest.TestCase):
                             'command': f'bash {self.sb.dest}/statusline-command.sh'},
              'subagentStatusLine': {'type': 'command',
                                     'command': f'bash {self.sb.dest}/subagent-statusline.sh'},
-             'env': {'ANTHROPIC_BASE_URL': 'https://relay.example/v1',
+             'env': {'ANTHROPIC_BASE_URL': 'https://relay.example?token=SUPERSECRET123',
                      'ANTHROPIC_AUTH_TOKEN': 'tok_live_should_not_leak'}}
         self.sb.write_settings(s)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'WARN')
-        self.assertIn('settings.json', self.sb.detail(r, '数据/CCSwitch库'))
+        d = self.sb.detail(r, '数据/CCSwitch库')
+        self.assertIn('settings.json', d)
+        self.assertIn('ANTHROPIC_BASE_URL=relay.example', d)
+        self.assertNotIn('SUPERSECRET123', r.stdout)
         self.assertNotIn('tok_live_should_not_leak', r.stdout)
 
     def test_relay_from_settings_env_beats_shell_official(self):
@@ -716,13 +747,23 @@ class Doctor(unittest.TestCase):
         self.assertIn('原文', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_detects_single_field_extractor(self):
-        """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，必须要求多个字段。"""
+        """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，必须要求目录与 ctxin。"""
         self.sb.install()
         with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
             f.write('#!/usr/bin/env bash\njq -r .model.display_name\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
-        self.assertIn('字段', self.sb.detail(r, '数据/stdin'))
+        self.assertIn('渲染形态', self.sb.detail(r, '数据/stdin'))
+
+    def test_smoke_detects_multi_field_extractor(self):
+        """提取 model+ctx% 两个字段的脚本仍不是渲染器：目录与 ctxin 必须出现。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
+            f.write("#!/usr/bin/env bash\n"
+                    "jq -r '\"\\(.model.display_name) \\(.context_window.used_percentage)%\"'\n")
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertIn('渲染形态', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_is_independent_of_custom_steps(self):
         """用户改过降级序列（删掉 ctx / 模型 / 目录）不该让冒烟误报——判据不看具体项。"""
@@ -779,12 +820,13 @@ class Doctor(unittest.TestCase):
             'type': 'command',
             'command': 'Bearer "tok_secret"; api_key="low secret"; x-api-key: "key secret"; '
                        'Authorization: Basic "auth secret"; '
-                       'curl "https://relay.example/x?token=SECRET987&key=SECRET888"; '
+                       'curl "https://relay.example/x?token=SECRET987&key=SECRET888&page=2"; '
                        'bash /wrong/statusline-command.sh'}})
         r = self.sb.run()
         for s in ('tok_secret', 'low secret', 'key secret', 'auth secret',
                   'SECRET987', 'SECRET888'):
             self.assertNotIn(s, r.stdout, f'{s!r} 泄露到诊断输出')
+        self.assertIn('&page=', r.stdout, 'query 参数结构必须保留，只抹值')
         self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')
 
     def test_no_network(self):
@@ -863,6 +905,9 @@ class Doctor(unittest.TestCase):
         self.sb.install()
         os.makedirs(self.sb.cache, exist_ok=True)
         os.chmod(self.sb.cache, 0o700)
+        # 沙箱里跑 --refresh 也不能联网：关掉状态页拉取
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('status_page = off\n')
         subprocess.run([BASE_BASH, os.path.join(SRC, 'statusline-command.sh'), '--refresh',
                         self.sb.d, '-', 'doctor', 'sub'],
                        env=dict(self.sb.env, CLAUDE_SL_TMP=self.sb.cache, TERM_PROGRAM='wezterm'),
