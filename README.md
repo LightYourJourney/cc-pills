@@ -207,6 +207,7 @@ tools/preview.sh              side-by-side style preview
 tools/doctor.sh               read-only diagnostics (entry point)
 tools/doctor/*.sh             check groups: env / install / cache / data
 tests/                        unit + golden + property + contrast-matrix tests
+.github/workflows/tests.yml   CI: full macOS run + Linux platform-sensitive subset
 install.sh  run_tests.sh
 ```
 
@@ -217,6 +218,12 @@ bash run_tests.sh              # ~1.5–5 min depending on load, fully isolated 
 bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
 UPDATE_GOLDEN=1 bash run_tests.sh   # after an intentional rendering change
 ```
+
+CI runs the full suite on macOS plus a platform-sensitive subset (cache / subagent /
+freshness / install / doctor) on `ubuntu-latest`. Linux and bash 4.2 results are in the
+compatibility matrix above; the concurrent panel-write case is skipped on the ubuntu
+runner because that runner's cross-process `mkdir` visibility is not POSIX-consistent
+(evidence in [docs/DECISIONS.md](docs/DECISIONS.md)).
 
 ## Accuracy caveats
 

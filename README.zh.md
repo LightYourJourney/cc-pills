@@ -191,6 +191,7 @@ tools/preview.sh              并排预览
 tools/doctor.sh               只读诊断（入口）
 tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
+.github/workflows/tests.yml   CI：macOS 全量 + Linux 平台敏感子集
 install.sh  run_tests.sh
 ```
 
@@ -201,6 +202,11 @@ bash run_tests.sh              # 约 1.5–5 分钟（随负载），全隔离�
 bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
 UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
 ```
+
+CI 在 macOS 上跑全量；另有 `ubuntu-latest` 作业跑平台敏感子集（cache / subagent /
+freshness / install / doctor）。Linux 与 bash 4.2 的实测结论见上面的兼容性矩阵；其中
+「多进程并发写面板状态」用例在 ubuntu runner 上跳过——该 runner 的跨进程 `mkdir`
+可见性异常，锁语义无法在那里验证（证据见 [docs/DECISIONS.md](docs/DECISIONS.md)）。
 
 ## 精度声明
 
