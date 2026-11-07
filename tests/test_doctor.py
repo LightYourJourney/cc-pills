@@ -159,6 +159,28 @@ class DoctorSandbox:
             env['ANTHROPIC_BASE_URL'] = 'https://relay.example/v1'
         return env
 
+    def plock(self, owner=None, junk=False, age=0):
+        """建一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件，age 把 mtime 拨回去。
+
+        每次都先删掉旧锁，避免上一次调用留下的 owner / mtime 影响本次判定。
+        """
+        p = os.path.join(self.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        elif os.path.lexists(p):
+            os.unlink(p)
+        os.makedirs(p)
+        if owner is not None:
+            with open(os.path.join(p, 'owner'), 'w') as f:
+                f.write(owner)
+        if junk:
+            with open(os.path.join(p, 'junk'), 'w') as f:
+                f.write('x')
+        if age:
+            t = time.time() - age
+            os.utime(p, (t, t))
+        return p
+
     def minimal_path(self, extra=None):
         """只含常用工具的临时 bin（默认不含 jq / curl），用来模拟缺依赖。"""
         b = os.path.join(self.d, 'bin')
@@ -396,21 +418,6 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')
         self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
-    def plock(self, owner=None, junk=False, age=0):
-        """在沙箱缓存根里造一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件。"""
-        p = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        os.makedirs(p, exist_ok=True)
-        if owner is not None:
-            with open(os.path.join(p, 'owner'), 'w') as f:
-                f.write(owner)
-        if junk:
-            with open(os.path.join(p, 'junk'), 'w') as f:
-                f.write('x')
-        if age:
-            t = time.time() - age
-            os.utime(p, (t, t))
-        return p
-
     def test_panel_lock_occupied_by_file_fails(self):
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock'), 'w') as f:
@@ -422,25 +429,34 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_with_foreign_file_fails(self):
         """锁目录里有 owner 之外的东西：不是面板写的锁，5 秒内每轮写回都会失败。"""
         self.sb.healthy()
-        self.plock(junk=True)
+        self.sb.plock(junk=True)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_stale_and_fresh(self):
-        """活锁报 PASS（含 mkdir 后还没写 owner 的窗口）；超时且持有者已死才是 WARN。"""
+    def test_panel_lock_owner_is_not_regular_file_fails(self):
+        """owner 是目录：release_lock 认不出自己的锁，只能等 5 秒超时回收。"""
         self.sb.healthy()
-        self.plock()
+        p = self.sb.plock()
+        os.makedirs(os.path.join(p, 'owner'))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
+        self.assertIn('release_lock', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_stale_and_fresh(self):
+        """活锁报 PASS（含 mkdir 后还没写 owner 的窗口）；超时才是 WARN。"""
+        self.sb.healthy()
+        self.sb.plock()
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         self.assertEqual(r.returncode, 0, '进行中的写回不该让 doctor 判 FAIL')
         self.assertIn('还没写 owner', self.sb.detail(r, '缓存/面板锁'))
 
-        self.plock(owner=f'{os.getpid()}.1')
+        self.sb.plock(owner=f'{os.getpid()}.1')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
 
-        self.plock(owner=f'{os.getpid()}.1', age=30)
+        self.sb.plock(owner=f'{os.getpid()}.1', age=30)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
         self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
@@ -1013,8 +1029,11 @@ class Doctor(unittest.TestCase):
         minor = re.search(r'BASH_VERSINFO\[1\]\}" -lt (\d+)', src)
         self.assertIsNotNone(major)
         self.assertIsNotNone(minor)
-        # 换壳守卫与 doctor 的替代版判定必须用同一条下限（4.2），不能一边要求 ≥5
-        self.assertIn(f'{major.group(1)}{minor.group(1)}', src)
+        # 换壳守卫与 doctor 的替代版判定必须用同一条下限，不能一边要求 ≥5。
+        # 锚在守卫自己那句 -ge <major*100+minor> 上：散落的字面量（ctx 42%、FNV 常数、
+        # 八进制转义）会让裸 assertIn 恒真，把下限改了也照样通过。
+        floor = int(major.group(1)) * 100 + int(minor.group(1))
+        self.assertIn(f'; [ "$v" -ge {floor} ]\'', src)
         with open(DOCTOR, encoding='utf-8') as f:
             doc = f.read()
         self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', doc)

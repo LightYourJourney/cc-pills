@@ -239,18 +239,19 @@ class Lifecycle(CacheBase):
         self.assertTrue(os.path.exists(corrupt), '读不出的会话状态被误删（无法确认 transcript 已消失）')
 
     def test_prune_threshold_is_exactly_30_days(self):
-        """30 天是精确阈值：31 天前的删、29 天前的不删，中间不因取整多留一天。"""
+        """30 天是精确阈值：用落在 30~31 天之间的文件，-mtime 的整天取整会漏掉它。"""
         p = self.private()
         os.makedirs(p, mode=0o700)
-        old = os.path.join(p, 'claude-sl-tok-31d.cache')
+        # 30.5 天：find -mtime +30 不匹配（它按整天取整，要超过 31 天才算），-mmin 才命中
+        between = os.path.join(p, 'claude-sl-tok-30d12h.cache')
         fresh = os.path.join(p, 'claude-sl-tok-29d.cache')
-        for f in (old, fresh):
+        for f in (between, fresh):
             with open(f, 'w') as fh:
                 fh.write('x\n')
-        self.old(old, days=31)
+        self.old(between, days=30.5)
         self.old(fresh, days=29)
         self.refresh(self.env)
-        self.assertFalse(os.path.exists(old), '31 天前的缓存没有被清理')
+        self.assertFalse(os.path.exists(between), '30.5 天前的缓存没有被清理（阈值不是精确 30 天）')
         self.assertTrue(os.path.exists(fresh), '29 天前的缓存被误删')
 
     def test_prune_skips_symlinks_and_subdirectories(self):
