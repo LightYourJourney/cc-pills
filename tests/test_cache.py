@@ -245,11 +245,10 @@ class Lifecycle(CacheBase):
         # 30.5 天：find -mtime +30 不匹配（它按整天取整，要超过 31 天才算），-mmin 才命中
         between = os.path.join(p, 'claude-sl-tok-30d12h.cache')
         fresh = os.path.join(p, 'claude-sl-tok-29d.cache')
-        for f in (between, fresh):
+        for f, days in ((between, 30.5), (fresh, 29)):
             with open(f, 'w') as fh:
                 fh.write('x\n')
-        self.old(between, days=30.5)
-        self.old(fresh, days=29)
+            self.old(f, days=days)
         self.refresh(self.env)
         self.assertFalse(os.path.exists(between), '30.5 天前的缓存没有被清理（阈值不是精确 30 天）')
         self.assertTrue(os.path.exists(fresh), '29 天前的缓存被误删')

@@ -159,8 +159,9 @@ class DoctorSandbox:
             env['ANTHROPIC_BASE_URL'] = 'https://relay.example/v1'
         return env
 
-    def plock(self, owner=None, junk=False, age=0):
-        """建一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件，age 把 mtime 拨回去。
+    def make_panel_lock(self, owner=None, junk=False, age=0, plain_file=False):
+        """建一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件，age 把 mtime 拨回去，
+        plain_file 用普通文件占住锁路径（而不是目录）。
 
         每次都先删掉旧锁，避免上一次调用留下的 owner / mtime 影响本次判定。
         """
@@ -169,6 +170,10 @@ class DoctorSandbox:
             shutil.rmtree(p)
         elif os.path.lexists(p):
             os.unlink(p)
+        if plain_file:
+            with open(p, 'w') as f:
+                f.write('x')
+            return p
         os.makedirs(p)
         if owner is not None:
             with open(os.path.join(p, 'owner'), 'w') as f:
@@ -420,8 +425,7 @@ class Doctor(unittest.TestCase):
 
     def test_panel_lock_occupied_by_file_fails(self):
         self.sb.healthy()
-        with open(os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock'), 'w') as f:
-            f.write('x')
+        self.sb.make_panel_lock(plain_file=True)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
@@ -429,7 +433,7 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_with_foreign_file_fails(self):
         """锁目录里有 owner 之外的东西：不是面板写的锁，5 秒内每轮写回都会失败。"""
         self.sb.healthy()
-        self.sb.plock(junk=True)
+        self.sb.make_panel_lock(junk=True)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
@@ -437,29 +441,45 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_owner_is_not_regular_file_fails(self):
         """owner 是目录：release_lock 认不出自己的锁，只能等 5 秒超时回收。"""
         self.sb.healthy()
-        p = self.sb.plock()
+        p = self.sb.make_panel_lock()
         os.makedirs(os.path.join(p, 'owner'))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('release_lock', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_stale_and_fresh(self):
-        """活锁报 PASS（含 mkdir 后还没写 owner 的窗口）；超时才是 WARN。"""
+        """四种状态：空锁 PASS、活锁 PASS、活 owner 超龄 WARN（不会自动回收）、
+        死 owner 超龄 WARN（会回收）。"""
         self.sb.healthy()
-        self.sb.plock()
+        self.sb.make_panel_lock()
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         self.assertEqual(r.returncode, 0, '进行中的写回不该让 doctor 判 FAIL')
         self.assertIn('还没写 owner', self.sb.detail(r, '缓存/面板锁'))
 
-        self.sb.plock(owner=f'{os.getpid()}.1')
+        self.sb.make_panel_lock(owner=f'{os.getpid()}.1')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
 
-        self.sb.plock(owner=f'{os.getpid()}.1', age=30)
+        # 持有者还活着：抢锁方只会 sleep 放弃，不会 rm，所以不能报「自动清除」
+        self.sb.make_panel_lock(owner=f'{os.getpid()}.1', age=30)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('仍存活', self.sb.detail(r, '缓存/面板锁'))
+
+        # 持有者已退出且超龄：满足回收条件
+        self.sb.make_panel_lock(owner='999999.1', age=30)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
         self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_dead_owner_before_stale(self):
+        """持有者已退出但没满回收年龄：这 5 秒内每轮写回都会失败，要报出来。"""
+        self.sb.healthy()
+        self.sb.make_panel_lock(owner='999999.1')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('已退出', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_skipped_with_explicit_state(self):
         self.sb.healthy()

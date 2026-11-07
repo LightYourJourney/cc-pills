@@ -103,6 +103,10 @@ else
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi
 
+# 目录里是否有东西（不递归、不跟随符号链接）：空锁目录与「刚抢到还没写 owner」无法区分，
+# 两处锁判定共用同一个形状，避免漏掉 2>/dev/null 或 -maxdepth 1 时静默改变语义
+nonempty() { [ -n "$(find "$1" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; }
+
 # 点分版本比较：ver_ge <实际> <最低>；无法解析时返回 1（当作不达标，宁可报出来）
 ver_ge() {
   local a1=${1%%.*} b1=${2%%.*} a2 b2

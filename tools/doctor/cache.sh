@@ -206,7 +206,7 @@ lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
   if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
-  if [ -n "$(find "$l" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+  if nonempty "$l"; then
     lock_full="$lock_full ${l##*/}"; continue
   fi
   lock_n=$((lock_n + 1))
@@ -254,11 +254,8 @@ else
   fi
 fi
 
-# 面板锁：抢锁是 mkdir（原子），owner 随后才写入，所以空目录既可能是「刚抢到还没写
-# owner」也可能是「持锁者已死」——两者都靠 mtime 年龄 + 下一轮回收，不是故障。
-# FAIL 的三种：非目录占位（普通文件 / 符号链接）；非空却无 owner 的异常目录（不是面板
-# 写的锁，要等满 PANEL_LOCK_STALE 才被 rm -rf，这段时间每轮写回都失败）；owner 本身
-# 不是普通文件（rm -rf 能清掉它，但 release_lock 永远认不出自己的锁，只能靠超时回收）。
+# 面板锁：抢锁是 mkdir（原子），owner 随后才写，空目录因此既可能是「刚抢到」也可能是
+# 「持有者已死」——按年龄判定，不误报。判据是「下一轮能不能回收」，FAIL 三种见 DECISIONS。
 plock="$sstate.lock"
 if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
   res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
@@ -269,7 +266,7 @@ elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
     "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
-elif [ ! -e "$plock/owner" ] && [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+elif [ ! -e "$plock/owner" ] && nonempty "$plock"; then
   res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不是面板写的锁，5 秒内每轮写回都会失败" \
     "无需手工处理；面板在锁满 5 秒后会 rm -rf 清除，持续出现再检查缓存目录"
 elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]; }; then
@@ -278,11 +275,26 @@ elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]
 else
   pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
   pl_age=$(( NOW - pl_mtime ))
+  # 回收条件是「超 PANEL_LOCK_STALE」且「无 owner 或持有者 PID 已死」——与抢锁方
+  # （subagent-statusline.sh 的残锁回收）同一套判据。只看年龄会说「自动清除」，
+  # 但持有者还活着时抢锁方只会 sleep 放弃、每轮写回都失败。
+  pl_pid=""; [ -f "$plock/owner" ] && { read -r pl_owner < "$plock/owner"; pl_pid=${pl_owner%%.*}; }
+  pl_alive=0
+  [ -n "$pl_pid" ] && kill -0 "$pl_pid" 2>/dev/null && pl_alive=1
   if [ "$pl_age" -ge "$PANEL_LOCK_STALE" ]; then
-    res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
-      "无需手工处理；有 owner 时持有者 PID 已死才回收，没有 owner 直接回收"
+    if [ "$pl_alive" = 1 ]; then
+      res WARN 缓存/面板锁 "锁已 ${pl_age}s，持有者 PID ${pl_pid} 仍存活：不会自动回收，写回会一直放弃" \
+        "持有者正常结束即释放；若进程已卡死，手工处理：rm -rf \"$plock\""
+    else
+      res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
+        "无需手工处理；持有者已退出或无 owner，满足回收条件"
+    fi
+  elif [ "$pl_alive" = 1 ]; then
+    res PASS 缓存/面板锁 "有面板写回正在进行（PID ${pl_pid}）"
   elif [ -e "$plock/owner" ]; then
-    res PASS 缓存/面板锁 "有面板写回正在进行"
+    # 持有者已死但还没到回收年龄：这期间每轮写回都会失败
+    res WARN 缓存/面板锁 "持有者 PID ${pl_pid:-?} 已退出，但锁才 ${pl_age}s（需满 ${PANEL_LOCK_STALE}s 才回收）：这期间每轮写回都失败" \
+      "无需手工处理，${PANEL_LOCK_STALE}s 后会自行清除"
   else
     res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
   fi

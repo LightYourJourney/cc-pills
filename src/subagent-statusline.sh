@@ -40,7 +40,8 @@
 #   多会话共享：读-改-写全程在同一把 mkdir 锁内，锁内重新读取后再合并（不会用旧快照
 #   覆盖别家条目）；抢锁超过 1s 就放弃本次写回。条目超 600s 剪枝，mkstemp/mktemp + mv
 #   原子替换，状态文件 0600；entry 更新间隔 ≥2s（事件驱动的密集重跑不冲刷速率基线）。
-#   锁路径被普通文件 / 符号链接占住时先清掉再重试；残锁超过 5s 且持有者 PID 已退出才回收。
+#   锁路径被普通文件 / 符号链接占住时先清掉再重试；残锁超过 5s 后回收，但有 owner 且
+#   持有者 PID 仍存活时只放弃本轮、不动别人的锁。
 #   锁里记 owner（PID.token），释放只删自己的锁。
 #   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
 #   （只有速率基线，丢失代价是一帧）。
@@ -165,7 +166,8 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # ── 状态写回（共享合并、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
 # 读-改-写全程持锁，锁内重新读取状态：否则两个实例都用开始时的快照，后写者会覆盖
 # 先写者的条目。抢不到锁（1s）就放弃本次写回——宁少一帧速率，也不丢别人的更新。
-# 锁里记 owner（PID.token）：释放只删自己的锁；残锁超 5s 且持有者 PID 已死才回收。
+# 锁里记 owner（PID.token）：释放只删自己的锁；残锁超 5s 后回收，有 owner 且持有者
+# PID 仍存活时不抢（owner 缺失说明创建者没走到那步，直接回收）。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 lock="$STATE.lock"; got=0; nowsec=""
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
@@ -178,8 +180,8 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
     fi
     lt=$(mtime "$lock"); lt=${lt:-0}
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      # 残锁回收（超 5 秒）：有 owner 且持有者 PID 还活着就继续等（PID 复用最多让本次放弃，
-      # 不会误删别人的锁）；其余一律回收——无 owner 说明创建者没走到写 owner 那步（已死）。
+      # 超 5 秒的残锁：持有者 PID 还活着就继续等（PID 复用最多让本次放弃），否则回收
+      # （无 owner 说明创建者没走到写 owner 那步）。
       owner=""; [ -f "$lock/owner" ] && owner=$(< "$lock/owner")
       pid=${owner%%.*}
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then sleep 0.05; continue; fi
