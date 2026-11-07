@@ -87,6 +87,9 @@
   7. 只读打开 CC Switch 数据库（mode=ro），且只在中转站模式下访问。
   8. 预筛子串只用来跳过不相干的行：含 "compact_boundary" 的行先确认真是 compact 行才跳过，
      否则照常累计 usage（tool_use 的 input 里出现这个词很常见）。
+  9. 状态文件按不可信磁盘数据对待：用 O_NOFOLLOW 打开并校验 st_uid 属于本人，不符就当
+     没有旧状态从头算——与 bash 侧的 cache_ok（-f / ! -L / -O）同一条。宁可重扫一次，
+     也不读别人预置的同名文件或符号链接指向的内容。
 """
 import calendar
 import glob

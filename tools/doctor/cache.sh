@@ -164,7 +164,9 @@ elif ( cd "$DIR" 2>/dev/null && git --no-optional-locks rev-parse --show-topleve
   [ "$gcache_bad" -gt 0 ] && badnote="${badnote}（${gcache_bad} 个格式异常，后台会重算）"
   res PASS 缓存/git "$DIR 是 git 仓库；缓存 ${gcache_n} 个${badnote}（缺失时首次渲染会同步算一次）"
 else
-  res SKIP 缓存/git "$DIR 不是 git 仓库；缓存 $gcache_n 个"
+  linknote=""
+  [ "$gcache_link" -gt 0 ] && linknote="（${gcache_link} 个符号链接，渲染不会读取）"
+  res SKIP 缓存/git "$DIR 不是 git 仓库；缓存 $gcache_n 个${linknote}"
 fi
 
 # 状态页缓存：只报年龄，不主动拉取（默认不联网）。缺失 / status_page=off 都是 SKIP。
@@ -218,7 +220,7 @@ elif [ -n "$lock_full" ]; then
   res FAIL 缓存/锁 "锁目录非空${lock_full}：渲染侧只用 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
     "rm -rf \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_bad" ]; then
-  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：本次刷新会失败，下一次刷新会自动清掉它" \
+  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
     "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
   res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：下次刷新会自动清除，无需手工处理"
@@ -252,26 +254,31 @@ else
   fi
 fi
 
-# 面板锁：异常占位或残锁会让写回永久失败 / 短暂延迟。面板会自行清除，所以只有
-# 「清不掉」的普通文件、符号链接与非空目录才是 FAIL；空锁超时只是 WARN。
+# 面板锁：面板持锁后立刻写入 owner（PID.token），所以「非空且含 owner」的锁就是正在
+# 进行中的写回，不是故障；只有清不掉的占位（普通文件、符号链接）与非空却无 owner 的
+# 异常目录才是 FAIL。空锁超时是 WARN。
 plock="$sstate.lock"
 if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
   res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
 elif [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/面板锁 "缓存根不可用"
 elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
-  res FAIL 缓存/面板锁 "面板锁被普通文件或符号链接占住：本次写回失败，下次渲染会自行清除" \
+  res FAIL 缓存/面板锁 "面板锁被普通文件或符号链接占住：本次渲染会先清掉它再抢锁" \
     "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
-elif [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
-  res FAIL 缓存/面板锁 "面板锁目录非空：本次写回失败，下次渲染会自行清除" \
+elif [ -d "$plock/owner" ] || [ -L "$plock/owner" ]; then
+  res FAIL 缓存/面板锁 "面板锁里的 owner 不是普通文件（目录或符号链接）：释放与残锁回收都会失效" \
+    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
+elif [ ! -f "$plock/owner" ]; then
+  res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不可能是进行中的写回，残锁回收也不认它" \
     "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
 else
   pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
   pl_age=$(( NOW - pl_mtime ))
   if [ "$pl_age" -ge "$PANEL_LOCK_STALE" ]; then
-    res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除"
+    res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
+      "无需手工处理；持有者 PID 已死才会被回收"
   else
     res PASS 缓存/面板锁 "有面板写回正在进行"
   fi

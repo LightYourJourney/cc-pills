@@ -46,7 +46,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 | macOS + Homebrew bash 5.x | yes | primary target |
 | macOS stock `/bin/bash` 3.2 | re-exec | jumps to a ≥4.2 build at `/opt/homebrew/bin/bash` etc.; only without one does it fall back to the minimal line |
 | Linux (GNU coreutils) | yes | full suite passes on Debian 12 (bash 5.2 / Python 3.11); CI runs the platform-sensitive subset (except the concurrent panel-write case); built-in themes when there is no iTerm profile |
-| bash 4.2–4.4 | yes | built bash 4.2.0 from source; full suite of 197 passes (two 4.2-only differences found and fixed: empty-format `printf -v` and second-granularity `-nt`) |
+| bash 4.2–4.4 | yes | built bash 4.2.0 from source; the then-current suite of 197 passed (two 4.2-only differences found and fixed: empty-format `printf -v` and second-granularity `-nt`). Not re-run against the larger suite |
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
 | python3 ≥ 3.9 | yes | below 3.9 the installer refuses and the diagnostic reports FAIL |
@@ -169,8 +169,8 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | `settings.json` missing / unreadable / not a regular file / invalid JSON | FAIL | `安装/settings.json` |
 | `jq` missing | FAIL | `环境/jq` |
 | `python3` < 3.9 or missing | FAIL | `环境/python3` |
-| `bash` < 4.2 with no ≥5 fallback | FAIL | `环境/bash` |
-| `bash` < 4.2 but a ≥5 build exists (re-exec guard) | WARN | `环境/bash` |
+| `bash` < 4.2 with no ≥4.2 fallback | FAIL | `环境/bash` |
+| `bash` < 4.2 but a ≥4.2 build exists (re-exec guard) | WARN | `环境/bash` |
 | Installed copy drifts from the repo | WARN | `安装/副本-*` |
 | Unknown key / bad value / misspelled `step` | WARN | `安装/配置文件` |
 | Cache directory not 0700 | WARN | `缓存/权限` |

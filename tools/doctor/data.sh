@@ -49,7 +49,7 @@ else
     '')            res FAIL 数据/stdin "冒烟无输出（${smoke}）" \
                      "依次看 环境/jq、环境/bash、安装/副本-statusline-command.sh" ;;
     'Opus 5.5 · 37%') res FAIL 数据/stdin "只渲染出版本守卫的最简行（模型 · ctx%）：主渲染路径没跑起来" \
-                     "看 环境/bash：PATH 里的 bash 需要 ≥${BASH_MIN}，或让脚本换到 ≥5 的 bash" ;;
+                     "看 环境/bash：PATH 里的 bash 需要 ≥${BASH_MIN}，或让脚本换到 ≥${BASH_MIN} 的 bash" ;;
     *'"session_id"'*|*'"context_window"'*|*'"prompt_cache"'*)
                      res FAIL 数据/stdin "输出包含 stdin 原文（${smoke}）：疑似透传/占位脚本，主渲染路径没有执行" \
                      "确认该文件是 cc-pills 的 statusline-command.sh，而不是包装脚本或占位脚本" ;;

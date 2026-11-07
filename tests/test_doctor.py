@@ -406,6 +406,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_non_empty_dir_fails(self):
+        """非空却没有 owner：不可能是进行中的写回（面板持锁后立刻写 owner）。"""
         self.sb.healthy()
         plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
         os.makedirs(plock)
@@ -413,12 +414,25 @@ class Doctor(unittest.TestCase):
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
-        self.assertIn('非空', self.sb.detail(r, '缓存/面板锁'))
+        self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_holding_owner_is_in_progress(self):
+        """活锁：面板持锁后写入 owner，doctor 不能把正在写回的锁报成故障。"""
+        self.sb.healthy()
+        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        os.makedirs(plock)
+        with open(os.path.join(plock, 'owner'), 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
+        self.assertEqual(r.returncode, 0, '进行中的写回不该让 doctor 判 FAIL')
 
     def test_panel_lock_stale_and_fresh(self):
         self.sb.healthy()
         plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
         os.makedirs(plock)
+        with open(os.path.join(plock, 'owner'), 'w') as f:
+            f.write(f'{os.getpid()}.1')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         old = time.time() - 30
@@ -996,7 +1010,7 @@ class Doctor(unittest.TestCase):
         self.assertIsNotNone(major)
         self.assertIsNotNone(minor)
         # 换壳守卫与 doctor 的替代版判定必须用同一条下限（4.2），不能一边要求 ≥5
-        self.assertIn('402', src)
+        self.assertIn(f'{major.group(1)}{minor.group(1)}', src)
         with open(DOCTOR, encoding='utf-8') as f:
             doc = f.read()
         self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', doc)
@@ -1139,22 +1153,22 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(self.sb.run(), '安装/配置文件'), 'PASS')
 
     def test_lock_path_occupied_by_file_fails(self):
-        """普通文件占住锁路径：本次刷新失败，但下一次会清掉它（与面板锁同口径）。"""
+        """普通文件占住锁路径：刷新会先清掉它再抢锁，不在本轮直接失败。"""
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-lock-doctor'), 'w') as f:
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
-        self.assertIn('下一次刷新会自动清掉', self.sb.detail(r, '缓存/锁'))
+        self.assertIn('刷新会先清掉它再抢锁', self.sb.detail(r, '缓存/锁'))
 
     def test_lock_path_symlink_fails(self):
-        """符号链接占住锁路径：同上，下一次刷新自愈。"""
+        """符号链接占住锁路径：同上，刷新先清掉再抢锁。"""
         self.sb.healthy()
         os.symlink('/nonexistent-lock-target',
                    os.path.join(self.sb.cache, 'claude-sl-lock-doctor'))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
-        self.assertIn('下一次刷新会自动清掉', self.sb.detail(r, '缓存/锁'))
+        self.assertIn('刷新会先清掉它再抢锁', self.sb.detail(r, '缓存/锁'))
 
     def test_nonempty_lock_dir_fails(self):
         """渲染侧只用 rmdir，非空锁目录永远删不掉：不能报「下次会自动清除」。"""

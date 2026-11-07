@@ -41,7 +41,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | macOS + Homebrew bash 5.x | 是 | 主目标 |
 | macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
 | Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑平台敏感子集（并发写面板状态除外）；无 iTerm profile 时用内置主题 |
-| bash 4.2–4.4 | 是 | 源码编译 bash 4.2.0 后全量 197 项通过；顺带修掉 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
+| bash 4.2–4.4 | 是 | 源码编译 bash 4.2.0 后跑当时全量 197 项通过；顺带修掉 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异。用例增多后未重新跑 4.2 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
 | python3 ≥ 3.9 | 是 | 低于 3.9 安装会拒绝，doctor 报 FAIL |
@@ -153,8 +153,8 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | `settings.json` 缺失 / 不可读 / 不是普通文件 / 语法错误 | FAIL | `安装/settings.json` |
 | `jq` 缺失 | FAIL | `环境/jq` |
 | `python3` < 3.9 或缺失 | FAIL | `环境/python3` |
-| `bash` < 4.2 且没有 ≥5 的替代 | FAIL | `环境/bash` |
-| `bash` < 4.2 但有 ≥5 的替代（靠脚本换壳） | WARN | `环境/bash` |
+| `bash` < 4.2 且没有 ≥4.2 的替代 | FAIL | `环境/bash` |
+| `bash` < 4.2 但有 ≥4.2 的替代（靠脚本换壳） | WARN | `环境/bash` |
 | 线上副本与仓库不一致 | WARN | `安装/副本-*` |
 | 配置里有不认识的键 / 非法值 / 写错的 `step` | WARN | `安装/配置文件` |
 | 缓存目录权限不是 0700 | WARN | `缓存/权限` |

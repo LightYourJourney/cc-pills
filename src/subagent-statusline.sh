@@ -178,8 +178,9 @@ if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
     fi
     lt=$(mtime "$lock"); lt=${lt:-0}
     if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      # 只有在持有者已死时才抢残锁：锁里记着持有者 PID，活着就继续等（PID 复用最多让
-      # 本次放弃，不会误删别人的锁）。
+      # 只有在持有者明确已死时才抢残锁：锁里记着持有者 PID，活着就继续等（PID 复用最多让
+      # 本次放弃，不会误删别人的锁）。走到这里说明锁已超过 5s，而正常实现是毫秒级写入
+      # owner——此时仍没有 owner，即创建者没走到写 owner 那步（已死），按残锁回收。
       owner=""; [ -f "$lock/owner" ] && owner=$(< "$lock/owner")
       pid=${owner%%.*}
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then sleep 0.05; continue; fi

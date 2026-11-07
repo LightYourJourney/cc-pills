@@ -223,7 +223,8 @@ class Lifecycle(CacheBase):
             self.old(files[n])
         # 不在清理名单里的东西即使很旧也不能删
         keep = {'claude-sl-theme-term-other.cache': 'THEME=dracula/12/tint/v4\n',
-                'claude-sl-status.cache': '1\tnone\n'}
+                'claude-sl-status.cache': '1\tnone\n',
+                'claude-subagent-sl-%d.json' % os.getuid(): '{"t":{}}\n'}
         for n, body in keep.items():
             with open(os.path.join(p, n), 'w') as fh:
                 fh.write(body)
@@ -236,6 +237,21 @@ class Lifecycle(CacheBase):
         for n in ('claude-sl-tok-live.cache', 'claude-sl-tok-live.cache.ts') + tuple(keep):
             self.assertTrue(os.path.exists(os.path.join(p, n)), f'{n} 不该被清理')
         self.assertTrue(os.path.exists(corrupt), '读不出的会话状态被误删（无法确认 transcript 已消失）')
+
+    def test_prune_threshold_is_exactly_30_days(self):
+        """30 天是精确阈值：31 天前的删、29 天前的不删，中间不因取整多留一天。"""
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        old = os.path.join(p, 'claude-sl-tok-31d.cache')
+        fresh = os.path.join(p, 'claude-sl-tok-29d.cache')
+        for f in (old, fresh):
+            with open(f, 'w') as fh:
+                fh.write('x\n')
+        self.old(old, days=31)
+        self.old(fresh, days=29)
+        self.refresh(self.env)
+        self.assertFalse(os.path.exists(old), '31 天前的缓存没有被清理')
+        self.assertTrue(os.path.exists(fresh), '29 天前的缓存被误删')
 
     def test_prune_skips_symlinks_and_subdirectories(self):
         p = self.private()
