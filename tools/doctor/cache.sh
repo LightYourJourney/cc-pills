@@ -266,12 +266,13 @@ elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
     "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
+elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]; }; then
+  # 先于「没有 owner」判：悬空符号链接的 -e 为假，否则会被归成「不是面板写的锁」
+  res FAIL 缓存/面板锁 "面板锁的 owner 不是普通文件：release_lock 认不出自己的锁，只能等超时回收" \
+    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
 elif [ ! -e "$plock/owner" ] && nonempty "$plock"; then
   res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不是面板写的锁，5 秒内每轮写回都会失败" \
     "无需手工处理；面板在锁满 5 秒后会 rm -rf 清除，持续出现再检查缓存目录"
-elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]; }; then
-  res FAIL 缓存/面板锁 "面板锁的 owner 不是普通文件：release_lock 认不出自己的锁，只能等超时回收" \
-    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
 else
   pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
   pl_age=$(( NOW - pl_mtime ))

@@ -439,13 +439,21 @@ class Doctor(unittest.TestCase):
         self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_owner_is_not_regular_file_fails(self):
-        """owner 是目录：release_lock 认不出自己的锁，只能等 5 秒超时回收。"""
-        self.sb.healthy()
-        p = self.sb.make_panel_lock()
-        os.makedirs(os.path.join(p, 'owner'))
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
-        self.assertIn('release_lock', self.sb.detail(r, '缓存/面板锁'))
+        """owner 是目录或悬空符号链接：release_lock 认不出自己的锁，只能等 5 秒超时回收。
+
+        悬空链接的 -e 为假，必须由 -L 先接住，否则会被误归成「没有 owner」。
+        """
+        for kind in ('dir', 'dangling_link'):
+            with self.subTest(kind=kind):
+                self.sb.healthy()
+                p = self.sb.make_panel_lock()
+                if kind == 'dir':
+                    os.makedirs(os.path.join(p, 'owner'))
+                else:
+                    os.symlink('/nonexistent-owner-target', os.path.join(p, 'owner'))
+                r = self.sb.run()
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
+                self.assertIn('release_lock', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_stale_and_fresh(self):
         """四种状态：空锁 PASS、活锁 PASS、活 owner 超龄 WARN（不会自动回收）、
