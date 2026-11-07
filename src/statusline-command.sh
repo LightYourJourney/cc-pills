@@ -133,8 +133,7 @@
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
 #  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件，
 #      不递归、不碰锁 / 色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
-#      （claude-statusline-*.json）单独判定：只在它记录的 transcript 全都不存在时才删，
-#      读不出就保留（它是躲开整段重扫的断点，误删代价远高于留个死文件）
+#      （claude-statusline-*.json）另加 transcript 守卫，见 docs/DECISIONS.md
 #
 # 开发：bash run_tests.sh（隔离沙箱，不碰线上缓存）；安装：bash install.sh
 # 调试渲染：CLAUDE_SL_NO_REFRESH=1 bash install.sh 后手工喂 stdin（见 tests/_util.py）
@@ -485,7 +484,7 @@ if [ "${1:-}" = "--refresh" ]; then
         \( -name 'claude-sl-tok-*.cache' -o -name 'claude-sl-tok-*.cache.ts' \
            -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
            -o -name '.claude-sl-*' \) \
-        -mmin +$((CACHE_MAX_AGE * 1440)) -exec rm -f {} + 2>/dev/null
+        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
       # 都不在了才删。读不出（损坏 / 无 jq）就保留——宁可留一个死文件，也不误删断点。
       cutoff=$((now - CACHE_MAX_AGE * 86400))

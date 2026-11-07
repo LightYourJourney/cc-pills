@@ -396,47 +396,51 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')
         self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
+    def plock(self, owner=None, junk=False, age=0):
+        """在沙箱缓存根里造一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件。"""
+        p = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
+        os.makedirs(p, exist_ok=True)
+        if owner is not None:
+            with open(os.path.join(p, 'owner'), 'w') as f:
+                f.write(owner)
+        if junk:
+            with open(os.path.join(p, 'junk'), 'w') as f:
+                f.write('x')
+        if age:
+            t = time.time() - age
+            os.utime(p, (t, t))
+        return p
+
     def test_panel_lock_occupied_by_file_fails(self):
         self.sb.healthy()
-        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        with open(plock, 'w') as f:
+        with open(os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock'), 'w') as f:
             f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_non_empty_dir_fails(self):
-        """非空却没有 owner：不可能是进行中的写回（面板持锁后立刻写 owner）。"""
+    def test_panel_lock_with_foreign_file_fails(self):
+        """锁目录里有 owner 之外的东西：不是面板写的锁，5 秒内每轮写回都会失败。"""
         self.sb.healthy()
-        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        os.makedirs(plock)
-        with open(os.path.join(plock, 'junk'), 'w') as f:
-            f.write('x')
+        self.plock(junk=True)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_holding_owner_is_in_progress(self):
-        """活锁：面板持锁后写入 owner，doctor 不能把正在写回的锁报成故障。"""
+    def test_panel_lock_stale_and_fresh(self):
+        """活锁报 PASS（含 mkdir 后还没写 owner 的窗口）；超时且持有者已死才是 WARN。"""
         self.sb.healthy()
-        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        os.makedirs(plock)
-        with open(os.path.join(plock, 'owner'), 'w') as f:
-            f.write(f'{os.getpid()}.1')
+        self.plock()
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         self.assertEqual(r.returncode, 0, '进行中的写回不该让 doctor 判 FAIL')
+        self.assertIn('还没写 owner', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_stale_and_fresh(self):
-        self.sb.healthy()
-        plock = os.path.join(self.sb.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        os.makedirs(plock)
-        with open(os.path.join(plock, 'owner'), 'w') as f:
-            f.write(f'{os.getpid()}.1')
+        self.plock(owner=f'{os.getpid()}.1')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
-        old = time.time() - 30
-        os.utime(plock, (old, old))
+
+        self.plock(owner=f'{os.getpid()}.1', age=30)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
         self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))

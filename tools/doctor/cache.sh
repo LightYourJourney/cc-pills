@@ -254,9 +254,10 @@ else
   fi
 fi
 
-# 面板锁：面板持锁后立刻写入 owner（PID.token），所以「非空且含 owner」的锁就是正在
-# 进行中的写回，不是故障；只有清不掉的占位（普通文件、符号链接）与非空却无 owner 的
-# 异常目录才是 FAIL。空锁超时是 WARN。
+# 面板锁：抢锁是 mkdir（原子），owner 随后才写入，所以空目录既可能是「刚抢到还没写
+# owner」也可能是「持锁者已死」——两者都靠 mtime 年龄 + 下一轮回收，不是故障。
+# 只有清不掉的占位（普通文件 / 符号链接）与非空却无 owner 的异常目录才 FAIL；
+# owner 存在但不是普通文件时，回收同样失效，一并判 FAIL。
 plock="$sstate.lock"
 if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
   res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
@@ -267,11 +268,11 @@ elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
     "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
-elif [ -d "$plock/owner" ] || [ -L "$plock/owner" ]; then
-  res FAIL 缓存/面板锁 "面板锁里的 owner 不是普通文件（目录或符号链接）：释放与残锁回收都会失效" \
-    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
-elif [ ! -f "$plock/owner" ]; then
-  res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不可能是进行中的写回，残锁回收也不认它" \
+elif [ ! -e "$plock/owner" ] && [ -n "$(find "$plock" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+  res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不是面板写的锁，5 秒内每轮写回都会失败" \
+    "无需手工处理；面板在锁满 5 秒后会 rm -rf 清除，持续出现再检查缓存目录"
+elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]; }; then
+  res FAIL 缓存/面板锁 "面板锁的 owner 不是普通文件：释放只删 token 相符的锁，这里永远不符" \
     "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
 else
   pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
@@ -279,8 +280,10 @@ else
   if [ "$pl_age" -ge "$PANEL_LOCK_STALE" ]; then
     res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
       "无需手工处理；持有者 PID 已死才会被回收"
-  else
+  elif [ -e "$plock/owner" ]; then
     res PASS 缓存/面板锁 "有面板写回正在进行"
+  else
+    res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
   fi
 fi
 
