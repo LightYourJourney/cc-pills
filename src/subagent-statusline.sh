@@ -43,6 +43,7 @@
 #   锁路径被普通文件 / 符号链接占住时先清掉再重试；残锁超过 5s 后回收，但有 owner 且
 #   持有者 PID 仍存活时只放弃本轮、不动别人的锁。
 #   锁里记 owner（PID.token），释放只删自己的锁。
+#   写回失败落 STATE.fail（单行 "epoch 原因码"），成功写回时删除；原因码供诊断工具解码。
 #   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
 #   （只有速率基线，丢失代价是一帧）。
 #
@@ -169,6 +170,14 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # 锁里记 owner（PID.token）：释放只删自己的锁；残锁超 5s 后回收，有 owner 且持有者
 # PID 仍存活时不抢（owner 缺失说明创建者没走到那步，直接回收）。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
+# 写回失败落 STATE.fail（单行 "epoch 原因码"），供诊断工具读取，不再推演锁目录。
+# mv -f 覆盖符号链接时只替换链接本身、不写入目标，所以写侧无需另判 -L。
+mark_fail() {
+  tmp=$(mktemp "$sdir/.claude-sl-panel-fail.XXXXXX" 2>/dev/null) || return 0
+  { printf '%s %s\n' "${EPOCHSECONDS:-$(date +%s)}" "$1" > "$tmp" &&
+    mv -f "$tmp" "${STATE}.fail"; } 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  return 0
+}
 lock="$STATE.lock"; got=0; nowsec=""
 if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -216,10 +225,19 @@ if [ "$got" = 1 ]; then
   ' 2>/dev/null)
   if [ -n "$new" ]; then
     tmp=$(mktemp "$STATE.XXXXXX" 2>/dev/null)
-    [ -n "$tmp" ] && printf '%s' "$new" > "$tmp" 2>/dev/null \
-      && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    if [ -z "$tmp" ]; then mark_fail tmp
+    elif ! printf '%s' "$new" > "$tmp" 2>/dev/null; then rm -f "$tmp"; mark_fail write
+    elif ! mv -f "$tmp" "$STATE" 2>/dev/null; then rm -f "$tmp"; mark_fail mv
+    else { [ -e "${STATE}.fail" ] || [ -L "${STATE}.fail" ]; } && rm -f "${STATE}.fail" 2>/dev/null
+    fi
+  else
+    mark_fail merge
   fi
   release_lock
+elif [ -d "$sdir" ] && [ "$state_ok" = 1 ] && [ ! -d "$STATE" ]; then
+  # 只在这三条都成立（真正尝试过抢锁）时才记 busy；否则是路径/权限问题，
+  # 由 缓存/根 与 缓存/面板状态 报，不重复记
+  mark_fail busy
 fi
 
 true

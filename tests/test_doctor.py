@@ -202,6 +202,13 @@ class DoctorSandbox:
             os.utime(p, (t, t))
         return p
 
+    def make_panel_fail(self, reason='busy', age=0):
+        """写面板的写回失败标记（单行 "epoch 原因码"），age 把时间戳拨回去。"""
+        p = os.path.join(self.cache, f'claude-subagent-sl-{os.getuid()}.json.fail')
+        with open(p, 'w') as f:
+            f.write(f'{int(time.time()) - age} {reason}\n')
+        return p
+
     def minimal_path(self, extra=None):
         """只含常用工具的临时 bin（默认不含 jq / curl），用来模拟缺依赖。"""
         b = os.path.join(self.d, 'bin')
@@ -440,90 +447,56 @@ class Doctor(unittest.TestCase):
         self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
     def test_panel_lock_occupied_by_file_fails(self):
+        """结构问题（锁路径被非目录占住）当场判，与写回是否失败无关。"""
         self.sb.healthy()
         self.sb.make_panel_lock(plain_file=True)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_with_foreign_file_warns_then_clears(self):
-        """锁目录里有 owner 之外的东西：未到回收年龄时写回失败，超龄后会被清掉。"""
+    def test_panel_lock_no_marker_passes(self):
         self.sb.healthy()
-        self.sb.make_panel_lock(junk=True)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
+        self.assertIn('无写回失败记录', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_fresh_marker_warns_with_reason(self):
+        """新标记：报出年龄与原因码解码，并说明下次成功写回会自动清除。"""
+        self.sb.healthy()
+        self.sb.make_panel_fail('busy')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('owner 之外的文件', self.sb.detail(r, '缓存/面板锁'))
+        d = self.sb.detail(r, '缓存/面板锁')
+        self.assertIn('抢锁超时', d)
+        self.assertIn('下次成功写回会自动清除', d)
 
-        self.sb.make_panel_lock(junk=True, age=30)
+    def test_panel_lock_stale_marker_means_stopped(self):
+        """标记很旧 = 此后没有写回尝试：面板可能已停跑，文案不同。"""
+        self.sb.healthy()
+        self.sb.make_panel_fail('write', age=172800)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
+        self.assertIn('可能已停跑', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_owner_not_regular_file_warns(self):
-        """owner 是目录或悬空符号链接：抢锁方用 [ -f ] 读不到 PID，按无 owner 处理。
-
-        判据是「能不能回收」：未到年龄时写回失败（WARN），超龄后照常回收（WARN）。
-        """
+    def test_panel_lock_marker_symlink_warns(self):
         self.sb.healthy()
-        for kind in ('dir', 'dangling_link'):
-            with self.subTest(kind=kind):
-                self.sb.make_panel_lock(owner_kind=kind)
-                r = self.sb.run()
-                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-                self.assertIn('owner 不是可读的普通文件', self.sb.detail(r, '缓存/面板锁'))
+        os.symlink('/nonexistent-marker', os.path.join(self.sb.cache,
+                   f'claude-subagent-sl-{os.getuid()}.json.fail'))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('符号链接', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_unreadable_owner_does_not_abort(self):
-        """owner 读不出（权限 000）时按无 owner 处理：doctor 必须跑完整轮并出汇总。"""
+    def test_panel_lock_unreadable_marker_does_not_abort(self):
+        """标记读不出（权限 000）或首行非法时按无时间戳处理：doctor 必须跑完整轮。"""
         self.sb.healthy()
-        p = self.sb.make_panel_lock(owner=f'{os.getpid()}.1', owner_kind='unreadable')
-        self.addCleanup(os.chmod, os.path.join(p, 'owner'), 0o600)
+        p = self.sb.make_panel_fail('busy')
+        os.chmod(p, 0o000)
+        self.addCleanup(os.chmod, p, 0o600)
         r = self.sb.run()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('汇总', r.stdout, 'set -u 触发未绑定变量会让诊断提前中断')
         self.assertEqual(r.stderr, '', f'不该有 stderr 泄漏：{r.stderr!r}')
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-
-    def test_panel_lock_owner_via_symlink_is_read(self):
-        """指向普通文件的符号链接：抢锁方用 [ -f ] 能读到 PID，不是故障。"""
-        self.sb.healthy()
-        self.sb.make_panel_lock(owner=f'{os.getpid()}.1', owner_kind='symlink')
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
-        self.assertIn(f'PID {os.getpid()}', self.sb.detail(r, '缓存/面板锁'))
-
-    def test_panel_lock_stale_and_fresh(self):
-        """四种状态：空锁 PASS、活锁 PASS、活 owner 超龄 WARN（不会自动回收）、
-        死 owner 超龄 WARN（会回收）。"""
-        self.sb.healthy()
-        self.sb.make_panel_lock()
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
-        self.assertEqual(r.returncode, 0, '进行中的写回不该让 doctor 判 FAIL')
-        self.assertIn('还没写 owner', self.sb.detail(r, '缓存/面板锁'))
-
-        self.sb.make_panel_lock(owner=f'{os.getpid()}.1')
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
-
-        # 持有者还活着：抢锁方只会 sleep 放弃，不会 rm，所以不能报「自动清除」
-        self.sb.make_panel_lock(owner=f'{os.getpid()}.1', age=30)
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('仍存活', self.sb.detail(r, '缓存/面板锁'))
-
-        # 持有者已退出且超龄：满足回收条件
-        self.sb.make_panel_lock(owner='999999.1', age=30)
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
-
-    def test_panel_lock_dead_owner_before_stale(self):
-        """持有者已退出但没满回收年龄：这 5 秒内每轮写回都会失败，要报出来。"""
-        self.sb.healthy()
-        self.sb.make_panel_lock(owner='999999.1')
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('已退出', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_skipped_with_explicit_state(self):
         self.sb.healthy()
@@ -1108,16 +1081,24 @@ class Doctor(unittest.TestCase):
                     alt.append(p)
         self.assertTrue(alt, 'doctor 的替代 bash 判定没有用 BASH_MIN')
 
-    def test_panel_lock_stale_matches_panel_script(self):
+    def test_panel_fail_codes_match_doctor(self):
+        """面板写出的原因码必须都被 doctor 解码，且 doctor 不再推演锁目录。"""
         with open(os.path.join(SRC, 'subagent-statusline.sh'), encoding='utf-8') as f:
             src = f.read()
-        m = re.search(r'nowsec - lt\)\) -ge (\d+)', src)
-        self.assertIsNotNone(m, '没找到面板脚本的残锁判定')
+        written = set(re.findall(r'mark_fail\s+(\w+)', src))
+        self.assertTrue(written, '面板脚本里没找到 mark_fail 调用')
+        cache_sh = os.path.join(REPO, 'tools', 'doctor', 'cache.sh')
+        with open(cache_sh, encoding='utf-8') as f:
+            c = f.read()
+        for code in written:
+            self.assertIn(f'{code})', c, f'doctor 没有解码原因码 {code}')
         with open(DOCTOR, encoding='utf-8') as f:
             doc = f.read()
-        d = re.search(r'^PANEL_LOCK_STALE=(\d+)', doc, re.M)
-        self.assertIsNotNone(d, 'doctor 里没有 PANEL_LOCK_STALE')
-        self.assertEqual(d.group(1), m.group(1))
+        self.assertIn('PANEL_FAIL_STALE', doc)
+        # 反推演守护：doctor 不得再基于锁目录的年龄/PID 判断
+        for gone in ('pl_age', 'pl_pid', 'pl_alive', 'pl_why', 'PANEL_LOCK_STALE',
+                     'kill -0'):
+            self.assertNotIn(gone, c, f'doctor 仍在推演面板锁：{gone}')
 
     def test_theme_cache_key_matches_renderer(self):
         """让真实渲染脚本写一次色板缓存，doctor 必须找到同一个文件名（不是测试自己编的名字）。"""

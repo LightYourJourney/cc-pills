@@ -108,6 +108,37 @@ class SubagentState(unittest.TestCase):
         self.assertTrue(os.path.exists(lock), '持有者 PID 仍存活时锁被抢走了')
         with open(st) as f:
             self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
+        with open(st + '.fail') as f:
+            self.assertEqual(f.read().split()[1], 'busy', '抢锁失败没有落 busy 标记')
+
+    def test_successful_write_clears_fail_marker(self):
+        """上一次失败的标记在成功写回后必须消失，否则诊断会一直报失败。"""
+        st = os.path.join(self.d, 's.json')
+        with open(st, 'w') as f:
+            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        with open(st + '.fail', 'w') as f:
+            f.write(f'{int(time.time()) - 60} busy\n')
+        self.spawn(st, 'a').wait()
+        self.assertFalse(os.path.lexists(st + '.fail'), '成功写回后失败标记没有被清除')
+
+    def test_fail_marker_symlink_is_not_followed(self):
+        """预置的符号链接标记：mv 只替换链接本身，不能写到链接目标里。"""
+        st = os.path.join(self.d, 's.json')
+        with open(st, 'w') as f:
+            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        victim = os.path.join(self.d, 'victim')
+        with open(victim, 'w') as f:
+            f.write('keep me')
+        os.symlink(victim, st + '.fail')
+        lock = st + '.lock'
+        os.makedirs(lock)
+        with open(os.path.join(lock, 'owner'), 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        old = time.time() - 30
+        os.utime(lock, (old, old))
+        self.spawn(st, 'a').wait()
+        with open(victim) as f:
+            self.assertEqual(f.read(), 'keep me', '写标记跟进了符号链接，改掉了目标文件')
 
     def test_lock_path_occupied_by_file_is_recovered(self):
         st = os.path.join(self.d, 's.json')
