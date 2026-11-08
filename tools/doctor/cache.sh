@@ -272,10 +272,10 @@ else
   pl_age=$(( NOW - pl_mtime ))
   # 抢锁方用 [ -f owner ]（跟随链接）读 PID：有效链接能读到，目录 / 悬空链接读不到、
   # 按无 owner 处理。读不出（权限 / 属主不同）同样按无 owner，且不能中断整轮诊断：
-  # 变量必须预初始化（doctor.sh 是 set -u）。
+  # pl_pid 必须预初始化（doctor.sh 是 set -u）；花括号把重定向失败也一并压进 /dev/null。
   pl_pid=""; pl_owner=""
   if [ -f "$plock/owner" ]; then
-    pl_owner=$( cat "$plock/owner" 2>/dev/null )
+    { read -r pl_owner < "$plock/owner"; } 2>/dev/null
     pl_pid=${pl_owner%%.*}
   fi
   pl_alive=0
@@ -284,18 +284,23 @@ else
     # 未到回收年龄：这期间每一轮写回都会放弃
     if [ "$pl_alive" = 1 ]; then
       res PASS 缓存/面板锁 "有面板写回正在进行（PID ${pl_pid}）"
-    elif [ -n "$pl_pid" ]; then
-      res WARN 缓存/面板锁 "持有者 PID ${pl_pid} 已退出，但锁才 ${pl_age}s（需满 ${PANEL_LOCK_STALE}s 才回收）：这期间每轮写回都失败" \
-        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
-    elif [ -e "$plock/owner" ] || [ -L "$plock/owner" ]; then
-      res WARN 缓存/面板锁 "锁才 ${pl_age}s（未满 ${PANEL_LOCK_STALE}s），但 owner 不是可读的普通文件：这期间每轮写回都会失败" \
-        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
-    elif nonempty "$plock"; then
-      # 有 owner 之外的东西却没有 owner：不是面板写的锁
-      res WARN 缓存/面板锁 "锁才 ${pl_age}s（未满 ${PANEL_LOCK_STALE}s），但目录里有 owner 之外的文件：这期间每轮写回都会失败" \
-        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
     else
-      res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
+      # 三种成因（PID 已退出 / owner 不可读 / 目录里有杂项），对用户是同一件事
+      if [ -n "$pl_pid" ]; then
+        pl_why="持有者 PID ${pl_pid} 已退出"
+      elif [ -e "$plock/owner" ] || [ -L "$plock/owner" ]; then
+        pl_why="owner 不是可读的普通文件"
+      elif nonempty "$plock"; then
+        pl_why="目录里有 owner 之外的文件"
+      else
+        pl_why=""
+      fi
+      if [ -n "$pl_why" ]; then
+        res WARN 缓存/面板锁 "锁才 ${pl_age}s（未满 ${PANEL_LOCK_STALE}s），但 ${pl_why}：这期间每轮写回都失败" \
+          "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
+      else
+        res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
+      fi
     fi
   elif [ "$pl_alive" = 1 ]; then
     res WARN 缓存/面板锁 "锁已 ${pl_age}s，持有者 PID ${pl_pid} 仍存活：不会自动回收，写回会一直放弃" \

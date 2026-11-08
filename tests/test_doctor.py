@@ -159,9 +159,13 @@ class DoctorSandbox:
             env['ANTHROPIC_BASE_URL'] = 'https://relay.example/v1'
         return env
 
-    def make_panel_lock(self, owner=None, junk=False, age=0, plain_file=False):
+    def make_panel_lock(self, owner=None, owner_kind='file', junk=False, age=0,
+                        plain_file=False):
         """建一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件，age 把 mtime 拨回去，
         plain_file 用普通文件占住锁路径（而不是目录）。
+
+        owner_kind: file（普通文件）/ dir（目录）/ dangling_link（悬空符号链接）/
+        symlink（指向 owner 的符号链接，内容同 owner 参数）/ unreadable（权限 000）。
 
         每次都先删掉旧锁，避免上一次调用留下的 owner / mtime 影响本次判定。
         """
@@ -175,9 +179,21 @@ class DoctorSandbox:
                 f.write('x')
             return p
         os.makedirs(p)
-        if owner is not None:
-            with open(os.path.join(p, 'owner'), 'w') as f:
+        o = os.path.join(p, 'owner')
+        if owner_kind == 'dir':
+            os.makedirs(o)
+        elif owner_kind == 'dangling_link':
+            os.symlink('/nonexistent-owner-target', o)
+        elif owner_kind == 'symlink':
+            real = os.path.join(self.d, 'panel-owner-real')
+            with open(real, 'w') as f:
+                f.write(owner or '')
+            os.symlink(real, o)
+        elif owner is not None:
+            with open(o, 'w') as f:
                 f.write(owner)
+            if owner_kind == 'unreadable':
+                os.chmod(o, 0o000)
         if junk:
             with open(os.path.join(p, 'junk'), 'w') as f:
                 f.write('x')
@@ -448,14 +464,10 @@ class Doctor(unittest.TestCase):
 
         判据是「能不能回收」：未到年龄时写回失败（WARN），超龄后照常回收（WARN）。
         """
+        self.sb.healthy()
         for kind in ('dir', 'dangling_link'):
             with self.subTest(kind=kind):
-                self.sb.healthy()
-                p = self.sb.make_panel_lock()
-                if kind == 'dir':
-                    os.makedirs(os.path.join(p, 'owner'))
-                else:
-                    os.symlink('/nonexistent-owner-target', os.path.join(p, 'owner'))
+                self.sb.make_panel_lock(owner_kind=kind)
                 r = self.sb.run()
                 self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
                 self.assertIn('owner 不是可读的普通文件', self.sb.detail(r, '缓存/面板锁'))
@@ -463,12 +475,8 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_unreadable_owner_does_not_abort(self):
         """owner 读不出（权限 000）时按无 owner 处理：doctor 必须跑完整轮并出汇总。"""
         self.sb.healthy()
-        p = self.sb.make_panel_lock()
-        owner = os.path.join(p, 'owner')
-        with open(owner, 'w') as f:
-            f.write(f'{os.getpid()}.1')
-        os.chmod(owner, 0o000)
-        self.addCleanup(os.chmod, owner, 0o600)
+        p = self.sb.make_panel_lock(owner=f'{os.getpid()}.1', owner_kind='unreadable')
+        self.addCleanup(os.chmod, os.path.join(p, 'owner'), 0o600)
         r = self.sb.run()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('汇总', r.stdout, 'set -u 触发未绑定变量会让诊断提前中断')
@@ -478,11 +486,7 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_owner_via_symlink_is_read(self):
         """指向普通文件的符号链接：抢锁方用 [ -f ] 能读到 PID，不是故障。"""
         self.sb.healthy()
-        p = self.sb.make_panel_lock()
-        real = os.path.join(self.sb.cache, 'real-owner')
-        with open(real, 'w') as f:
-            f.write(f'{os.getpid()}.1')
-        os.symlink(real, os.path.join(p, 'owner'))
+        self.sb.make_panel_lock(owner=f'{os.getpid()}.1', owner_kind='symlink')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         self.assertIn(f'PID {os.getpid()}', self.sb.detail(r, '缓存/面板锁'))
