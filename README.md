@@ -185,9 +185,9 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Refresh lock occupied by a plain file / symlink (cleared and retried in the same pass) | FAIL | `缓存/锁` |
 | Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
 | Panel lock occupied by a plain file / symlink (cleared and retried in the same pass) | FAIL | `缓存/面板锁` |
-| Panel lock dir non-empty without owner / owner is not a regular file (reclaimed only after the timeout) | FAIL | `缓存/面板锁` |
 | Panel lock past the timeout but the holder PID is still alive (never reclaimed, writes keep giving up) | WARN | `缓存/面板锁` |
-| Panel lock's holder has exited (auto-cleared once past 5 s; until then every write fails) | WARN | `缓存/面板锁` |
+| Panel lock's holder has exited, or the owner is unreadable (auto-cleared once past 5 s) | WARN | `缓存/面板锁` |
+| Panel lock younger than 5 s with an abnormal owner (every write fails meanwhile) | WARN | `缓存/面板锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |

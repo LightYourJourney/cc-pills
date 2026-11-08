@@ -430,18 +430,23 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_with_foreign_file_fails(self):
-        """锁目录里有 owner 之外的东西：不是面板写的锁，5 秒内每轮写回都会失败。"""
+    def test_panel_lock_with_foreign_file_warns_then_clears(self):
+        """锁目录里有 owner 之外的东西：未到回收年龄时写回失败，超龄后会被清掉。"""
         self.sb.healthy()
         self.sb.make_panel_lock(junk=True)
         r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
-        self.assertIn('没有 owner', self.sb.detail(r, '缓存/面板锁'))
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('owner 之外的文件', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_owner_is_not_regular_file_fails(self):
-        """owner 是目录或悬空符号链接：release_lock 认不出自己的锁，只能等 5 秒超时回收。
+        self.sb.make_panel_lock(junk=True, age=30)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+        self.assertIn('自动清除', self.sb.detail(r, '缓存/面板锁'))
 
-        悬空链接的 -e 为假，必须由 -L 先接住，否则会被误归成「没有 owner」。
+    def test_panel_lock_owner_not_regular_file_warns(self):
+        """owner 是目录或悬空符号链接：抢锁方用 [ -f ] 读不到 PID，按无 owner 处理。
+
+        判据是「能不能回收」：未到年龄时写回失败（WARN），超龄后照常回收（WARN）。
         """
         for kind in ('dir', 'dangling_link'):
             with self.subTest(kind=kind):
@@ -452,8 +457,35 @@ class Doctor(unittest.TestCase):
                 else:
                     os.symlink('/nonexistent-owner-target', os.path.join(p, 'owner'))
                 r = self.sb.run()
-                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
-                self.assertIn('release_lock', self.sb.detail(r, '缓存/面板锁'))
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+                self.assertIn('owner 不是可读的普通文件', self.sb.detail(r, '缓存/面板锁'))
+
+    def test_panel_lock_unreadable_owner_does_not_abort(self):
+        """owner 读不出（权限 000）时按无 owner 处理：doctor 必须跑完整轮并出汇总。"""
+        self.sb.healthy()
+        p = self.sb.make_panel_lock()
+        owner = os.path.join(p, 'owner')
+        with open(owner, 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        os.chmod(owner, 0o000)
+        self.addCleanup(os.chmod, owner, 0o600)
+        r = self.sb.run()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('汇总', r.stdout, 'set -u 触发未绑定变量会让诊断提前中断')
+        self.assertEqual(r.stderr, '', f'不该有 stderr 泄漏：{r.stderr!r}')
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+
+    def test_panel_lock_owner_via_symlink_is_read(self):
+        """指向普通文件的符号链接：抢锁方用 [ -f ] 能读到 PID，不是故障。"""
+        self.sb.healthy()
+        p = self.sb.make_panel_lock()
+        real = os.path.join(self.sb.cache, 'real-owner')
+        with open(real, 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        os.symlink(real, os.path.join(p, 'owner'))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
+        self.assertIn(f'PID {os.getpid()}', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_stale_and_fresh(self):
         """四种状态：空锁 PASS、活锁 PASS、活 owner 超龄 WARN（不会自动回收）、

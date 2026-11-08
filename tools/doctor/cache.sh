@@ -200,8 +200,8 @@ else
   esac
 fi
 
-# 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件占住时 mkdir 永远失败、后台刷新
-# 从此每轮直接退出（渲染侧不会自愈），必须当故障报出来
+# 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件 / 符号链接占住时，渲染侧会先
+# rm -f 再重试，但只要占位还在就会一直失败，所以要报出来
 lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
@@ -254,8 +254,9 @@ else
   fi
 fi
 
-# 面板锁：抢锁是 mkdir（原子），owner 随后才写，空目录因此既可能是「刚抢到」也可能是
-# 「持有者已死」——按年龄判定，不误报。判据是「下一轮能不能回收」，FAIL 三种见 DECISIONS。
+# 面板锁：判据是「下一轮能不能回收」，与抢锁方（subagent-statusline.sh 的残锁回收）
+# 同一套规则：非目录占位当轮 rm -f 重试；目录超过 PANEL_LOCK_STALE 时，owner 里的 PID
+# 还活着就继续等，否则 rm -rf。所以只有「超龄 + 持有者存活」是真正清不掉的。
 plock="$sstate.lock"
 if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
   res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
@@ -266,38 +267,42 @@ elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
     "反复出现时再检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ ! -e "$plock" ]; then
   res PASS 缓存/面板锁 "无锁残留"
-elif [ -L "$plock/owner" ] || { [ -e "$plock/owner" ] && [ ! -f "$plock/owner" ]; }; then
-  # 先于「没有 owner」判：悬空符号链接的 -e 为假，否则会被归成「不是面板写的锁」
-  res FAIL 缓存/面板锁 "面板锁的 owner 不是普通文件：release_lock 认不出自己的锁，只能等超时回收" \
-    "反复出现时再检查缓存目录；手工处理：rm -rf \"$plock\""
-elif [ ! -e "$plock/owner" ] && nonempty "$plock"; then
-  res FAIL 缓存/面板锁 "面板锁目录非空但没有 owner：不是面板写的锁，5 秒内每轮写回都会失败" \
-    "无需手工处理；面板在锁满 5 秒后会 rm -rf 清除，持续出现再检查缓存目录"
 else
   pl_mtime=$(mtime "$plock"); pl_mtime=${pl_mtime:-$NOW}
   pl_age=$(( NOW - pl_mtime ))
-  # 回收条件是「超 PANEL_LOCK_STALE」且「无 owner 或持有者 PID 已死」——与抢锁方
-  # （subagent-statusline.sh 的残锁回收）同一套判据。只看年龄会说「自动清除」，
-  # 但持有者还活着时抢锁方只会 sleep 放弃、每轮写回都失败。
-  pl_pid=""; [ -f "$plock/owner" ] && { read -r pl_owner < "$plock/owner"; pl_pid=${pl_owner%%.*}; }
+  # 抢锁方用 [ -f owner ]（跟随链接）读 PID：有效链接能读到，目录 / 悬空链接读不到、
+  # 按无 owner 处理。读不出（权限 / 属主不同）同样按无 owner，且不能中断整轮诊断：
+  # 变量必须预初始化（doctor.sh 是 set -u）。
+  pl_pid=""; pl_owner=""
+  if [ -f "$plock/owner" ]; then
+    pl_owner=$( cat "$plock/owner" 2>/dev/null )
+    pl_pid=${pl_owner%%.*}
+  fi
   pl_alive=0
   [ -n "$pl_pid" ] && kill -0 "$pl_pid" 2>/dev/null && pl_alive=1
-  if [ "$pl_age" -ge "$PANEL_LOCK_STALE" ]; then
+  if [ "$pl_age" -lt "$PANEL_LOCK_STALE" ]; then
+    # 未到回收年龄：这期间每一轮写回都会放弃
     if [ "$pl_alive" = 1 ]; then
-      res WARN 缓存/面板锁 "锁已 ${pl_age}s，持有者 PID ${pl_pid} 仍存活：不会自动回收，写回会一直放弃" \
-        "持有者正常结束即释放；若进程已卡死，手工处理：rm -rf \"$plock\""
+      res PASS 缓存/面板锁 "有面板写回正在进行（PID ${pl_pid}）"
+    elif [ -n "$pl_pid" ]; then
+      res WARN 缓存/面板锁 "持有者 PID ${pl_pid} 已退出，但锁才 ${pl_age}s（需满 ${PANEL_LOCK_STALE}s 才回收）：这期间每轮写回都失败" \
+        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
+    elif [ -e "$plock/owner" ] || [ -L "$plock/owner" ]; then
+      res WARN 缓存/面板锁 "锁才 ${pl_age}s（未满 ${PANEL_LOCK_STALE}s），但 owner 不是可读的普通文件：这期间每轮写回都会失败" \
+        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
+    elif nonempty "$plock"; then
+      # 有 owner 之外的东西却没有 owner：不是面板写的锁
+      res WARN 缓存/面板锁 "锁才 ${pl_age}s（未满 ${PANEL_LOCK_STALE}s），但目录里有 owner 之外的文件：这期间每轮写回都会失败" \
+        "无需手工处理，满 ${PANEL_LOCK_STALE}s 后会自行清除"
     else
-      res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
-        "无需手工处理；持有者已退出或无 owner，满足回收条件"
+      res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
     fi
   elif [ "$pl_alive" = 1 ]; then
-    res PASS 缓存/面板锁 "有面板写回正在进行（PID ${pl_pid}）"
-  elif [ -e "$plock/owner" ]; then
-    # 持有者已死但还没到回收年龄：这期间每轮写回都会失败
-    res WARN 缓存/面板锁 "持有者 PID ${pl_pid:-?} 已退出，但锁才 ${pl_age}s（需满 ${PANEL_LOCK_STALE}s 才回收）：这期间每轮写回都失败" \
-      "无需手工处理，${PANEL_LOCK_STALE}s 后会自行清除"
+    res WARN 缓存/面板锁 "锁已 ${pl_age}s，持有者 PID ${pl_pid} 仍存活：不会自动回收，写回会一直放弃" \
+      "持有者正常结束即释放；若进程已卡死，手工处理：rm -rf \"$plock\""
   else
-    res PASS 缓存/面板锁 "有面板写回正在进行（刚抢到锁，还没写 owner）"
+    res WARN 缓存/面板锁 "残锁 ${pl_age}s（超过 PANEL_LOCK_STALE=${PANEL_LOCK_STALE}）：下次渲染会自动清除" \
+      "无需手工处理；持有者已退出或读不出 PID，满足回收条件"
   fi
 fi
 
