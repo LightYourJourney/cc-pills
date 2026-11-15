@@ -46,6 +46,10 @@ THEME_TTL = int(read_const('THEME_TTL'))
 TOK_STALE = int(read_const('TOK_STALE'))
 STATUS_STALE = int(read_const('STATUS_STALE'))
 LOCK_STALE = int(read_const('LOCK_STALE'))
+PANEL_FAIL_STALE = int(read_const('PANEL_FAIL_STALE', DOCTOR))
+# 面板写回失败的原因码 → doctor 文案里的关键词（集合由契约测试与两边源码对齐）
+PANEL_FAIL_TEXT = {'busy': '抢锁超时', 'merge': '状态合并失败', 'tmp': '临时文件创建失败',
+                   'write': '写入失败', 'mv': '替换失败'}
 
 
 class DoctorSandbox:
@@ -159,54 +163,15 @@ class DoctorSandbox:
             env['ANTHROPIC_BASE_URL'] = 'https://relay.example/v1'
         return env
 
-    def make_panel_lock(self, owner=None, owner_kind='file', junk=False, age=0,
-                        plain_file=False):
-        """建一把面板锁：owner 为写入的 PID.token，junk 放一个无关文件，age 把 mtime 拨回去，
-        plain_file 用普通文件占住锁路径（而不是目录）。
+    def panel_path(self, suffix):
+        """面板状态文件的伴生路径：suffix 为 .lock / .fail。"""
+        return os.path.join(self.cache, f'claude-subagent-sl-{os.getuid()}.json{suffix}')
 
-        owner_kind: file（普通文件）/ dir（目录）/ dangling_link（悬空符号链接）/
-        symlink（指向 owner 的符号链接，内容同 owner 参数）/ unreadable（权限 000）。
-
-        每次都先删掉旧锁，避免上一次调用留下的 owner / mtime 影响本次判定。
-        """
-        p = os.path.join(self.cache, f'claude-subagent-sl-{os.getuid()}.json.lock')
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        elif os.path.lexists(p):
-            os.unlink(p)
-        if plain_file:
-            with open(p, 'w') as f:
-                f.write('x')
-            return p
-        os.makedirs(p)
-        o = os.path.join(p, 'owner')
-        if owner_kind == 'dir':
-            os.makedirs(o)
-        elif owner_kind == 'dangling_link':
-            os.symlink('/nonexistent-owner-target', o)
-        elif owner_kind == 'symlink':
-            real = os.path.join(self.d, 'panel-owner-real')
-            with open(real, 'w') as f:
-                f.write(owner or '')
-            os.symlink(real, o)
-        elif owner is not None:
-            with open(o, 'w') as f:
-                f.write(owner)
-            if owner_kind == 'unreadable':
-                os.chmod(o, 0o000)
-        if junk:
-            with open(os.path.join(p, 'junk'), 'w') as f:
-                f.write('x')
-        if age:
-            t = time.time() - age
-            os.utime(p, (t, t))
-        return p
-
-    def make_panel_fail(self, reason='busy', age=0):
-        """写面板的写回失败标记（单行 "epoch 原因码"），age 把时间戳拨回去。"""
-        p = os.path.join(self.cache, f'claude-subagent-sl-{os.getuid()}.json.fail')
+    def make_panel_fail(self, reason='busy', age=0, line=None):
+        """写面板的写回失败标记（单行 "epoch 原因码"）：age 把时间戳拨回去，line 直接给整行。"""
+        p = self.panel_path('.fail')
         with open(p, 'w') as f:
-            f.write(f'{int(time.time()) - age} {reason}\n')
+            f.write(line if line is not None else f'{int(time.time()) - age} {reason}\n')
         return p
 
     def minimal_path(self, extra=None):
@@ -449,7 +414,8 @@ class Doctor(unittest.TestCase):
     def test_panel_lock_occupied_by_file_fails(self):
         """结构问题（锁路径被非目录占住）当场判，与写回是否失败无关。"""
         self.sb.healthy()
-        self.sb.make_panel_lock(plain_file=True)
+        with open(self.sb.panel_path('.lock'), 'w') as f:
+            f.write('x')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
@@ -460,43 +426,62 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'PASS')
         self.assertIn('无写回失败记录', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_fresh_marker_warns_with_reason(self):
-        """新标记：报出年龄与原因码解码，并说明下次成功写回会自动清除。"""
+    def test_panel_lock_fresh_marker_decodes_every_reason(self):
+        """新标记：每个原因码都有自己的文案，不认识的码报「未知原因」；说明会自动清除。"""
         self.sb.healthy()
-        self.sb.make_panel_fail('busy')
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        d = self.sb.detail(r, '缓存/面板锁')
-        self.assertIn('抢锁超时', d)
-        self.assertIn('下次成功写回会自动清除', d)
+        for code, text in dict(PANEL_FAIL_TEXT, bogus='未知原因').items():
+            with self.subTest(code=code):
+                self.sb.make_panel_fail(code)
+                r = self.sb.run()
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+                d = self.sb.detail(r, '缓存/面板锁')
+                self.assertIn(f'原因：{text}', d)
+                self.assertIn('下次成功写回会自动清除', d)
 
     def test_panel_lock_stale_marker_means_stopped(self):
-        """标记很旧 = 此后没有写回尝试：面板可能已停跑，文案不同。"""
+        """标记超过 PANEL_FAIL_STALE = 此后没有写回尝试：文案换成「可能已停跑」。"""
         self.sb.healthy()
-        self.sb.make_panel_fail('write', age=172800)
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('可能已停跑', self.sb.detail(r, '缓存/面板锁'))
+        for age, stopped in ((PANEL_FAIL_STALE - 60, False), (PANEL_FAIL_STALE + 60, True)):
+            with self.subTest(age=age):
+                self.sb.make_panel_fail('write', age=age)
+                r = self.sb.run()
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+                self.assertEqual('可能已停跑' in self.sb.detail(r, '缓存/面板锁'), stopped)
 
-    def test_panel_lock_marker_symlink_warns(self):
-        self.sb.healthy()
-        os.symlink('/nonexistent-marker', os.path.join(self.sb.cache,
-                   f'claude-subagent-sl-{os.getuid()}.json.fail'))
-        r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
-        self.assertIn('符号链接', self.sb.detail(r, '缓存/面板锁'))
+    def test_panel_lock_marker_not_regular_file_warns(self):
+        """标记是符号链接或目录：不读内容，报出来并给清理命令。"""
+        for kind in ('symlink', 'dir'):
+            with self.subTest(kind=kind):
+                self.sb.healthy()
+                p = self.sb.panel_path('.fail')
+                if kind == 'symlink':
+                    os.symlink('/nonexistent-marker', p)
+                else:
+                    os.makedirs(p)
+                r = self.sb.run()
+                (os.unlink if kind == 'symlink' else os.rmdir)(p)
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+                self.assertIn('不是普通文件', self.sb.detail(r, '缓存/面板锁'))
 
-    def test_panel_lock_unreadable_marker_does_not_abort(self):
-        """标记读不出（权限 000）或首行非法时按无时间戳处理：doctor 必须跑完整轮。"""
-        self.sb.healthy()
-        p = self.sb.make_panel_fail('busy')
-        os.chmod(p, 0o000)
-        self.addCleanup(os.chmod, p, 0o600)
-        r = self.sb.run()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('汇总', r.stdout, 'set -u 触发未绑定变量会让诊断提前中断')
-        self.assertEqual(r.stderr, '', f'不该有 stderr 泄漏：{r.stderr!r}')
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+    def test_panel_lock_odd_marker_does_not_abort(self):
+        """标记读不出（权限 000）、时间戳带前导 0（当八进制会算术报错）或写在未来：
+        doctor 必须跑完整轮、这一行照常出现、不漏 stderr，年龄不为负。"""
+        cases = {'unreadable': None, 'leading_zero': '08 busy\n',
+                 'future': f'{int(time.time()) + 5000} busy\n'}
+        for name, line in cases.items():
+            with self.subTest(case=name):
+                self.sb.healthy()
+                p = self.sb.make_panel_fail('busy', line=line)
+                if line is None:
+                    os.chmod(p, 0o000)
+                r = self.sb.run()
+                os.chmod(p, 0o600)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn('汇总', r.stdout, '诊断提前中断')
+                self.assertEqual(r.stderr, '', f'不该有 stderr 泄漏：{r.stderr!r}')
+                self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
+                self.assertRegex(self.sb.detail(r, '缓存/面板锁'), r'[（ ]\d+s 前',
+                                 '年龄应是非负整数')
 
     def test_panel_lock_skipped_with_explicit_state(self):
         self.sb.healthy()
@@ -692,7 +677,9 @@ class Doctor(unittest.TestCase):
         os.utime(lock, (old, old))
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'WARN')
-        self.assertIn('自动', self.sb.detail(r, '缓存/锁'))
+        d = self.sb.detail(r, '缓存/锁')
+        self.assertIn('下次刷新时会清除', d)
+        self.assertIn('会话已结束的不会再清', d, '已结束会话的残锁没人清，不能说成一定会自动清除')
 
     def test_backoff_does_not_claim_no_colour_when_theme_still_matches(self):
         """渲染侧只要求缓存的主题部分与当前 THEME 相同、且有 P_CTX 就上色；chroma / 风格 /
@@ -1082,23 +1069,13 @@ class Doctor(unittest.TestCase):
         self.assertTrue(alt, 'doctor 的替代 bash 判定没有用 BASH_MIN')
 
     def test_panel_fail_codes_match_doctor(self):
-        """面板写出的原因码必须都被 doctor 解码，且 doctor 不再推演锁目录。"""
+        """面板写出的原因码与 doctor 解码的集合必须相等（也等于测试用的文案表）。"""
         with open(os.path.join(SRC, 'subagent-statusline.sh'), encoding='utf-8') as f:
-            src = f.read()
-        written = set(re.findall(r'mark_fail\s+(\w+)', src))
-        self.assertTrue(written, '面板脚本里没找到 mark_fail 调用')
-        cache_sh = os.path.join(REPO, 'tools', 'doctor', 'cache.sh')
-        with open(cache_sh, encoding='utf-8') as f:
-            c = f.read()
-        for code in written:
-            self.assertIn(f'{code})', c, f'doctor 没有解码原因码 {code}')
-        with open(DOCTOR, encoding='utf-8') as f:
-            doc = f.read()
-        self.assertIn('PANEL_FAIL_STALE', doc)
-        # 反推演守护：doctor 不得再基于锁目录的年龄/PID 判断
-        for gone in ('pl_age', 'pl_pid', 'pl_alive', 'pl_why', 'PANEL_LOCK_STALE',
-                     'kill -0'):
-            self.assertNotIn(gone, c, f'doctor 仍在推演面板锁：{gone}')
+            written = set(re.findall(r'\bmark_fail ([a-z]+)\b', f.read()))
+        with open(os.path.join(DOCTOR_LIB, 'cache.sh'), encoding='utf-8') as f:
+            decoded = set(re.findall(r'^\s+([a-z]+)\)\s+why=', f.read(), re.M))
+        self.assertEqual(written, decoded)
+        self.assertEqual(written, set(PANEL_FAIL_TEXT))
 
     def test_theme_cache_key_matches_renderer(self):
         """让真实渲染脚本写一次色板缓存，doctor 必须找到同一个文件名（不是测试自己编的名字）。"""
@@ -1133,9 +1110,10 @@ class Doctor(unittest.TestCase):
 
     def test_no_bare_var_before_multibyte(self):
         """`$var` 紧跟多字节字符时，bash 会把首字节吞进变量名（渲染脚本约束 6 同一条坑）。
-        在 zh_CN.UTF-8 + bash 3.2 上会直接 unbound variable，所以一律写 ${var}。"""
+        在 zh_CN.UTF-8 + bash 3.2 上会直接 unbound variable，所以一律写 ${var}。
+        install.sh 同样会被 macOS 自带的 3.2 直接运行（它负责报「需要 bash ≥ 4.2」）。"""
         bad = []
-        for p in doctor_sources():
+        for p in doctor_sources() + [INSTALL]:
             with open(p, encoding='utf-8') as f:
                 lines = f.read().splitlines()
             bad += [f'{os.path.basename(p)}:{i}: {l.strip()}' for i, l in enumerate(lines, 1)

@@ -45,11 +45,12 @@ THEME_TTL=300        # 色板重算间隔
 TOK_STALE=900        # token 缓存超此秒数即判陈旧（派生项隐藏）
 STATUS_STALE=600     # 状态页缓存超此秒数未更新即隐藏
 LOCK_STALE=30        # 后台刷新残锁的判定秒数
-PANEL_FAIL_STALE=86400  # 面板写回失败标记超过此秒数视为「此后没有写回尝试」
 PALETTE_V=4          # 色板缓存格式版本
 TOK_FIELDS=18        # 18 段 token 协议（与 statusline-tokens.py 的 FIELDS 一致）
 BASH_MIN=4.2         # 渲染脚本要求的最低 bash
 PY_MIN=3.9           # 渲染脚本用到 math.dist（3.8）与 str.removesuffix（3.9）
+# 诊断自己的阈值（渲染侧没有对应常量）
+PANEL_FAIL_STALE=86400  # 面板写回失败标记超过此秒数视为「此后没有写回尝试」
 # 配置文件认的键（必须与 statusline-command.sh 里 case "$k" 的分支一致）
 CONF_KEYS="theme glyphs status_page pill_style safe_margin truncate_length warn_at bad_at
   ctx_warn ctx_bad crit_at pill_chroma step"
@@ -102,10 +103,6 @@ else
   stat_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi
-
-# 目录里是否有东西（不递归、不跟随符号链接）：空锁目录与「刚抢到还没写 owner」无法区分，
-# 两处锁判定共用同一个形状，避免漏掉 2>/dev/null 或 -maxdepth 1 时静默改变语义
-nonempty() { [ -n "$(find "$1" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; }
 
 # 点分版本比较：ver_ge <实际> <最低>；无法解析时返回 1（当作不达标，宁可报出来）
 ver_ge() {

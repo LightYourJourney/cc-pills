@@ -33,7 +33,7 @@ for a in "$@"; do
     --uninstall) MODE=uninstall ;;
     --force) FORCE=1 ;;
     -h|--help) sed -n '2,/^set -u$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "未知参数：$a（--help 看用法）" >&2; exit 2 ;;
+    *) echo "未知参数：${a}（--help 看用法）" >&2; exit 2 ;;
   esac
 done
 # install 只装 --with-subagent 指定的；check / uninstall 覆盖实际装过的副本
@@ -57,7 +57,7 @@ check_deps() {
     echo "提示：未找到 curl；status_page = on（默认）时状态页不可用，可设 status_page = off" >&2
   local major=${BASH_VERSINFO[0]} minor=${BASH_VERSINFO[1]}
   if [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 2 ]; }; then
-    echo "需要 bash ≥ 4.2（当前 $major.$minor）；macOS 自带 3.2 请装 Homebrew bash" >&2
+    echo "需要 bash ≥ 4.2（当前 ${major}.${minor}）；macOS 自带 3.2 请装 Homebrew bash" >&2
     miss=1
   fi
   return "$miss"
@@ -103,13 +103,15 @@ case $MODE in
 install)
   check_deps || exit 1
   mkdir -p "$DEST" || exit 1
+  rc=0
   for f in "${FILES[@]}"; do
     src=$REPO/src/$f; dst=$DEST/$f
     if [ -f "$dst" ] && ! cmp -s "$src" "$dst"; then
       bak=$dst.bak.$(date +%Y%m%d%H%M%S)
       cp -p "$dst" "$bak" && echo "  备份旧副本 → $bak"
     fi
-    install -m 0755 "$src" "$dst" && echo "  已安装 $f → $dst"
+    if install -m 0755 "$src" "$dst"; then echo "  已安装 $f → $dst"
+    else echo "  安装失败：${f} → $dst" >&2; rc=1; fi
   done
   if [ "$WITH_CONF" = 1 ]; then
     if [ -e "$CONF" ]; then
@@ -140,6 +142,7 @@ install)
          echo '  "subagentStatusLine": {"type": "command", "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\""}' ;;
     esac
   fi
+  exit "$rc"
   ;;
 check)
   rc=0
@@ -147,7 +150,7 @@ check)
     dst=$DEST/$f
     if [ ! -e "$dst" ]; then echo "  未安装：$f"; rc=1
     elif cmp -s "$REPO/src/$f" "$dst"; then echo "  一致：$f"
-    else echo "  不一致：$f（仓库改过但没重新安装）"; rc=1; fi
+    else echo "  不一致：${f}（仓库改过但没重新安装）"; rc=1; fi
   done
   cmd=$(settings_cmd "$DEST/settings.json" statusLine)
   points_to "$cmd" statusline-command.sh "$DEST"; st=$?
@@ -191,11 +194,11 @@ uninstall)
       [ -n "$c" ] || continue
       for dst in "${removed[@]}"; do
         points_to "$c" "${dst##*/}" "$DEST"; st=$?
-        [ "$st" != 1 ] && echo "⚠ settings.json 的 $key 仍指向已删除的 $dst；请改回或删除该键" >&2
+        [ "$st" != 1 ] && echo "⚠ settings.json 的 $key 仍指向已删除的 ${dst}；请改回或删除该键" >&2
       done
     done
   fi
-  echo "  配置保留：$CONF（要删请手工处理）"
+  echo "  配置保留：${CONF}（要删请手工处理）"
   exit "$rc"
   ;;
 esac

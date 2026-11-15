@@ -33,15 +33,45 @@ class SubagentState(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
 
-    def spawn(self, state, ident, env=None):
+    def spawn(self, state, ident, env=None, stdin=None):
         p = os.path.join(self.d, f'in-{ident}.json')
         with open(p, 'w') as f:
-            f.write(task(ident))
+            f.write(task(ident) if stdin is None else stdin)
         e = dict(self.env, CLAUDE_SUBAGENT_SL_STATE=state)
         e.update(env or {})
         with open(p) as f:
             return subprocess.Popen(['bash', SCRIPT], stdin=f,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=e)
+
+    def seeded(self):
+        """建一份已有条目的状态文件，返回路径。"""
+        st = os.path.join(self.d, 's.json')
+        with open(st, 'w') as f:
+            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        return st
+
+    def hold_lock(self, st):
+        """超龄但持有者（本测试进程）仍存活的锁：抢锁方只能放弃，落 busy。"""
+        lock = st + '.lock'
+        os.makedirs(lock)
+        with open(os.path.join(lock, 'owner'), 'w') as f:
+            f.write(f'{os.getpid()}.1')
+        old = time.time() - 30
+        os.utime(lock, (old, old))
+        return lock
+
+    def reason(self, st):
+        with open(st + '.fail') as f:
+            return f.read().split()[1]
+
+    def shim(self, name, body):
+        """在一个新的临时 bin 里放同名假命令（body 里用 $REAL 调真命令），返回带它的 PATH。"""
+        b = tempfile.mkdtemp(dir=self.d, prefix='bin-')
+        p = os.path.join(b, name)
+        with open(p, 'w') as f:
+            f.write(f'#!/bin/sh\nREAL={shutil.which(name)}\n{body}\n')
+        os.chmod(p, 0o755)
+        return {'PATH': b + os.pathsep + os.environ.get('PATH', '')}
 
     @unittest.skipIf(os.environ.get('CCPILLS_SKIP_CONCURRENCY') == '1',
                      'Linux CI runner 上两个独立进程能在 2µs 内同时 mkdir 同一条路径成功'
@@ -95,50 +125,84 @@ class SubagentState(unittest.TestCase):
 
     def test_live_stale_lock_is_not_stolen(self):
         """残锁里的 PID 还活着就不能抢：宁少一帧，也不与正在写的进程并发读改写。"""
-        st = os.path.join(self.d, 's.json')
-        with open(st, 'w') as f:
-            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
-        lock = st + '.lock'
-        os.makedirs(lock)
-        with open(os.path.join(lock, 'owner'), 'w') as f:
-            f.write(f'{os.getpid()}.1')
-        old = time.time() - 30
-        os.utime(lock, (old, old))
+        st = self.seeded()
+        lock = self.hold_lock(st)
         self.spawn(st, 'a').wait()
         self.assertTrue(os.path.exists(lock), '持有者 PID 仍存活时锁被抢走了')
         with open(st) as f:
             self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
-        with open(st + '.fail') as f:
-            self.assertEqual(f.read().split()[1], 'busy', '抢锁失败没有落 busy 标记')
+        self.assertEqual(self.reason(st), 'busy', '抢锁失败没有落 busy 标记')
+
+    def test_write_failures_record_their_reason(self):
+        """合并 / 建临时文件 / 写入 / 替换失败各落自己的原因码（假命令制造失败点）。"""
+        cases = {
+            'merge': dict(stdin='not json'),
+            'tmp': dict(env=self.shim(
+                'mktemp', 'case "$1" in *.claude-sl-panel.*) exit 1 ;; esac; exec "$REAL" "$@"')),
+            # 临时文件「建成」了却是个目录：重定向写入必然失败（root 也一样）
+            'write': dict(env=self.shim(
+                'mktemp', 'case "$1" in *.claude-sl-panel.*) mkdir "${1%.XXXXXX}.d" && '
+                          'echo "${1%.XXXXXX}.d"; exit ;; esac; exec "$REAL" "$@"')),
+            'mv': dict(env=self.shim(
+                'mv', 'for a; do :; done; case "$a" in *s.json) exit 1 ;; esac; exec "$REAL" "$@"')),
+        }
+        for code, kw in cases.items():
+            with self.subTest(code=code):
+                st = self.seeded()
+                if os.path.lexists(st + '.fail'):
+                    os.unlink(st + '.fail')
+                self.spawn(st, 'a', **kw).wait()
+                self.assertEqual(self.reason(st), code)
+                with open(st) as f:
+                    self.assertNotIn('a', json.load(f), '失败的写回不该改动状态')
+                self.assertFalse(os.path.exists(st + '.lock'), '失败后没有释放锁')
+
+    def test_empty_stdin_is_not_a_write_failure(self):
+        """手工运行（没有 stdin）没有可记的 task：不抢锁、不落失败标记。"""
+        st = self.seeded()
+        self.hold_lock(st)
+        self.spawn(st, 'a', stdin='').wait()
+        self.assertFalse(os.path.lexists(st + '.fail'), '空 stdin 被记成了写回失败')
 
     def test_successful_write_clears_fail_marker(self):
         """上一次失败的标记在成功写回后必须消失，否则诊断会一直报失败。"""
-        st = os.path.join(self.d, 's.json')
-        with open(st, 'w') as f:
-            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
+        st = self.seeded()
         with open(st + '.fail', 'w') as f:
             f.write(f'{int(time.time()) - 60} busy\n')
         self.spawn(st, 'a').wait()
         self.assertFalse(os.path.lexists(st + '.fail'), '成功写回后失败标记没有被清除')
 
     def test_fail_marker_symlink_is_not_followed(self):
-        """预置的符号链接标记：mv 只替换链接本身，不能写到链接目标里。"""
-        st = os.path.join(self.d, 's.json')
-        with open(st, 'w') as f:
-            json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
-        victim = os.path.join(self.d, 'victim')
-        with open(victim, 'w') as f:
-            f.write('keep me')
-        os.symlink(victim, st + '.fail')
-        lock = st + '.lock'
-        os.makedirs(lock)
-        with open(os.path.join(lock, 'owner'), 'w') as f:
-            f.write(f'{os.getpid()}.1')
-        old = time.time() - 30
-        os.utime(lock, (old, old))
+        """预置的符号链接标记：换成真标记，链接目标（文件或目录）一个字节都不能动。"""
+        for kind in ('file', 'dir'):
+            with self.subTest(target=kind):
+                st = self.seeded()
+                victim = os.path.join(self.d, f'victim-{kind}')
+                if kind == 'file':
+                    with open(victim, 'w') as f:
+                        f.write('keep me')
+                else:
+                    os.makedirs(victim)
+                os.symlink(victim, st + '.fail')
+                lock = self.hold_lock(st)
+                self.spawn(st, 'a').wait()
+                shutil.rmtree(lock)
+                if kind == 'file':
+                    with open(victim) as f:
+                        self.assertEqual(f.read(), 'keep me', '写标记改掉了链接目标')
+                else:
+                    self.assertEqual(os.listdir(victim), [], '标记被写进了链接指向的目录')
+                self.assertFalse(os.path.islink(st + '.fail'), '符号链接标记没有被换掉')
+                self.assertEqual(self.reason(st), 'busy')
+                os.unlink(st + '.fail')
+
+    def test_fail_marker_directory_is_left_alone(self):
+        """标记路径是个目录：不是我们的东西，不往里塞文件（诊断会报它）。"""
+        st = self.seeded()
+        os.makedirs(st + '.fail')
+        self.hold_lock(st)
         self.spawn(st, 'a').wait()
-        with open(victim) as f:
-            self.assertEqual(f.read(), 'keep me', '写标记跟进了符号链接，改掉了目标文件')
+        self.assertEqual(os.listdir(st + '.fail'), [])
 
     def test_lock_path_occupied_by_file_is_recovered(self):
         st = os.path.join(self.d, 's.json')

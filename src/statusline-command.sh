@@ -273,6 +273,14 @@ fi
 # 缓存读取前确认：是普通文件、可读、不是符号链接、且属于当前用户。跨用户预置的同名
 # 文件一律不读（-f / -r / -L / -O 都是内建，不 fork）。
 cache_ok() { [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
+# put <目标> <临时名> <内容>：同目录临时文件 + mv 原子替换，失败不留残渣。临时名统一落在
+# .claude-sl-* 下，被杀进程的遗留由每日清理按这个前缀收走。
+put() {
+  local t
+  t=$(mktemp "${SLT}/.claude-sl-$2.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$3" > "$t" 2>/dev/null && mv -f "$t" "$1" 2>/dev/null && return 0
+  rm -f "$t" 2>/dev/null; return 1
+}
 
 # 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
@@ -354,10 +362,7 @@ if [ "${1:-}" = "--refresh" ]; then
   # 路径会一直按「无时间戳 = 新鲜」展示，长期失效时等于没修。
   tokf0="${SLT}/claude-sl-tok-${skey}.cache"
   if cache_ok "$tokf0" && [ ! -e "${tokf0}.ts" ]; then
-    m=$(mtime "$tokf0"); m=${m:-$now}
-    tsmf=$(mktemp "${SLT}/.claude-sl-tokts-${skey}.XXXXXX" 2>/dev/null)
-    [ -n "$tsmf" ] && printf '%s\n' "$m" > "$tsmf" 2>/dev/null \
-      && mv -f "$tsmf" "${tokf0}.ts" 2>/dev/null || rm -f "$tsmf" 2>/dev/null
+    m=$(mtime "$tokf0"); put "${tokf0}.ts" "tokts-${skey}" "${m:-$now}"
   fi
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
@@ -381,16 +386,13 @@ if [ "${1:-}" = "--refresh" ]; then
   # 首行带格式版本 v$PALETTE_V：旧版脚本生成的缓存首行不符，立即重算而不等 THEME_TTL
   want="THEME=${THEME}/${PILL_CHROMA}/${PILL_STYLE}/v${PALETTE_V}"
   failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
-  case "$ft" in ''|*[!0-9]*) ft=0 ;; esac
+  case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
   if { [ "$tline" != "$want" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
      && ! { [ "$tline" != "$want" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
     python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
     tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
     if [ "$tline" = "$want" ]; then rm -f "$failf" 2>/dev/null
-    else  # 失败退避：THEME_TTL 内不再每轮重跑
-      tmp=$(mktemp "${SLT}/.claude-sl-theme-fail.XXXXXX" 2>/dev/null) &&
-        printf '%s\n' "$now" > "$tmp" 2>/dev/null && mv -f "$tmp" "$failf" 2>/dev/null ||
-        rm -f "$tmp" 2>/dev/null
+    else put "$failf" theme-fail "$now"          # 失败退避：THEME_TTL 内不再每轮重跑
     fi
   fi
 
@@ -402,7 +404,7 @@ if [ "${1:-}" = "--refresh" ]; then
   gc="${SLT}/claude-sl-git-${key}.cache"; need=1
   if cache_ok "$gc"; then
     groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
-    case "$gts" in ''|*[!0-9]*) gts=0 ;; esac
+    case "$gts" in ''|*[!0-9]*) gts=0 ;; *) gts=$((10#$gts)) ;; esac
     if [ $((now - gts)) -lt "$GIT_TTL" ]; then
       need=0
       # -nt / -ot 在 bash 4.2 只比较到秒：同一秒内的切换会被当成「没变」而沿用旧缓存
@@ -411,12 +413,7 @@ if [ "${1:-}" = "--refresh" ]; then
       [ -d "$groot/.git" ] && { [ ! "$groot/.git/HEAD" -ot "$gc" ] || [ ! "$groot/.git/index" -ot "$gc" ]; } && need=1
     fi
   fi
-  if [ "$need" = 1 ]; then
-    tmp=$(mktemp "${SLT}/.claude-sl-git-${key}.XXXXXX" 2>/dev/null)
-    if [ -n "$tmp" ]; then
-      { git_data; printf '\t%s' "$now"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$gc" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-    fi
-  fi
+  [ "$need" = 1 ] && put "$gc" "git-${key}" "$(git_data)"$'\t'"$now"
 
   relayarg="-"
   [ "$mode" = relay ] && [ -r "$CCSWITCH_DB" ] && relayarg=$CCSWITCH_DB
@@ -427,7 +424,7 @@ if [ "${1:-}" = "--refresh" ]; then
     skipf="${SLT}/claude-sl-skip-${skey}"
     lsig=""; lts=0
     cache_ok "$skipf" && IFS=$'\t' read -r lsig lts < "$skipf"
-    case "$lts" in ''|*[!0-9]*) lts=0 ;; esac
+    case "$lts" in ''|*[!0-9]*) lts=0 ;; *) lts=$((10#$lts)) ;; esac
     if [ "$sig" != "$lsig" ] || [ $((now - lts)) -ge "$TOK_MIN_GAP" ]; then
       args=("th=${WARN_AT},${BAD_AT}")
       [ "$costraw" != "-" ] && args+=("cost=${costraw}")
@@ -436,21 +433,11 @@ if [ "${1:-}" = "--refresh" ]; then
       [ "$sparg" != "-" ] && args+=("sp=${sparg}")
       [ "$relayarg" != "-" ] && args+=("relay=${relayarg}")
       tok=$(CLAUDE_SL_TMP=$SLT python3 "${HERE}/statusline-tokens.py" "$tp" "$sid" "${args[@]}" 2>/dev/null)
-      if [ -n "$tok" ]; then                    # 约束 10
-        tmp2=$(mktemp "${SLT}/.claude-sl-tok-${skey}.XXXXXX" 2>/dev/null)
-        if [ -n "$tmp2" ] && printf '%s\n' "$tok" > "$tmp2" 2>/dev/null \
-           && mv -f "$tmp2" "${SLT}/claude-sl-tok-${skey}.cache" 2>/dev/null; then
-          # 新鲜度时间戳：同步路径据此丢弃长期未更新的派生值（约束 10 只防抖，不防永久陈旧）
-          tsf="${SLT}/claude-sl-tok-${skey}.cache.ts"
-          tsmf=$(mktemp "${SLT}/.claude-sl-tokts-${skey}.XXXXXX" 2>/dev/null)
-          [ -n "$tsmf" ] && printf '%s\n' "$now" > "$tsmf" 2>/dev/null \
-            && mv -f "$tsmf" "$tsf" 2>/dev/null || rm -f "$tsmf" 2>/dev/null
-          stmp=$(mktemp "${SLT}/.claude-sl-skip-${skey}.XXXXXX" 2>/dev/null)
-          [ -n "$stmp" ] && printf '%s\t%s\n' "$sig" "$now" > "$stmp" 2>/dev/null \
-            && mv -f "$stmp" "$skipf" 2>/dev/null || rm -f "$stmp" 2>/dev/null
-        else
-          rm -f "$tmp2" 2>/dev/null
-        fi
+      # 约束 10：输出为空不覆盖旧缓存。新鲜度时间戳：同步路径据此丢弃长期未更新的派生值
+      # （约束 10 只防抖，不防永久陈旧）
+      if [ -n "$tok" ] && put "$tokf0" "tok-${skey}" "$tok"; then
+        put "${tokf0}.ts" "tokts-${skey}" "$now"
+        put "$skipf" "skip-${skey}" "$sig"$'\t'"$now"
       fi
     fi
   fi
@@ -458,16 +445,11 @@ if [ "${1:-}" = "--refresh" ]; then
   # claude 状态页：先写尝试时刻再拉取（多会话并发时最多重复一次，幂等）
   try=${SLT}/claude-sl-status.try
   last=0; cache_ok "$try" && read -r last < "$try"
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  case "$last" in ''|*[!0-9]*) last=0 ;; *) last=$((10#$last)) ;; esac
   if [ "$STATUS_PAGE" = on ] && [ $((now - last)) -ge "$STATUS_TTL" ]; then
-    ttmp=$(mktemp "${SLT}/.claude-sl-status-try.XXXXXX" 2>/dev/null)
-    [ -n "$ttmp" ] && printf '%s\n' "$now" > "$ttmp" 2>/dev/null && mv -f "$ttmp" "$try" 2>/dev/null || rm -f "$ttmp" 2>/dev/null
+    put "$try" status-try "$now"
     ind=$(curl -s -m 4 "$STATUS_URL" 2>/dev/null | jq -r '.status.indicator // empty' 2>/dev/null)
-    if [ -n "$ind" ]; then
-      stmp=$(mktemp "${SLT}/.claude-sl-status.XXXXXX" 2>/dev/null)
-      [ -n "$stmp" ] && printf '%s\t%s\n' "$now" "$ind" > "$stmp" 2>/dev/null &&
-        mv -f "$stmp" "${SLT}/claude-sl-status.cache" 2>/dev/null || rm -f "$stmp" 2>/dev/null
-    fi
+    [ -n "$ind" ] && put "${SLT}/claude-sl-status.cache" status "$now"$'\t'"$ind"
   fi
 
   # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
@@ -498,9 +480,7 @@ if [ "${1:-}" = "--refresh" ]; then
         done <<< "$paths"
         [ "$keep" = 0 ] && rm -f "$f"
       done
-      ptmp=$(mktemp "${SLT}/.claude-sl-prune.XXXXXX" 2>/dev/null)
-      [ -n "$ptmp" ] && printf '%s\n' "$now" > "$ptmp" 2>/dev/null \
-        && mv -f "$ptmp" "$pstamp" 2>/dev/null || rm -f "$ptmp" 2>/dev/null
+      put "$pstamp" prune "$now"
     fi
   fi
   exit 0
@@ -508,7 +488,7 @@ fi
 
 # ── 同步路径：1 次 jq 提取全部字段（约束 5：空字段占位 "-"）──────────────
 IFS= read -r -d '' input || true      # 约束 17：读完 stdin 不 fork cat
-now=${EPOCHSECONDS:-$(date +%s)}
+printf -v now '%(%s)T' -1             # 约束 17：内建取时间（EPOCHSECONDS 要 5.0，4.2–4.4 会 fork date）
 
 fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$CTX_BAD" '
   def hfmt:
@@ -525,9 +505,11 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
   def num: if type == "number" then . else null end;
   def obj: if type == "object" then . else {} end;          # 约束 18：类型不符当作缺失
   def clamp: if . < 0 then 0 elif . > 100 then 100 else . end;
+  # 额度取整：未满 100 的不进位到 100——「用尽」只在已用 ≥ 100% 时显示，99.6 不算
+  def pct: if . < 100 then ([round, 99] | min) else round end;
   def quota($q):                              # → [已用%, 重置倒计时, "已用,resets_at"]
     if ($q.used_percentage | num) == null then ["-", "-", "-"]
-    else [ ($q.used_percentage | clamp | round | tostring),
+    else [ ($q.used_percentage | clamp | pct | tostring),
            (if ($q.resets_at | num) == null or $q.resets_at <= $now then "-"
             else ($q.resets_at - $now | floor | dfmt) end),
            (if ($q.resets_at | num) == null then "-"
@@ -544,11 +526,9 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     (if $ctx == null then "-" else ($ctx | tostring) end),
     (if $ctx == null then "-" elif $ctx >= $bad then "bad" elif $ctx >= $warn then "warn" else "ok" end),
     (if ($cw.total_input_tokens | num) == null then "-" else ($cw.total_input_tokens | hfmt) end),
-    (if ($cw.context_window_size | num) == null then "-" else ($cw.context_window_size | hfmt) end),
     (quota($rl.five_hour | obj) | .[]),
     (quota($rl.seven_day | obj) | .[]),
     (if ($c.total_cost_usd | num) == null then "-" else ($c.total_cost_usd | tostring) end),
-    (if ($c.total_duration_ms | num) == null then "-" else ($c.total_duration_ms / 1000 | floor | dfmt) end),
     (if ($c.total_api_duration_ms | num) == null then "-" else ($c.total_api_duration_ms / 1000 | floor | dfmt) end),
     # cache 项："<剩余秒数> <TTL 秒数>"；expires_at 已过记作 "cold"；warm=false 而未到期、
     # 未观察到缓存或缺 expires_at 为 "-"（只按过期时间判冷）
@@ -563,8 +543,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     ($in.transcript_path // "-"),
     ($in.session_id // "-"),
     # 网关花费限额 rate_limits.spend_limit（官方 schema：已用可超过 100；resets_at 已过则不出现）
-    (if ($sl.used_percentage | num) == null then "-" else ($sl.used_percentage | if . < 0 then 0 elif . > 999 then 999 else . end | round | tostring) end),
-    (if ($sl.resets_at | num) == null or $sl.resets_at <= $now then "-" else ($sl.resets_at - $now | floor | dfmt) end),
+    (if ($sl.used_percentage | num) == null then "-" else ($sl.used_percentage | if . < 0 then 0 elif . > 999 then 999 else . end | pct | tostring) end),
     (if ($sl.used_percentage | num) == null or ($sl.resets_at | num) == null
         or (["daily", "weekly", "monthly"] | index($sl.period)) == null then "-"
      else "\($sl.used_percentage),\($sl.resets_at),\($sl.period)" end),
@@ -574,10 +553,10 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
   ] | map(tostring | gsub("[\t\n]"; " ") | if . == "" then "-" else . end)   # 空串也占位（// 只管 null）
     | join("\t")' 2>/dev/null <<< "$input")
 
-IFS=$'\t' read -r dir model eff ctx ctxlv ctxin ctxwin q5 q5r q5arg q7 q7r q7arg costraw dur apidur cache recache hit hit0 tp sid \
-  sp spr sparg spper spusd splim <<< "$fields"
-for v in dir model eff ctx ctxlv ctxin ctxwin q5 q5r q5arg q7 q7r q7arg costraw dur apidur cache recache hit hit0 tp sid \
-  sp spr sparg spper spusd splim; do
+IFS=$'\t' read -r dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid \
+  sp sparg spper spusd splim <<< "$fields"
+for v in dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid \
+  sp sparg spper spusd splim; do
   [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
 done
 # 模式（见头部「费用口径」）：有 5h / 7d → 订阅；否则非官方 ANTHROPIC_BASE_URL → 中转站；都没有 → 订阅
@@ -661,7 +640,7 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
     tok_ts=""; read -r tok_ts < "${tokf}.ts"
     case "$tok_ts" in
       ''|*[!0-9]*) tok_ok=0 ;;                    # 坏的 .ts：按陈旧处理，等刷新重写
-      *) [ $((now - tok_ts)) -gt "$TOK_STALE" ] && tok_ok=0 ;;
+      *) [ $((now - 10#$tok_ts)) -gt "$TOK_STALE" ] && tok_ok=0 ;;
     esac
   else
     tok_ok=0                                      # 有 .ts 但不是本人的普通文件：不读缓存
@@ -687,7 +666,7 @@ case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 st_ind=""
 if [ "$STATUS_PAGE" = on ] && [ "$SLT_OK" = 1 ] && cache_ok "${SLT}/claude-sl-status.cache"; then
   IFS=$'\t' read -r st_ts st_ind < "${SLT}/claude-sl-status.cache"
-  case "$st_ts" in ''|*[!0-9]*) st_ind="" ;; *) [ $((now - st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
+  case "$st_ts" in ''|*[!0-9]*) st_ind="" ;; *) [ $((now - 10#$st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
 fi
 
 # ── 目录显示（starship truncate_to_repo 语义）──────────────────────────
@@ -854,7 +833,7 @@ paint() {
 # 渲染：胶囊底色按组（pcolor），每一项按自己的角色上色（NEU 中性 / DIR、GIT 点缀 /
 # WARN、BAD 语义色，BAD 加粗；MUTED 弱化）。尾段也包进胶囊。
 render() {
-  local id pg="" pr="" t j
+  local id pg="" t j
   out=""
   for id in "${ITEMS[@]}"; do
     [ "${LV[$id]}" -lt 0 ] && continue
@@ -867,7 +846,7 @@ render() {
     fi
     close_group
     [ -n "$pg" ] && out="${out} "
-    pg=${GRP[$id]}; pr=${ROLE[$id]}
+    pg=${GRP[$id]}
     if [ "$NC" = 1 ]; then
       out="${out}${PL_LCAP}${t}"
     else

@@ -113,6 +113,7 @@ re-run `bash install.sh` after pulling. `bash install.sh --check` reports drift;
 | `glyphs` | `nerd` or `ascii` |
 | `warn_at`, `bad_at`, `ctx_warn`, `ctx_bad`, `crit_at` | thresholds (percent used) |
 | `safe_margin` | columns reserved for Claude Code's own padding (default 4) |
+| `truncate_length` | trailing path segments kept for the directory (default 3) |
 | `status_page` | `on` polls status.claude.com once a minute; `off` makes zero network requests |
 | `step = drop/shrink <item>` | replaces the whole degradation sequence |
 
@@ -186,6 +187,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
 | Panel lock path occupied by a plain file / symlink (the panel clears and retries each pass) | FAIL | `缓存/面板锁` |
 | Panel's last write failed (reason code and age; past 1 day it is treated as possibly stopped) | WARN | `缓存/面板锁` |
+| Panel's write-failure marker is not a regular file (directory or symlink, reason unreadable) | WARN | `缓存/面板锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |
 | Explicit `CLAUDE_SL_TMP` missing (renderer never creates it) | FAIL | `缓存/根` |
 | Relay mode but no CC Switch database | WARN | `数据/CCSwitch库` |

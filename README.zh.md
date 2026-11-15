@@ -101,6 +101,7 @@ bash install.sh --with-subagent --with-conf
 | `glyphs` | `nerd` 或 `ascii` |
 | `warn_at`、`bad_at`、`ctx_warn`、`ctx_bad`、`crit_at` | 已用百分比阈值 |
 | `safe_margin` | 预留给 Claude Code 自身边距的列数（默认 4） |
+| `truncate_length` | 目录保留的末尾段数（默认 3） |
 | `status_page` | `on` 每分钟请求一次 status.claude.com；`off` 则零网络请求 |
 | `step = drop/shrink <项>` | 整体替换降级序列 |
 
@@ -170,6 +171,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 刷新锁是非空目录（不会自愈，后台刷新永久退出） | FAIL | `缓存/锁` |
 | 面板锁路径被普通文件 / 符号链接占住（面板每轮会先清掉再抢锁） | FAIL | `缓存/面板锁` |
 | 面板上次写回失败（含原因码、年龄；超过 1 天视为面板可能已停跑） | WARN | `缓存/面板锁` |
+| 面板的写回失败标记不是普通文件（目录或符号链接，读不出原因） | WARN | `缓存/面板锁` |
 | 缓存目录不可写 | FAIL | `缓存/后台刷新` |
 | 显式 `CLAUDE_SL_TMP` 指向的目录不存在（渲染不会创建） | FAIL | `缓存/根` |
 | 中转站模式但找不到 CC Switch 库 | WARN | `数据/CCSwitch库` |

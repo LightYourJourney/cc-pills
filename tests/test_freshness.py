@@ -55,6 +55,30 @@ class Freshness(unittest.TestCase):
             self.assertNotIn('用尽', strip(out))
             self.assertNotEqual(color_of(out, '3%'), sb.theme()['T_CRIT'], '3% 不应是强红')
 
+    def test_leading_zero_ts_is_stale_not_an_error(self):
+        """.ts 带前导 0（如 08）不是合法八进制：必须按十进制读成「很久以前」，而不是算术
+        报错后把陈旧缓存当新鲜值展示。"""
+        with Sandbox() as sb:
+            sb.write_tok('lz', **{'in': '172M'}, rate='$99/h', msgs='517')
+            with open(os.path.join(sb.tmp, 'claude-sl-tok-lz.cache.ts'), 'w') as f:
+                f.write('08\n')
+            r = sb.render(sb.stdin('lz', q5=20), raw=True)
+            self.assertEqual(r.stderr, '')
+            self.assertNotIn('m517', strip(r.stdout))
+
+    def test_just_under_100_is_not_exhausted(self):
+        """99.6% 还没用尽：不能四舍五入成 100 再显示「用尽」；满 100 才算。"""
+        with Sandbox() as sb:
+            o = strip(sb.render(sb.stdin('near', q5=99.6, q7=99.6,
+                                         spend={'used_percentage': 99.7, 'period': 'daily'})))
+            self.assertNotIn('用尽', o)
+            for item in ('5h 99%', '7d 99%', '今日 99%'):
+                self.assertIn(item, o)
+            o = strip(sb.render(sb.stdin('full', q5=100, spend={'used_percentage': 100.2,
+                                                                 'period': 'daily'})))
+            self.assertEqual(o.count('用尽'), 2)
+            self.assertIn('5h 100%', o)
+
     def test_refresh_writes_timestamp(self):
         """生产者必须在缓存旁写 .ts；否则新鲜度检查只能永远按「旧缓存」处理。"""
         with Sandbox(conf_extra='status_page = off') as sb:

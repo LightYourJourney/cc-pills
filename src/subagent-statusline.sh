@@ -44,6 +44,7 @@
 #   持有者 PID 仍存活时只放弃本轮、不动别人的锁。
 #   锁里记 owner（PID.token），释放只删自己的锁。
 #   写回失败落 STATE.fail（单行 "epoch 原因码"），成功写回时删除；原因码供诊断工具解码。
+#   显式 CLAUDE_SUBAGENT_SL_STATE 时标记同样落在状态文件旁，生命周期归调用方。
 #   缓存根不是本人拥有的真实目录时只渲染、不读写状态。旧版写在共享 /tmp 的状态不迁移
 #   （只有速率基线，丢失代价是一帧）。
 #
@@ -171,15 +172,22 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
 # PID 仍存活时不抢（owner 缺失说明创建者没走到那步，直接回收）。
 sdir=${STATE%/*}; [ "$sdir" = "$STATE" ] && sdir=.
 # 写回失败落 STATE.fail（单行 "epoch 原因码"），供诊断工具读取，不再推演锁目录。
-# mv -f 覆盖符号链接时只替换链接本身、不写入目标，所以写侧无需另判 -L。
+# 标记是符号链接时先删链接本身：mv -f 对「指向目录的链接」会把文件搬进目标目录。
+# 真目录不是我们的标记，不往里写（诊断会报）。
 mark_fail() {
-  tmp=$(mktemp "$sdir/.claude-sl-panel-fail.XXXXXX" 2>/dev/null) || return 0
-  { printf '%s %s\n' "${EPOCHSECONDS:-$(date +%s)}" "$1" > "$tmp" &&
-    mv -f "$tmp" "${STATE}.fail"; } 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  local mark="${STATE}.fail" t
+  [ -L "$mark" ] && rm -f "$mark" 2>/dev/null
+  [ -d "$mark" ] && return 0
+  t=$(mktemp "$sdir/.claude-sl-panel-fail.XXXXXX" 2>/dev/null) || return 0
+  { printf '%s %s\n' "${EPOCHSECONDS:-$(date +%s)}" "$1" > "$t" &&
+    mv -f "$t" "$mark"; } 2>/dev/null || rm -f "$t" 2>/dev/null
   return 0
 }
-lock="$STATE.lock"; got=0; nowsec=""
-if [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]; then
+# 空 stdin（手工运行）没有可记的 task；目录不可写时 mkdir 必然失败——两种情况都不抢锁，
+# 免得白等 1 秒，也不把它们记成写回失败（后者由诊断的 缓存/后台刷新 报）。
+lock="$STATE.lock"; got=0; tried=0; nowsec=""
+if [ -n "$input" ] && [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ] && [ -w "$sdir" ]; then
+  tried=1
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     if mkdir "$lock" 2>/dev/null; then got=1; break; fi
     [ -n "$nowsec" ] || nowsec=${EPOCHSECONDS:-$(date +%s)}   # 只在抢锁失败时才取时间
@@ -224,7 +232,7 @@ if [ "$got" = 1 ]; then
            else . end)
   ' 2>/dev/null)
   if [ -n "$new" ]; then
-    tmp=$(mktemp "$STATE.XXXXXX" 2>/dev/null)
+    tmp=$(mktemp "$sdir/.claude-sl-panel.XXXXXX" 2>/dev/null)   # .claude-sl-*：残留由主栏每日清理收走
     if [ -z "$tmp" ]; then mark_fail tmp
     elif ! printf '%s' "$new" > "$tmp" 2>/dev/null; then rm -f "$tmp"; mark_fail write
     elif ! mv -f "$tmp" "$STATE" 2>/dev/null; then rm -f "$tmp"; mark_fail mv
@@ -234,9 +242,8 @@ if [ "$got" = 1 ]; then
     mark_fail merge
   fi
   release_lock
-elif [ -d "$sdir" ] && [ "$state_ok" = 1 ] && [ ! -d "$STATE" ]; then
-  # 只在这三条都成立（真正尝试过抢锁）时才记 busy；否则是路径/权限问题，
-  # 由 缓存/根 与 缓存/面板状态 报，不重复记
+elif [ "$tried" = 1 ]; then
+  # 真正尝试过抢锁才记 busy；没尝试是路径 / 权限问题，由 缓存/根 与 缓存/面板状态 报
   mark_fail busy
 fi
 

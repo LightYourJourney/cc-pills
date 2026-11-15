@@ -55,7 +55,7 @@ elif [ ! -e "$tc" ]; then
 elif [ -L "$tc" ] || [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
   res WARN 缓存/色板 "色板缓存不是属于本人的普通文件（目录或符号链接），渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
 else
-  # 上色的实际条件（statusline-command.sh:536-543）：
+  # 上色的实际条件（statusline-command.sh「色板缓存」一段）：
   #   1) 某行 THEME=<主题>/… 的主题部分等于当前 theme；
   #   2) 某行 P_CTX 的值只含数字与分号（渲染侧 ''|*[!0-9;]*) 会整条丢弃非法值）。
   # chroma / 风格 / 格式版本不符只触发后台重算，本轮照常上色。
@@ -108,7 +108,7 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
-      *) t=$tv; [ $(( NOW - tv )) -gt "$TOK_STALE" ] && tok_old_ts=$((tok_old_ts + 1)) ;;
+      *) t=$((10#$tv)); [ $(( NOW - t )) -gt "$TOK_STALE" ] && tok_old_ts=$((tok_old_ts + 1)) ;;
     esac
   elif [ -e "$ts" ] || [ -L "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
@@ -189,7 +189,7 @@ else
     *) if [ -z "$st_ind" ]; then
          res WARN 缓存/状态页 "状态缓存缺少 indicator：服务状态项会被隐藏" "删掉它，后台会重新拉取"
        else
-         age=$(( NOW - st_ts ))
+         age=$(( NOW - 10#$st_ts ))
          if [ "$age" -gt "$STATUS_STALE" ]; then
            res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
              "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
@@ -206,7 +206,8 @@ lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
   if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
-  if nonempty "$l"; then
+  # 不递归、不跟随符号链接；空锁目录就是正常的锁
+  if [ -n "$(find "$l" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
     lock_full="$lock_full ${l##*/}"; continue
   fi
   lock_n=$((lock_n + 1))
@@ -223,7 +224,8 @@ elif [ -n "$lock_bad" ]; then
   res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
     "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
-  res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：下次刷新会自动清除，无需手工处理"
+  res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：该会话下次刷新时会清除；会话已结束的不会再清（每日清理不碰锁目录），留着无害" \
+    "想清掉：rmdir \"$SLT\"/claude-sl-lock-*（只删空目录，不影响进行中的刷新）"
 elif [ "$lock_n" -gt 0 ]; then
   res PASS 缓存/锁 "有刷新正在进行"
 else
@@ -264,16 +266,17 @@ elif [ "$SLT_OK" != 1 ]; then
 elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
   res FAIL 缓存/面板锁 "面板锁路径被普通文件或符号链接占住（面板每轮会先清掉再抢锁）" \
     "反复出现时检查缓存目录；手工处理：rm -f \"$plock\""
-elif [ -L "$pmark" ]; then
-  res WARN 缓存/面板锁 "写回失败标记是符号链接，面板不会读取：失败原因未知" \
-    "rm -f \"$pmark\""
+elif [ -L "$pmark" ] || { [ -e "$pmark" ] && [ ! -f "$pmark" ]; }; then
+  res WARN 缓存/面板锁 "写回失败标记不是普通文件（目录或符号链接）：读不出失败原因；是目录时面板也写不进去" \
+    "rm -rf \"$pmark\""
 elif [ -e "$pmark" ]; then
   ft=""; why=""; { read -r ft why < "$pmark"; } 2>/dev/null
-  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; esac
-  age=$(( NOW - ft ))
+  # 读不出 / 非数字 / 写在未来的时间戳都按「刚刚」算；10# 免得前导 0 被当成八进制
+  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)) ;; esac
+  age=$(( NOW - ft )); [ "$age" -lt 0 ] && age=0
   case "$why" in
     busy)  why="抢锁超时" ;;
-    merge) why="状态合并失败" ;;
+    merge) why="状态合并失败（stdin 或状态无法解析）" ;;
     tmp)   why="临时文件创建失败" ;;
     write) why="写入失败" ;;
     mv)    why="替换失败" ;;
@@ -294,7 +297,7 @@ if [ -L "$failf" ]; then
   res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
 elif [ -e "$failf" ]; then
   ft=""; read -r ft < "$failf" 2>/dev/null
-  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; esac
+  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)) ;; esac
   if [ "$COLOUR_OK" = 1 ]; then
     # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染
     res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"

@@ -127,6 +127,10 @@ RESET_DROP = 0.5              # 追踪值回落超过一半才视为重置；小
 EMPTY = {'v': STATE_V, 'files': {}, 'in': 0, 'out': 0, 'cw': 0, 'cr': 0,
          'comp': 0, 'pend': [], 'trk': {}, 'unl': {}}
 KEYS = ('in', 'out', 'cw', 'cr')
+# st['unl'][message.id] 的列（状态文件里按位置存，改顺序要升 STATE_V）
+U_MODEL, U_IN, U_OUT, U_CR, U_CW, U_CW1, U_TS, U_DIRECT = range(8)
+# 状态文件的临时名：落在 .claude-sl-* 下，被杀进程的遗留由主栏每日清理收走
+TMP_PREFIX = '.claude-sl-state.'
 # 输出字段顺序：bash 的 IFS=tab read、tests/_util.py、tools/preview.sh 都以它为准
 FIELDS = ('in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
           'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs')
@@ -253,7 +257,7 @@ def save(state_path, st):
     try:
         d = os.path.dirname(state_path) or '.'
         os.makedirs(d, mode=0o700, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(state_path) + '.', text=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=TMP_PREFIX, text=True)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(st, f)
         os.replace(tmp, state_path)
@@ -344,7 +348,7 @@ def find_pricing(conn, model, cache):
 
 def msg_cost(p, e):
     """calculator.rs 的 Claude 语义：input 不含缓存；1h 缓存写入按 5m 单价 ×1.6；倍率 1。"""
-    _, inp, out, cr, cw, cw1 = e[:6]
+    inp, out, cr, cw, cw1 = e[U_IN:U_CW1 + 1]
     cw1 = min(cw1, cw)
     return (inp * p[0] + out * p[1] + cr * p[2] + ((cw - cw1) + cw1 * 1.6) * p[3]) / 1e6
 
@@ -433,10 +437,10 @@ def relay_ledger(db, sid, st, now, midnight):
         # CC Switch 只保留约 30 天：早于库内最早记录的消息与用量页同口径，不再自算（见文档 4）
         oldest = conn.execute('SELECT MIN(created_at) FROM proxy_request_logs').fetchone()[0]
         if oldest is not None:
-            for mid in [m for m, e in unl.items() if e[6] < oldest]:
+            for mid in [m for m, e in unl.items() if e[U_TS] < oldest]:
                 unl.pop(mid)
         for mid, e in list(unl.items()):       # 代理已记账：按 CC Switch 去重键匹配
-            if e[7]:
+            if e[U_DIRECT]:
                 continue
             # app_type + COALESCE(data_source) 与索引 idx_request_logs_dedup_lookup_expr 一致：
             # 每条 19 ms → 0.01 ms（30 万行实测）；且只与 Claude 的代理行匹配
@@ -445,11 +449,12 @@ def relay_ledger(db, sid, st, now, midnight):
                 "AND COALESCE(data_source, 'proxy') = 'proxy' AND status_code BETWEEN 200 AND 299 "
                 'AND created_at BETWEEN ? AND ? AND input_tokens = ? AND output_tokens = ? '
                 'AND cache_read_tokens = ? AND cache_creation_tokens = ? LIMIT 1',
-                (e[6] - PROXY_DEDUP_WINDOW, e[6] + PROXY_DEDUP_WINDOW, e[1], e[2], e[3], e[4])).fetchone()
+                (e[U_TS] - PROXY_DEDUP_WINDOW, e[U_TS] + PROXY_DEDUP_WINDOW,
+                 e[U_IN], e[U_OUT], e[U_CR], e[U_CW])).fetchone()
             if hit:
                 unl.pop(mid)
-            elif now - e[6] > PROXY_SETTLE:
-                e[7] = 1                       # 久未匹配：定为直连，之后只等会话日志入账
+            elif now - e[U_TS] > PROXY_SETTLE:
+                e[U_DIRECT] = 1                       # 久未匹配：定为直连，之后只等会话日志入账
         cost, unpriced = conn.execute(
             'SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0), '          # CC Switch 以 TEXT 存 Decimal
             'COALESCE(SUM(CAST(total_cost_usd AS REAL) = 0 AND input_tokens + output_tokens > 0), 0) '
@@ -457,13 +462,13 @@ def relay_ledger(db, sid, st, now, midnight):
         tail = tail_today = 0.0
         cache = {}
         for e in unl.values():
-            p = find_pricing(conn, e[0], cache)
+            p = find_pricing(conn, e[U_MODEL], cache)
             if p is None:
-                unpriced += 1 if e[1] + e[2] > 0 else 0
+                unpriced += 1 if e[U_IN] + e[U_OUT] > 0 else 0
                 continue
             c = msg_cost(p, e)
             tail += c
-            tail_today += c if e[6] >= midnight else 0
+            tail_today += c if e[U_TS] >= midnight else 0
         # 今日费用分三个口径（见文档 4）：
         #   global = 全部 Claude 明细 + 本会话尾部（无日限额时显示）
         #   cur    = 当前供应商可归属（proxy 明细 + 当日 rollup；日限额的分子）

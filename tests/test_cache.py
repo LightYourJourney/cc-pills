@@ -4,8 +4,10 @@
 所有者是当前进程（跨用户预置的文件一律忽略）。token / theme 缓存来自磁盘，按不可信
 数据对待：控制字符不得进入状态栏输出。
 """
+import glob
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -13,7 +15,7 @@ import tempfile
 import time
 import unittest
 
-from _util import SCRIPT, tok_line
+from _util import SCRIPT, TOKENS, tok_line
 
 
 class CacheBase(unittest.TestCase):
@@ -237,6 +239,25 @@ class Lifecycle(CacheBase):
         for n in ('claude-sl-tok-live.cache', 'claude-sl-tok-live.cache.ts') + tuple(keep):
             self.assertTrue(os.path.exists(os.path.join(p, n)), f'{n} 不该被清理')
         self.assertTrue(os.path.exists(corrupt), '读不出的会话状态被误删（无法确认 transcript 已消失）')
+
+    def test_prune_covers_every_temp_file_name(self):
+        """被杀进程遗留的临时文件靠 .claude-sl-* 谓词回收：每个生产者的临时名都得落在里面。"""
+        src = os.path.dirname(SCRIPT)
+        names = [TOKENS.TMP_PREFIX + 'abc123']
+        for sh in glob.glob(os.path.join(src, '*.sh')):
+            with open(sh, encoding='utf-8') as f:
+                for tpl in re.findall(r'mktemp "[^"]*/([^"/]+)\.XXXXXX"', f.read()):
+                    names.append(re.sub(r'\$\{?\w+\}?', 'x', tpl) + '.abc123')
+        self.assertGreaterEqual(len(names), 4, '没扫到 mktemp 模板，正则该跟着改了')
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        for n in names:
+            with open(os.path.join(p, n), 'w') as fh:
+                fh.write('x\n')
+            self.old(os.path.join(p, n))
+        self.refresh(self.env)
+        left = [n for n in names if os.path.exists(os.path.join(p, n))]
+        self.assertEqual(left, [], '这些临时文件名不在每日清理的谓词里')
 
     def test_prune_threshold_is_exactly_30_days(self):
         """30 天是精确阈值：用落在 30~31 天之间的文件，-mtime 的整天取整会漏掉它。"""

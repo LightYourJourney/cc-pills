@@ -141,6 +141,15 @@ class Install(unittest.TestCase):
                       'install.sh 的 python 版本比较与 PY_MIN 不一致')
         self.assertIn(f'≥ {major}.{minor}', src, 'install.sh 的提示文案与 PY_MIN 不一致')
 
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受目录权限限制')
+    def test_copy_failure_exits_nonzero(self):
+        """目标目录写不进去时不能报成功：否则用户以为装好了，状态栏却还是旧的。"""
+        os.chmod(self.dest, 0o500)
+        r = self.run_sh()
+        os.chmod(self.dest, 0o700)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('安装失败', r.stderr)
+
     def test_low_python_is_refused(self):
         """安装时就该拦下 <3.9：装完才发现 token / 色板静默失效是最差的失败方式。"""
         b = os.path.join(self.d, 'bin')
