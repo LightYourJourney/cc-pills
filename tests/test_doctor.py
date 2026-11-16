@@ -1244,7 +1244,10 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(self.sb.run('--transcript', p), '数据/transcript'), 'PASS')
         r = self.sb.run('--dir', os.path.join(self.sb.d, 'missing'))
         self.assertEqual(self.sb.status(r, '缓存/git'), 'WARN')
-        self.assertEqual(self.sb.status(self.sb.run('--dir', REPO), '缓存/git'), 'PASS')
+        repo = os.path.join(self.sb.d, 'gitrepo')         # 自建仓库：源码树本身不一定是 git 检出（zip / tarball）
+        os.makedirs(repo)
+        subprocess.run(['git', 'init', '-q', '.'], cwd=repo, check=True)
+        self.assertEqual(self.sb.status(self.sb.run('--dir', repo), '缓存/git'), 'PASS')
 
     def test_render_path_never_calls_doctor(self):
         for name in ('statusline-command.sh', 'subagent-statusline.sh'):

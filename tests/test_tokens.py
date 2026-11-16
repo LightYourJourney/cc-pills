@@ -128,6 +128,73 @@ class Counting(Base):
         self.assertLess(time.time() - t0, 3.0)  # 共享预算约 1.2 s；6 倍则是 2.4 s+，3.0 s 仍能区分且容忍慢 runner
 
 
+class Incremental(Base):
+    """跨调用的增量扫描：游标续读、半行保留、去重表持久化、原地改写重扫、被杀只丢一片。"""
+
+    def io(self, tp, sid):
+        o = self.fields(self.run_tok(tp, sid).stdout)
+        return [o[IDX['in']], o[IDX['out']], o[IDX['msgs']]]
+
+    def test_appended_lines_are_counted_once(self):
+        tp = self.write('i1.jsonl', [line('a', 10, 5, 'end_turn'), line('b', 20, 7, 'end_turn')])
+        self.assertEqual(self.io(tp, 'i1'), ['30', '12', '2'])
+        with open(tp, 'a') as f:
+            f.write(line('c', 100, 1, 'end_turn') + '\n')
+        self.assertEqual(self.io(tp, 'i1'), ['130', '13', '3'], '追加的行没计入，或旧行被重复计')
+        self.assertEqual(self.state('i1')['files'][tp]['off'], os.path.getsize(tp))
+
+    def test_partial_last_line_waits_for_newline(self):
+        """写到一半的行留给下次：既不能丢，也不能在补全后被跳过。"""
+        tp = self.write('i2.jsonl', [line('a', 10, 5, 'end_turn')])
+        rest = line('b', 20, 7, 'end_turn')
+        with open(tp, 'a') as f:
+            f.write(rest[:40])
+        self.assertEqual(self.io(tp, 'i2'), ['10', '5', '1'])
+        with open(tp, 'a') as f:
+            f.write(rest[40:] + '\n')
+        self.assertEqual(self.io(tp, 'i2'), ['30', '12', '2'])
+
+    def test_dedup_survives_across_invocations(self):
+        """同一 message.id 的修正行出现在下一次调用里：靠持久化的去重表按差值修正，不重复累计。"""
+        tp = self.write('i3.jsonl', [line('a', 10, 5, None)])
+        self.assertEqual(self.io(tp, 'i3'), ['10', '5', '1'])
+        with open(tp, 'a') as f:
+            f.write(line('a', 10, 300, 'end_turn') + '\n')
+        self.assertEqual(self.io(tp, 'i3'), ['10', '300', '1'])
+
+    def test_in_place_rewrite_triggers_rescan(self):
+        """文件没变短但内容被原地改写（尾部指纹不符）：整体重扫，而不是从旧游标接着读。"""
+        tp = self.write('i4.jsonl', [line('a', 10, 5, 'end_turn'), line('b', 20, 7, 'end_turn')])
+        self.assertEqual(self.io(tp, 'i4'), ['30', '12', '2'])
+        size = os.path.getsize(tp)
+        # 指纹只看游标前 FP_BYTES 字节，所以改写要落在末行尾部（真实 transcript 的行尾是 uuid / 时间戳）
+        last = line('b', 88, 7, 'end_turn').replace('"cache_read_input_tokens": 0', '"cache_read_input_tokens": 9')
+        self.write('i4.jsonl', [line('a', 77, 5, 'end_turn'), last])
+        self.assertEqual(os.path.getsize(tp), size, '夹具前提：改写前后等长，只有指纹能发现')
+        self.assertEqual(self.io(tp, 'i4'), ['174', '12', '2'])
+
+    def test_progress_is_saved_after_each_chunk(self):
+        """约束 1：每片之后落盘。读到第 3 片时被杀，前两片的进度必须已经在状态文件里。"""
+        rows = [line(f'm{i}', 10, 1, 'end_turn') for i in range(9)]
+        tp = self.write('i5.jsonl', rows)
+        self.t.MAX_CHUNK = (len(rows[0]) + 1) * 3            # 每片正好 3 行
+        orig, n = self.t.scan_chunk, [0]
+
+        def killed(*a, **k):
+            n[0] += 1
+            if n[0] == 3:
+                raise KeyboardInterrupt
+            return orig(*a, **k)
+        self.t.scan_chunk = killed
+        sys.argv = ['x', tp, 'i5']
+        with self.assertRaises(KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+            self.t.main()
+        st = self.state('i5')
+        self.assertEqual(st['files'][tp]['off'], self.t.MAX_CHUNK * 2, '前两片的进度没有落盘')
+        self.assertEqual(st['in'], 60)
+        self.assertEqual(self.io(tp, 'i5'), ['90', '9', '9'], '从断点续读后总量不对')
+
+
 class Trackers(Base):
     def test_small_drop_decays_rate(self):
         st = {'trk': {}}

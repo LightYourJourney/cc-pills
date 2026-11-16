@@ -15,7 +15,7 @@ import tempfile
 import time
 import unittest
 
-from _util import SCRIPT, TOKENS, tok_line
+from _util import SCRIPT, TOKENS, Sandbox, strip, tok_line
 
 
 class CacheBase(unittest.TestCase):
@@ -408,6 +408,145 @@ class Hardening(CacheBase):
             toks = f.read()
         self.assertIn("os.environ.get('TMPDIR') or '/tmp'", toks)
         self.assertIn("f'claude-sl-{os.getuid()}'", toks)
+
+
+class RefreshState(unittest.TestCase):
+    """后台刷新的时间状态机：git 缓存的 TTL 与 HEAD 失效、残锁接管、色板失败退避、token 助手节流。
+
+    时间戳都在缓存文件内容里（git 缓存第 4 段、.fail、skip 文件），锁目录年龄用 mtime——
+    所以直接改文件就能构造「过去」，不需要 sleep，也不需要给脚本加时钟注入。
+    """
+
+    def setUp(self):
+        self.sb = Sandbox(conf_extra='status_page = off').__enter__()
+        self.addCleanup(self.sb.__exit__, None, None, None)
+        self.now = int(time.time())
+
+    def git_cache_path(self):
+        names = [f for f in os.listdir(self.sb.tmp) if f.startswith('claude-sl-git-')]
+        self.assertEqual(len(names), 1, names)
+        return os.path.join(self.sb.tmp, names[0])
+
+    def git_cache(self):
+        with open(self.git_cache_path()) as f:
+            return f.read().rstrip('\n').split('\t')
+
+    def plant_git_cache(self, branch, age):
+        """把 git 缓存改写成 <branch>、写入时刻 = age 秒前；.git 的 HEAD / index 推到更早。"""
+        with open(self.git_cache_path(), 'w') as f:
+            f.write(f'{self.sb.repo}\t{branch}\t-\t{self.now - age}\n')
+        for name in ('HEAD', 'index'):
+            p = os.path.join(self.sb.repo, '.git', name)
+            if os.path.exists(p):
+                os.utime(p, (self.now - 3600, self.now - 3600))
+
+    def fake_python(self, body):
+        """PATH 最前面放一个假 python3（留调用标记），返回 (环境变量, 标记文件)。"""
+        b = os.path.join(self.sb.dir, 'fakebin')
+        os.makedirs(b, exist_ok=True)
+        marker = os.path.join(self.sb.dir, 'python-calls')
+        with open(os.path.join(b, 'python3'), 'w') as f:
+            f.write(f'#!/bin/sh\necho x >> "{marker}"\n{body}\n')
+        os.chmod(os.path.join(b, 'python3'), 0o755)
+        return dict(self.sb.env, PATH=b + os.pathsep + self.sb.env['PATH']), marker
+
+    def calls(self, marker):
+        if not os.path.exists(marker):
+            return 0
+        with open(marker) as f:
+            return len(f.read().split())
+
+    # ── git 缓存 ─────────────────────────────────────────────────────────
+    def test_fresh_git_cache_is_reused(self):
+        """GIT_TTL 内且 HEAD / index 没动：不重算（git status 是后台刷新里最贵的一项）。"""
+        self.plant_git_cache('cached', age=0)
+        self.sb.refresh(self.sb.repo)
+        self.assertEqual(self.git_cache()[1], 'cached')
+
+    def test_git_cache_expires_after_ttl(self):
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo)
+        self.assertEqual(self.git_cache()[1], 'main', '超过 GIT_TTL 的 git 缓存没有重算')
+
+    def test_head_change_invalidates_git_cache_within_ttl(self):
+        """切分支后不等 TTL：HEAD 不比缓存旧就立即重算。"""
+        self.plant_git_cache('main', age=0)
+        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feature'], cwd=self.sb.repo, check=True)
+        self.sb.refresh(self.sb.repo)
+        self.assertEqual(self.git_cache()[1], 'feature', '切分支后 TTL 内没有重算')
+
+    def test_render_reads_git_cache(self):
+        """同步路径读的是缓存，不现算：缓存里写什么分支就显示什么。"""
+        self.plant_git_cache('from-cache', age=0)
+        self.assertIn('from-cache', strip(self.sb.render(self.sb.stdin())))
+
+    # ── 刷新锁 ───────────────────────────────────────────────────────────
+    def test_stale_refresh_lock_is_taken_over(self):
+        """被杀的刷新留下空锁目录：超过 LOCK_STALE 后接管，否则该会话后台永久停摆。"""
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-lk')
+        os.mkdir(lock)
+        os.utime(lock, (self.now - 3600, self.now - 3600))
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='lk')
+        self.assertEqual(self.git_cache()[1], 'main', '残锁没有被接管，刷新没跑')
+        self.assertFalse(os.path.exists(lock), '接管后的锁没有释放')
+
+    def test_live_refresh_lock_is_respected(self):
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-lk')
+        os.mkdir(lock)
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='lk')
+        self.assertEqual(self.git_cache()[1], 'stale', '锁还新鲜时不该并行再跑一轮刷新')
+        self.assertTrue(os.path.isdir(lock), '别人的锁被删了')
+
+    # ── 色板失败退避 ─────────────────────────────────────────────────────
+    def break_theme(self, fail_age):
+        tc = next(os.path.join(self.sb.tmp, f) for f in os.listdir(self.sb.tmp)
+                  if f.startswith('claude-sl-theme-') and f.endswith('.cache'))
+        with open(tc, 'w') as f:
+            f.write('THEME=bogus\n')
+        with open(tc + '.fail', 'w') as f:
+            f.write(f'{self.now - fail_age}\n')
+
+    def test_theme_failure_backs_off(self):
+        """色板生成刚失败过：THEME_TTL 内不再每轮重跑 python。"""
+        self.break_theme(fail_age=5)
+        env, marker = self.fake_python('exit 1')
+        self.sb.refresh(self.sb.repo, env=env)
+        self.assertEqual(self.calls(marker), 0, '退避期内仍然重跑了色板生成')
+
+    def test_theme_retries_after_backoff(self):
+        self.break_theme(fail_age=3600)
+        env, marker = self.fake_python('exit 1')
+        self.sb.refresh(self.sb.repo, env=env)
+        self.assertEqual(self.calls(marker), 1, '退避期过后没有重试色板生成')
+
+    # ── token 助手节流 ───────────────────────────────────────────────────
+    def test_token_helper_skipped_when_inputs_unchanged(self):
+        """输入没变且距上次不足 TOK_MIN_GAP：跳过 python；transcript 变了就再跑。"""
+        import sys
+        tp = os.path.join(self.sb.dir, 'gap.jsonl')
+        row = json.dumps({'type': 'assistant', 'timestamp': '2026-10-28T06:00:00Z',
+                          'message': {'id': 'm1', 'model': 'claude-opus-5-5', 'stop_reason': 'end_turn',
+                                      'usage': {'input_tokens': 10, 'output_tokens': 1,
+                                                'cache_creation_input_tokens': 0,
+                                                'cache_read_input_tokens': 0}}})
+        with open(tp, 'w') as f:
+            f.write(row + '\n')
+        env, marker = self.fake_python(f'exec "{sys.executable}" "$@"')
+
+        def run():
+            subprocess.run(['bash', SCRIPT, '--refresh', self.sb.repo, tp, 'gap', 'sub', '1.5'],
+                           env=env, capture_output=True)
+        run()
+        self.assertEqual(self.calls(marker), 1)
+        self.assertTrue(os.path.isfile(os.path.join(self.sb.tmp, 'claude-sl-tok-gap.cache')))
+        run()
+        self.assertEqual(self.calls(marker), 1, '输入没变却又跑了一次 token 助手')
+        with open(tp, 'a') as f:
+            f.write(row.replace('"m1"', '"m2"') + '\n')
+        run()
+        self.assertEqual(self.calls(marker), 2, 'transcript 变了却没有重跑 token 助手')
 
 
 if __name__ == '__main__':

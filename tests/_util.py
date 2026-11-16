@@ -76,7 +76,9 @@ class Sandbox:
         self.style, self.conf_extra, self.status = style, conf_extra, status
 
     def __enter__(self):
-        self.dir = tempfile.mkdtemp(prefix='ccpills-test-')
+        # realpath：macOS 的临时目录在 /var → /private/var 链接下，渲染侧 cd -P 后按物理路径取
+        # git 缓存键；不归一的话 refresh 写的键与渲染读的键对不上，每次渲染都走同步 git 回退
+        self.dir = os.path.realpath(tempfile.mkdtemp(prefix='ccpills-test-'))
         self.tmp = os.path.join(self.dir, 'slt')
         self.cfg = os.path.join(self.dir, 'cfg')
         self.repo = os.path.join(self.dir, 'demo')

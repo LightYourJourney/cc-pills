@@ -125,6 +125,14 @@ class Freshness(unittest.TestCase):
             self.assertIn('out 36m', strip(out))
             self.assertEqual(color_of(out, '3%'), sb.theme()['T_CRIT'])
 
+    def test_stale_status_page_is_hidden(self):
+        """状态页缓存超过 STATUS_STALE 就隐藏：拉取持续失败时，旧的「claude major」不能无限期滞留。"""
+        with Sandbox(status='major') as sb:
+            self.assertIn('claude major', strip(sb.render(sb.stdin('sp'))))
+            with open(os.path.join(sb.tmp, 'claude-sl-status.cache'), 'w') as f:
+                f.write(f'{int(time.time()) - 601}\tmajor\n')
+            self.assertNotIn('major', strip(sb.render(sb.stdin('sp'))))
+
 
 if __name__ == '__main__':
     unittest.main()
