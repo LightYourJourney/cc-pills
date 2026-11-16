@@ -44,11 +44,11 @@ jobs:
         run: |
           for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh; do bash -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
-      # 子集：平台敏感的缓存 / 面板 / 时效 / 安装 / 诊断。完整套件留在 macOS runner
-      # （golden 与配色矩阵是平台无关的纯计算，改它们时 macOS 作业会覆盖）。
-      - name: 平台敏感子集
+      # 全量：渲染 / tokens / 色板三个模块也要在这里的 bash 与 jq 版本上跑一遍
+      # （2026-11-17 裁定，此前只跑平台敏感子集）。
+      - name: 跑测试（全量，并发用例除外）
         env:
           # 该 runner 上两个独立进程能在约 2µs 内同时 mkdir 同一条路径成功（实测，见
           # docs/DECISIONS.md），锁语义无法在这里验证；并发用例仍由 macOS 全量覆盖。
           CCPILLS_SKIP_CONCURRENCY: '1'
-        run: bash run_tests.sh cache subagent freshness install doctor
+        run: bash run_tests.sh

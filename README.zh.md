@@ -40,7 +40,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 |---|---|---|
 | macOS + Homebrew bash 5.x | 是 | 主目标 |
 | macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
-| Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑平台敏感子集（并发写面板状态除外）；无 iTerm profile 时用内置主题 |
+| Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑全量（并发写面板状态除外）；无 iTerm profile 时用内置主题 |
 | bash 4.2–4.4 | 是 | 源码编译 bash 4.2.0 后跑当时全量 197 项通过；顺带修掉 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异。用例增多后未重新跑 4.2 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
@@ -194,7 +194,7 @@ tools/preview.sh              并排预览
 tools/doctor.sh               只读诊断（入口）
 tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
-.github/workflows/tests.yml   CI：macOS 全量 + Linux 平台敏感子集
+.github/workflows/tests.yml   CI：macOS 与 Linux 全量
 install.sh  run_tests.sh
 ```
 
@@ -206,8 +206,7 @@ bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / s
 UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
 ```
 
-CI 在 macOS 上跑全量；另有 `ubuntu-latest` 作业跑平台敏感子集（cache / subagent /
-freshness / install / doctor）。Linux 与 bash 4.2 的实测结论见上面的兼容性矩阵；其中
+CI 在 macOS 与 `ubuntu-latest` 上都跑全量。Linux 与 bash 4.2 的实测结论见上面的兼容性矩阵；其中
 「多进程并发写面板状态」用例在 ubuntu runner 上跳过——该 runner 的跨进程 `mkdir`
 可见性异常，锁语义无法在那里验证（证据见 [docs/DECISIONS.md](docs/DECISIONS.md)）。
 
