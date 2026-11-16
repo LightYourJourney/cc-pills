@@ -146,6 +146,18 @@ if [ -z "$FACTS_SRC" ] || [ -z "$PANEL_SRC" ]; then
   echo "渲染脚本答不出自述信息（--facts）：$DEST 与 $REPO/src 里的脚本都不可用" >&2
   exit 1
 fi
+# 首行报版本：已安装副本的；判据若取自仓库源文件（没装 / 旧版答不出）就是仓库的。两者不同
+# 时都给出来——「装的是哪一版」是排查的第一个问题。
+if [ "$FACTS_SRC" = "$REPO/src/statusline-command.sh" ]; then
+  printf 'cc-pills %s （取自仓库源文件：已安装副本缺失或答不出 --facts）\n' "${F_version:-未标版本}"
+else
+  R_version=""; load_facts "$REPO/src/statusline-command.sh" R_ || true
+  if [ -n "$R_version" ] && [ "$R_version" != "${F_version:-}" ]; then
+    printf 'cc-pills %s （已安装副本；仓库 %s）\n' "${F_version:-未标版本}" "$R_version"
+  else
+    printf 'cc-pills %s （已安装副本）\n' "${F_version:-未标版本}"
+  fi
+fi
 CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
 TOK_FIELDS=$F_tok_fields; BASH_MIN=$F_bash_min; PY_MIN=$F_py_min

@@ -160,6 +160,7 @@ fi
 # 后台临时文件另用 mktemp（O_EXCL），防止共享 /tmp 里的符号链接预置。
 umask 077
 
+VERSION=1.0.0            # 发布版本（与 git tag v<版本> 对应）；诊断工具经 --facts 报出，提 issue 时带上
 # ── 可调参数 ────────────────────────────────────────────────────────────
 THEME=auto               # auto | tokyonight | dracula | catppuccin | onedark | nord
 GLYPHS=nerd              # nerd | ascii（终端字体没有 Nerd Font 时用 ascii）
@@ -335,7 +336,7 @@ if [ "${1:-}" = --facts ]; then
   slt_explicit=0; [ -n "${CLAUDE_SL_TMP:-}" ] && slt_explicit=1
   relay=0; relay_env && relay=1
   set -- $F_TOK
-  printf '%s\n' "cc-pills-facts=1" \
+  printf '%s\n' "cc-pills-facts=1" "version=$VERSION" \
     "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" \
     "conf=$SL_CONF" "conf_readable=$CONF_READ" "conf_unknown=${CONF_UNKNOWN# }" "conf_bad=${CONF_BAD# }" \
     "theme=$THEME" "pill_style=$PILL_STYLE" "pill_chroma=$PILL_CHROMA" "status_page=$STATUS_PAGE" \

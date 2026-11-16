@@ -142,7 +142,8 @@ bash tools/doctor.sh                                      # alias: bash install.
 bash tools/doctor.sh --transcript ~/.claude/projects/<project>/<session>.jsonl
 ```
 
-One line per check — `[PASS] group/item  detail` — with PASS / WARN / FAIL / SKIP / UNKNOWN
+The first line is the version (the installed copy's; both when it differs from the repo) —
+please include it in bug reports. Then one line per check — `[PASS] group/item  detail` — with PASS / WARN / FAIL / SKIP / UNKNOWN
 (UNKNOWN = undecidable without runtime stdin, SKIP = not applicable), a summary line, and a
 `修:` (fix) line whenever something needs doing. Exit code 0 = no FAIL, 1 = some FAIL or the
 diagnostic modules cannot load, 2 = bad arguments.

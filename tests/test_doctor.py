@@ -674,6 +674,22 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '已安装副本答不出时应回落到仓库源文件')
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
 
+    def test_reports_installed_version(self):
+        """提 issue 时要能说清装的是哪一版：首行给出已安装副本的版本；与仓库不同时两个都给。"""
+        self.sb.install()
+        first = self.sb.run().stdout.splitlines()[0]
+        self.assertRegex(first, r'^cc-pills \d+\.\d+\.\d+ ')
+        self.assertNotIn('仓库', first)
+        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
+        with open(inst) as f:
+            src = f.read()
+        os.remove(inst)
+        with open(inst, 'w') as f:
+            f.write(re.sub(r'(?m)^VERSION=\S+', 'VERSION=0.0.7', src, count=1))
+        first = self.sb.run().stdout.splitlines()[0]
+        self.assertIn('cc-pills 0.0.7 ', first)
+        self.assertRegex(first, r'仓库 \d+\.\d+\.\d+')
+
     def test_config_last_line_without_newline_is_checked(self):
         """末行没有换行符也要解析：渲染侧会读它，诊断不能漏看这一行。"""
         self.sb.install()

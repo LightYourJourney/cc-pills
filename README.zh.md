@@ -127,6 +127,7 @@ bash tools/doctor.sh                                      # 或 bash install.sh 
 bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   # 连某个会话一起查
 ```
 
+首行是版本（已安装副本的；与仓库不同时两个都给），提 issue 时请带上。之后
 每行一个结论：`[PASS] 分组/项  说明`，状态为 PASS / WARN / FAIL / SKIP / UNKNOWN
 （UNKNOWN = 取决于运行时 stdin，命令行里无法判定；SKIP = 不适用），末行汇总。
 退出码：0 无 FAIL；1 有 FAIL 或诊断模块无法加载；2 参数错误。需要处理时下方会给出可直接照做的「修：」。
