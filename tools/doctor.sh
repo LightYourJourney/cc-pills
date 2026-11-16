@@ -168,6 +168,7 @@ CFG_BAD=${F_conf_bad:+ $F_conf_bad}; CFG_UNKNOWN=${F_conf_unknown:+ $F_conf_unkn
 . "$REPO/tools/lib/points_to.sh" || { echo "缺少 $REPO/tools/lib/points_to.sh" >&2; exit 1; }
 
 for _m in env install cache data; do
+  # shellcheck source=/dev/null
   . "$DOCTOR_LIB/$_m.sh" || { echo "诊断模块加载失败：$DOCTOR_LIB/$_m.sh" >&2; exit 1; }
 done
 

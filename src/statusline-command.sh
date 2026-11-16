@@ -461,6 +461,7 @@ if [ "${1:-}" = "--refresh" ]; then
     fi
   fi
 
+  # shellcheck disable=SC2164  # cd 失败就留在原地：dir 是同步路径 cd -P 之后传来的，git_data 照样能跑
   [ -n "$dir" ] && cd "$dir" 2>/dev/null
   pathkey "$dir"; key=$PK
   # git：缓存不足 GIT_TTL 秒且 .git/HEAD、.git/index 都没在缓存之后改过 → 跳过（本仓库
@@ -621,6 +622,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
 # 变量名单只写一份，顺序与上面 jq 数组一致；read 与占位符清空共用
 F_STDIN="dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid
   sp sparg spper spusd splim"
+# shellcheck disable=SC2229  # 有意展开成变量名单
 IFS=$'\t' read -r $F_STDIN <<< "$fields"
 for v in $F_STDIN; do
   [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
@@ -659,6 +661,7 @@ if [ "$NC" = 0 ]; then
 fi
 
 # ── 目录归一化 ─────────────────────────────────────────────────────────
+# shellcheck disable=SC2164  # 两个 cd 都失败也要继续渲染（约束 2：静默降级）
 { [ -n "$dir" ] && cd -P "$dir" 2>/dev/null; } || cd -P . 2>/dev/null
 dir=$PWD                                 # cd -P 后 PWD 即物理路径（约束 17：不 fork pwd）
 
@@ -695,6 +698,7 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
   fi
 fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
+  # shellcheck disable=SC2229  # 有意展开成变量名单
   IFS=$'\t' read -r $F_TOK < "$tokf"
 fi
 for v in $F_TOK; do

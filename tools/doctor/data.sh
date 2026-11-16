@@ -19,7 +19,7 @@ mkfx() {   # mkfx <current_dir> <ctx 总输入> <已用%> <模型名> <费用> [
 runfx() {  # runfx <夹具> → 全局 RUNOUT（固定在同一目录执行）
   RUNOUT=$( cd "$scratch" 2>/dev/null && printf '%s' "$1" | \
             CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
-            TERM_PROGRAM= LC_TERMINAL= bash "$smoke" 2>/dev/null )
+            TERM_PROGRAM='' LC_TERMINAL='' bash "$smoke" 2>/dev/null )
 }
 if [ ! -f "$smoke" ]; then
   res SKIP 数据/stdin "找不到可执行的 statusline-command.sh"

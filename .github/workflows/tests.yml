@@ -44,6 +44,12 @@ jobs:
         run: |
           for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh; do bash -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
+      # SC2034 / SC2154（未用 / 未赋值）整类关掉：变量靠 read 名单、printf -v 与跨文件 source 赋值，
+      # shellcheck 跟不到；其余 warning 要么改掉，要么在行内写明理由后豁免。
+      - name: shellcheck
+        run: |
+          shellcheck --version | sed -n 2p
+          shellcheck -s bash -S warning -e SC2034,SC2154 src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh
       # 全量：渲染 / tokens / 色板三个模块也要在这里的 bash 与 jq 版本上跑一遍
       # （2026-11-17 裁定，此前只跑平台敏感子集）。
       - name: 跑测试（全量，并发用例除外）
