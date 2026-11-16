@@ -553,10 +553,11 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
   ] | map(tostring | gsub("[\t\n]"; " ") | if . == "" then "-" else . end)   # 空串也占位（// 只管 null）
     | join("\t")' 2>/dev/null <<< "$input")
 
-IFS=$'\t' read -r dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid \
-  sp sparg spper spusd splim <<< "$fields"
-for v in dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid \
-  sp sparg spper spusd splim; do
+# 变量名单只写一份，顺序与上面 jq 数组一致；read 与占位符清空共用
+F_STDIN="dir model eff ctx ctxlv ctxin q5 q5r q5arg q7 q7r q7arg costraw apidur cache recache hit hit0 tp sid
+  sp sparg spper spusd splim"
+IFS=$'\t' read -r $F_STDIN <<< "$fields"
+for v in $F_STDIN; do
   [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
 done
 # 模式（见头部「费用口径」）：有 5h / 7d → 订阅；否则非官方 ANTHROPIC_BASE_URL → 中转站；都没有 → 订阅
@@ -630,8 +631,10 @@ gstatus=${gstatus//[[:cntrl:]]/}
 
 # ── token / 节奏 / 中转站缓存（十八段，见 statusline-tokens.py）──────────
 skey=${sid//\//_}; skey=${skey// /_}
-t_in="" t_out="" p_rate="" comp="" q5lv="" q5out="" q7lv="" q7out="" dlv="" dout=""
-r_cost="" r_unpriced="" r_today="" r_limit="" t_hit="" splv="" spout="" msgs=""
+# 变量名单只写一份，顺序以 statusline-tokens.py 的 FIELDS 为准（tests/test_tokens.py 的契约测试守护）
+F_TOK="t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout
+  r_cost r_unpriced r_today r_limit t_hit splv spout msgs"
+for v in $F_TOK; do printf -v "$v" '%s' ''; done
 tokf="${SLT}/claude-sl-tok-${skey}.cache"
 tok_ok=1
 # 新鲜度：生产者写 <cache>.ts。超过 TOK_STALE 秒不读派生值（$/h、out、等级、hit、io、
@@ -648,10 +651,9 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
   fi
 fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
-  IFS=$'\t' read -r t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout \
-    r_cost r_unpriced r_today r_limit t_hit splv spout msgs < "$tokf"
+  IFS=$'\t' read -r $F_TOK < "$tokf"
 fi
-for v in t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout r_cost r_unpriced r_today r_limit t_hit splv spout msgs; do
+for v in $F_TOK; do
   [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
   printf -v "$v" '%s' "${!v//[[:cntrl:]]/}"       # 约束 16：缓存内容同样不可信
 done
