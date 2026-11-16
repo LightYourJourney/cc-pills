@@ -40,7 +40,7 @@ DEST=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 
 # 诊断自己的阈值（渲染侧没有对应常量）
 PANEL_FAIL_STALE=86400  # 面板写回失败标记超过此秒数视为「此后没有写回尝试」
-FACTS_V=1               # 本工具读得懂的自述格式版本（渲染脚本 --facts 的首行）
+FACTS_V=2               # 本工具读得懂的自述格式版本（渲染脚本 --facts 的首行）
 
 DIR=$PWD
 TRANSCRIPT=""
@@ -160,7 +160,7 @@ else
 fi
 CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
-TOK_FIELDS=$F_tok_fields; BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
+BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
 C_THEME=$F_theme; C_CHROMA=$F_pill_chroma; C_STYLE=$F_pill_style; C_PAGE=$F_status_page
 CFG_READABLE=$F_conf_readable
 CFG_BAD=${F_conf_bad:+ $F_conf_bad}; CFG_UNKNOWN=${F_conf_unknown:+ $F_conf_unknown}

@@ -9,6 +9,7 @@
   sp=<已用%>,<resets_at>,<period>  网关花费限额（rate_limits.spend_limit；period = daily|weekly|monthly）
   relay=<cc-switch.db>   中转站模式：读 CC Switch 账本（见 4）
   th=<WARN_AT>,<BAD_AT>  告警阈值（与 bash 侧同源）
+  fmt=<版本>             输出格式版本，原样写进首行（版本号只在 bash 侧 TOK_V 一处维护）
 环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 ${TMPDIR:-/tmp}/claude-sl-<uid>；
 预览与测试用它隔离）
 
@@ -60,10 +61,12 @@
      不用 stdin 的 prompt_cache.hit_ratio：那是每个 Claude Code 进程各自的统计，
      /restart 或 resume 后从零开始，读数不代表会话。
 
-输出单行、tab 分隔的十八段纯文本，不可得的段写 "-"（bash 侧 IFS=tab read 需占位）：
-  总输入 输出 $/h compact次数 5h等级 5h用完倒计时 7d等级 7d用完倒计时 日等级 日用完倒计时
-  中转站会话花费 未计价消息数 中转站今日 日限额 命中率%（一位小数）
-  花费限额等级 花费限额用完倒计时 消息数
+输出：首行 TOK=<fmt>，其后每行「键=值」，键见 FIELDS；拿不到的指标整行不写（不用占位符）。
+bash 侧按键名取值、不认识的键忽略，所以新增指标只是多一行；首行与它的 TOK_V 不符（别的
+版本写的缓存）则整份不读。各键：
+  in / out 总输入、输出    rate $/h    comp compact 次数    hit 命中率%（一位小数）    msgs 消息数
+  q5lv q5out / q7lv q7out / dlv dout / splv spout   5h、7d、中转站日限额、网关花费限额的等级与用完倒计时
+  rcost 中转站会话花费    runpriced 未计价消息数    rtoday 中转站今日    rlimit 日限额
 （等级 ∈ ok / warn / high / bad，见 5）。transcript 未追平或任何异常时输出空——bash 侧
 保留旧缓存（其约束 10），表现为数字停在上一次的值；超过 TOK_STALE 秒后由 bash 侧丢弃
 派生项、只保留 stdin 的额度百分比。
@@ -133,7 +136,7 @@ KEYS = ('in', 'out', 'cw', 'cr')
 U_MODEL, U_IN, U_OUT, U_CR, U_CW, U_CW1, U_TS, U_DIRECT = range(8)
 # 状态文件的临时名：落在 .claude-sl-* 下，被杀进程的遗留由主栏每日清理收走
 TMP_PREFIX = '.claude-sl-state.'
-# 输出字段顺序：bash 的 IFS=tab read、tests/_util.py、tools/preview.sh 都以它为准
+# 输出的键（各自一行「键=值」）；bash 侧的 TOK_MAP 要认全这些键，由 tests/test_tokens.py 的契约测试守护
 FIELDS = ('in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 'dout',
           'rcost', 'runpriced', 'rtoday', 'rlimit', 'hit', 'splv', 'spout', 'msgs')
 
@@ -739,7 +742,10 @@ def main():
     else:
         d['splv'] = d['spout'] = '-'
     d['msgs'] = str(sum(fs.get('msgs', 0) for fs in st['files'].values()))   # 消息数（见 1 的计数）
-    print('\t'.join(d[f] for f in FIELDS))
+    print(f"TOK={kv.get('fmt', '0')}")
+    for f in FIELDS:
+        if d[f] != '-':
+            print(f'{f}={d[f]}')
 
 
 if __name__ == '__main__':

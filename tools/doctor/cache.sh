@@ -83,8 +83,8 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
   [ -O "$f" ] || tok_notmine=$((tok_notmine + 1))
-  _parts=(); IFS=$'\t' read -r -a _parts < "$f" 2>/dev/null
-  [ "${#_parts[@]}" -eq "$TOK_FIELDS" ] || tok_malformed=$((tok_malformed + 1))
+  _first=""; read -r _first < "$f" 2>/dev/null    # 首行是格式版本；不符的缓存渲染侧整份不读
+  [ "$_first" = "TOK=$F_tok_v" ] || tok_malformed=$((tok_malformed + 1))
   ts=$f.ts
   if [ -f "$ts" ] && [ ! -L "$ts" ] && [ -O "$ts" ]; then
     tv=""; read -r tv < "$ts"
@@ -111,8 +111,8 @@ else
   if [ "$tok_notmine" -gt 0 ]; then
     res WARN 缓存/token "$tok_n 个缓存里有 $tok_notmine 个不属于当前用户，会被跳过" "rm -f \"$SLT\"/claude-sl-tok-*"
   elif [ "$tok_malformed" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_malformed 个缓存不是 $TOK_FIELDS 段（被截断或旧格式）：对应派生项会错位或消失" \
-      "删掉该会话的 token 缓存，后台会整段重算"
+    res WARN 缓存/token "有 $tok_malformed 个缓存不是当前格式（首行应为 TOK=${F_tok_v}；旧版留下的或被截断）：渲染侧整份不读，派生项消失" \
+      "回到那个会话让它刷新一次即可重写；已结束的会话留着无害，30 天后自动清理"
   elif [ "$tok_tsbad" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"

@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from _util import FIELDS, IDX, REPO, SRC
+from _util import FIELDS, IDX, RENDERER_FACTS, REPO, SRC
 
 PATH = os.path.join(SRC, 'statusline-tokens.py')
 
@@ -48,7 +48,12 @@ class Base(unittest.TestCase):
         return subprocess.run([sys.executable, PATH, tp, sid, *args], capture_output=True, text=True, env=self.env)
 
     def fields(self, stdout):
-        return stdout.rstrip('\n').split('\t')
+        """「键=值」输出 → 按 FIELDS 排好的列表（没输出的键记 '-'）；整体无输出返回 []。"""
+        if not stdout.strip():
+            return []
+        kv = dict(l.split('=', 1) for l in stdout.splitlines())
+        self.assertEqual(set(kv) - set(FIELDS), {'TOK'}, '输出了 FIELDS 之外的键，或缺格式版本行')
+        return [kv.get(k, '-') for k in FIELDS]
 
     def state(self, sid):
         with open(os.path.join(self.d, f'claude-statusline-{sid}.json')) as f:
@@ -88,9 +93,17 @@ class Counting(Base):
         self.assertEqual([o[IDX['in']], o[IDX['out']]], ['10', '5'])
         self.assertEqual(r.stderr, '')
 
-    def test_eighteen_fields(self):
+    def test_output_is_versioned_key_value_lines(self):
+        """首行是调用方传入的格式版本（版本号只在 bash 一处维护），其后每行「键=值」；
+        拿不到的指标整行不写，不用占位符。"""
         tp = self.write('d.jsonl', [line('m1', 1, 1, 'end_turn')])
-        self.assertEqual(len(self.fields(self.run_tok(tp, 'c4').stdout)), len(FIELDS))
+        out = self.run_tok(tp, 'c4', 'fmt=7').stdout.splitlines()
+        self.assertEqual(out[0], 'TOK=7')
+        kv = dict(l.split('=', 1) for l in out[1:])
+        self.assertEqual((kv['in'], kv['out'], kv['msgs']), ('1', '1', '1'))
+        self.assertLessEqual(set(kv), set(FIELDS))
+        self.assertNotIn('-', kv.values())
+        self.assertNotIn('q5lv', kv, '没给 5h 额度却输出了等级')
 
     def test_message_count_by_id_changes(self):
         """同一 id 的多行只计一次；id 连续变化逐个计；subagent 也计入。"""
@@ -507,38 +520,24 @@ class DailyLimit(Base):
         self.assertEqual(self.probe(os.path.join(self.d, 'nope.db')), '', '打不开的库应当无输出')
 
 
-# FIELDS 里各段在 bash 侧对应的变量名（顺序由 FIELDS 决定，见下一个用例）
-BASH_NAMES = {'in': 't_in', 'out': 't_out', 'rate': 'p_rate', 'comp': 'comp',
-              'q5lv': 'q5lv', 'q5out': 'q5out', 'q7lv': 'q7lv', 'q7out': 'q7out',
-              'dlv': 'dlv', 'dout': 'dout', 'rcost': 'r_cost', 'runpriced': 'r_unpriced',
-              'rtoday': 'r_today', 'rlimit': 'r_limit', 'hit': 't_hit',
-              'splv': 'splv', 'spout': 'spout', 'msgs': 'msgs'}
-
-
 class TokenProtocol(unittest.TestCase):
-    """18 段 token 缓存的跨语言契约：生产者、bash 消费者与预览假数据必须同数同序。"""
+    """token 缓存的跨语言契约：生产者能写的键，渲染脚本与预览假数据都要认。"""
 
-    def test_preview_fake_tokens_match_protocol(self):
-        """preview.sh 的假缓存必须同为 18 段、末段真的是消息数——曾停在 17 段，预览里看不到 m517。"""
+    def test_renderer_reads_every_key_the_producer_emits(self):
+        self.assertEqual(RENDERER_FACTS['tok_keys'].split(), list(FIELDS),
+                         'statusline-tokens.py 的 FIELDS 与渲染脚本的 TOK_MAP 不一致')
+
+    def test_preview_fake_tokens_use_known_keys(self):
+        """preview.sh 的假缓存只能用 FIELDS 里的键，且要带消息数——曾少一段，预览里看不到 m517。"""
         with open(os.path.join(REPO, 'tools', 'preview.sh')) as f:
             src = f.read()
         block = re.search(r'^SCENES=\((.*?)^\)', src, re.S | re.M).group(1)
         scenes = [l for l in block.splitlines() if '|' in l]
         self.assertTrue(scenes, '没找到 preview.sh 的场景表')
-        for line in scenes:
-            tok = line.split('|')[-1]
-            self.assertEqual(tok.count('${T}') + 1, len(FIELDS), line.strip())
-            last = tok.rsplit('${T}', 1)[-1].strip().strip('"')
-            self.assertNotEqual(last, '-', f'末段应是消息数，不是占位：{line.strip()}')
-
-    def test_bash_reads_fields_in_order(self):
-        """bash 侧的 IFS=tab read 必须按 FIELDS 的顺序取变量，字段重排时这里先红。"""
-        with open(os.path.join(SRC, 'statusline-command.sh')) as f:
-            src = f.read()
-        m = re.search(r'^F_TOK="(.*?)"', src, re.S | re.M)
-        self.assertIsNotNone(m, '没找到 bash 侧的 token 缓存变量名单 F_TOK')
-        got = m.group(1).split()
-        self.assertEqual(got, [BASH_NAMES[f] for f in FIELDS], 'bash read 的字段顺序必须与 FIELDS 一致')
+        for l in scenes:
+            keys = [w.split('=', 1)[0] for w in l.split('|')[-1].strip().strip('"').split()]
+            self.assertLessEqual(set(keys), set(FIELDS), l.strip())
+            self.assertIn('msgs', keys, l.strip())
 
 
 class ConfigProtocol(unittest.TestCase):

@@ -182,7 +182,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Palette generation failing (backing off) | WARN | `缓存/退避` |
 | Status page cache older than 10 min / corrupt / missing indicator / not a regular file | WARN | `缓存/状态页` |
 | Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
-| Token cache not 18 fields | WARN | `缓存/token` |
+| Token cache in another format version (left by an older install, or truncated) | WARN | `缓存/token` |
 | Token cache is a symlink (ignored) | WARN | `缓存/token` |
 | Refresh lock occupied by a plain file / symlink (cleared and retried in the same pass) | FAIL | `缓存/锁` |
 | Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |

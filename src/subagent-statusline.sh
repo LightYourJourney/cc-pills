@@ -79,7 +79,7 @@ else
 fi
 # 自述模式：把状态文件路径报给仓库里的诊断工具（它不必再抄一份路径规则）。只读，不建目录。
 if [ "${1:-}" = --facts ]; then
-  printf '%s\n' "cc-pills-facts=1" "state=$STATE" "state_explicit=$([ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ] && echo 1 || echo 0)"
+  printf '%s\n' "cc-pills-facts=2" "state=$STATE" "state_explicit=$([ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ] && echo 1 || echo 0)"
   exit 0
 fi
 

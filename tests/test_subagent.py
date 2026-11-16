@@ -311,7 +311,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(tmp)
         f = self.panel_facts({'TMPDIR': tmp + os.sep})
         root = os.path.join(tmp, f'claude-sl-{os.getuid()}')
-        self.assertEqual(f, {'cc-pills-facts': '1', 'state_explicit': '0',
+        self.assertEqual(f, {'cc-pills-facts': '2', 'state_explicit': '0',
                              'state': os.path.join(root, f'claude-subagent-sl-{os.getuid()}.json')})
         self.assertEqual(os.listdir(tmp), [], '自述模式建了缓存目录')
         slt = os.path.join(self.d, 'slt')

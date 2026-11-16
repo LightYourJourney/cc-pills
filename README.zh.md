@@ -166,7 +166,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 | 色板生成失败（仍在退避） | WARN | `缓存/退避` |
 | 状态页缓存超过 10 分钟 / 格式损坏 / 缺少 indicator / 不是普通文件 | WARN | `缓存/状态页` |
 | token 缓存超过 15 分钟（按 `.ts` 或文件 mtime 计） | WARN | `缓存/token` |
-| token 缓存字段数不是 18 | WARN | `缓存/token` |
+| token 缓存不是当前格式版本（旧版留下的 / 被截断） | WARN | `缓存/token` |
 | token 缓存是符号链接（会被忽略） | WARN | `缓存/token` |
 | 刷新锁被普通文件 / 符号链接占住（当轮先清掉再抢锁） | FAIL | `缓存/锁` |
 | 刷新锁是非空目录（不会自愈，后台刷新永久退出） | FAIL | `缓存/锁` |

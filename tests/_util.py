@@ -64,9 +64,15 @@ FIELDS = list(TOKENS.FIELDS)
 IDX = {k: i for i, k in enumerate(FIELDS)}
 
 
+# 渲染脚本自述（--facts）：token 缓存的格式版本等不在测试里另抄一份
+RENDERER_FACTS = dict(l.split('=', 1) for l in subprocess.run(
+    ['bash', SCRIPT, '--facts'], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.splitlines()
+    if '=' in l)
+
+
 def tok_line(**kw):
-    """18 段 token 缓存（见 statusline-tokens.py 文档）。"""
-    return '\t'.join(str(kw.get(k, '-')) for k in FIELDS) + '\n'
+    """token 缓存（见 statusline-tokens.py 文档）：首行格式版本，其后每行「键=值」，没有的键不写。"""
+    return f"TOK={RENDERER_FACTS['tok_v']}\n" + ''.join(f'{k}={v}\n' for k, v in kw.items())
 
 
 class Sandbox:

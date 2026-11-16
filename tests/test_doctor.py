@@ -17,7 +17,7 @@ import tempfile
 import time
 import unittest
 
-from _util import REPO, THEME, TOKENS
+from _util import REPO, THEME, TOKENS, tok_line
 
 DOCTOR = os.path.join(REPO, 'tools', 'doctor.sh')
 DOCTOR_LIB = os.path.join(REPO, 'tools', 'doctor')
@@ -120,7 +120,7 @@ class DoctorSandbox:
         if tok_age is not None:
             p = os.path.join(self.cache, 'claude-sl-tok-doctor.cache')
             with open(p, 'w') as f:
-                f.write('-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t98.0\t-\t-\t12\n')
+                f.write(tok_line(hit='98.0', msgs='12'))
             ts = os.path.join(self.cache, 'claude-sl-tok-doctor.cache.ts')
             with open(ts, 'w') as f:
                 f.write(f'{int(time.time() - tok_age)}\n')
@@ -604,14 +604,15 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
         self.assertIn('indicator', self.sb.detail(r, '缓存/状态页'))
 
-    def test_truncated_token_cache_is_flagged(self):
-        """字段数不对的缓存会让派生项错位/消失，不能只看时间戳。"""
+    def test_token_cache_in_another_format_is_flagged(self):
+        """首行不是当前格式版本的缓存（旧版留下的、被截断的）渲染侧整份不读，不能只看时间戳。"""
         env = self.sb.healthy()
-        with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache'), 'w') as f:
-            f.write('-\t-\t-\n')
-        r = self.sb.run(env=env)
-        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
-        self.assertIn('18', self.sb.detail(r, '缓存/token'))
+        for body in ('-\t-\t-\n', 'TOK=999\nhit=98.0\n', ''):
+            with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache'), 'w') as f:
+                f.write(body)
+            r = self.sb.run(env=env)
+            self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN', repr(body))
+            self.assertIn('格式', self.sb.detail(r, '缓存/token'))
 
     def test_corrupt_ts_is_reported_as_stale(self):
         """渲染侧把非数字 .ts 判为陈旧；doctor 按 .ts 的 mtime 回退会漏报，必须同样判陈旧。"""

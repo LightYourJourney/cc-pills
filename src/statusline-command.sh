@@ -25,7 +25,7 @@
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     $SLT/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
 #                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
-#     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的十八段输出，见其文档；
+#     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的输出：首行 TOK=<TOK_V>，其后每行「键=值」；
 #                                           旁的 .cache.ts 是写入时刻，超过 TOK_STALE 秒
 #                                           同步路径丢弃派生项，只保留 stdin 的额度百分比）
 #     $SLT/claude-sl-status.cache          （拉取时刻 epoch \t indicator，全会话共享）
@@ -186,9 +186,9 @@ CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存与残留临时
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
 PY_MIN=3.9               # 两个 python 助手要求的最低版本（str.removesuffix 是 3.9，math.dist 是 3.8）
-# token 缓存各段的变量名，顺序以 statusline-tokens.py 的 FIELDS 为准（tests/test_tokens.py 的契约测试守护）
-F_TOK="t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout
-  r_cost r_unpriced r_today r_limit t_hit splv spout msgs"
+TOK_V=1                  # token 缓存格式版本：键的含义变了就 +1，首行不符的缓存整份不读
+# token 缓存「键:本脚本的变量名」（键见 statusline-tokens.py 的 FIELDS，契约测试守护）。必须写在一行里。
+TOK_MAP=" in:t_in out:t_out rate:p_rate comp:comp q5lv:q5lv q5out:q5out q7lv:q7lv q7out:q7out dlv:dlv dout:dout rcost:r_cost runpriced:r_unpriced rtoday:r_today rlimit:r_limit hit:t_hit splv:splv spout:spout msgs:msgs "
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
 # 否则用每用户私有目录 $TMPDIR/claude-sl-<uid>（0700），不再落到共享 /tmp。
 # 根必须是本人拥有的真实目录：符号链接（哪怕是本人建的）一律不跟随。
@@ -335,8 +335,8 @@ if [ "${1:-}" = --facts ]; then
   load_palette
   slt_explicit=0; [ -n "${CLAUDE_SL_TMP:-}" ] && slt_explicit=1
   relay=0; relay_env && relay=1
-  set -- $F_TOK
-  printf '%s\n' "cc-pills-facts=1" "version=$VERSION" \
+  tok_keys=""; for m in $TOK_MAP; do tok_keys="$tok_keys ${m%%:*}"; done
+  printf '%s\n' "cc-pills-facts=2" "version=$VERSION" \
     "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" \
     "conf=$SL_CONF" "conf_readable=$CONF_READ" "conf_unknown=${CONF_UNKNOWN# }" "conf_bad=${CONF_BAD# }" \
     "theme=$THEME" "pill_style=$PILL_STYLE" "pill_chroma=$PILL_CHROMA" "status_page=$STATUS_PAGE" \
@@ -344,7 +344,7 @@ if [ "${1:-}" = --facts ]; then
     "theme_cache=$THEME_CACHE" "theme_want=$THEME_WANT" \
     "palette_usable=$PAL_OK" "color_depth=$CDEPTH" \
     "theme_ttl=$THEME_TTL" "tok_stale=$TOK_STALE" "status_stale=$STATUS_STALE" "lock_stale=$LOCK_STALE" \
-    "tok_fields=$#" "relay_env=$relay" "ccswitch_db=$CCSWITCH_DB"
+    "tok_v=$TOK_V" "tok_keys=${tok_keys# }" "relay_env=$relay" "ccswitch_db=$CCSWITCH_DB"
   exit 0
 fi
 
@@ -492,7 +492,7 @@ if [ "${1:-}" = "--refresh" ]; then
     cache_ok "$skipf" && IFS=$'\t' read -r lsig lts < "$skipf"
     case "$lts" in ''|*[!0-9]*) lts=0 ;; *) lts=$((10#$lts)) ;; esac
     if [ "$sig" != "$lsig" ] || [ $((now - lts)) -ge "$TOK_MIN_GAP" ]; then
-      args=("th=${WARN_AT},${BAD_AT}")
+      args=("th=${WARN_AT},${BAD_AT}" "fmt=${TOK_V}")
       [ "$costraw" != "-" ] && args+=("cost=${costraw}")
       [ "$q5arg" != "-" ] && args+=("q5=${q5arg}")
       [ "$q7arg" != "-" ] && args+=("q7=${q7arg}")
@@ -679,9 +679,9 @@ gstatus=${gstatus//[[:cntrl:]]/}
 [ "$branch" = "-" ] && branch=""
 [ "$gstatus" = "-" ] && gstatus=""
 
-# ── token / 节奏 / 中转站缓存（十八段，见 statusline-tokens.py）──────────
+# ── token / 节奏 / 中转站缓存（键=值，见 statusline-tokens.py）───────────
 skey=${sid//\//_}; skey=${skey// /_}
-for v in $F_TOK; do printf -v "$v" '%s' ''; done
+for m in $TOK_MAP; do printf -v "${m#*:}" '%s' ''; done
 tokf="${SLT}/claude-sl-tok-${skey}.cache"
 tok_ok=1
 # 新鲜度：生产者写 <cache>.ts。超过 TOK_STALE 秒不读派生值（$/h、out、等级、hit、io、
@@ -698,13 +698,16 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
   fi
 fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
-  # shellcheck disable=SC2229  # 有意展开成变量名单
-  IFS=$'\t' read -r $F_TOK < "$tokf"
+  # 每行「键=值」，按 TOK_MAP 落到变量；不认识的键忽略。键只收小写字母与数字（它要进
+  # 模式匹配），值剔除控制字符（约束 16：缓存内容同样不可信）。
+  tokv=""
+  while IFS='=' read -r k v; do
+    case "$k" in TOK) tokv=$v; continue ;; ''|*[!a-z0-9]*) continue ;; esac
+    case "$TOK_MAP" in *" $k:"*) m=${TOK_MAP#*" $k:"}; printf -v "${m%% *}" '%s' "${v//[[:cntrl:]]/}" ;; esac
+  done < "$tokf"
+  # 别的格式版本写的缓存（升级后磁盘上的旧文件）：整份不用，等下一轮刷新重写
+  [ "$tokv" = "$TOK_V" ] || for m in $TOK_MAP; do printf -v "${m#*:}" '%s' ''; done
 fi
-for v in $F_TOK; do
-  [ "${!v}" = "-" ] && printf -v "$v" '%s' ''    # 4.2 的空格式 printf -v 不清空变量
-  printf -v "$v" '%s' "${!v//[[:cntrl:]]/}"       # 约束 16：缓存内容同样不可信
-done
 # 跨窗口一致性：当前 stdin 已用 <100% 时，缓存里的「用尽」不可能属于这个窗口，
 # 直接丢弃等级与 out。bad 但 out 是真实倒计时仍保留——那是「很快用完」的预测。
 [ -n "$q5" ] && [ "$q5" -lt 100 ] && [ "$q5out" = 用尽 ] && { q5out=""; q5lv=""; }

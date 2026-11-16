@@ -102,6 +102,24 @@ class Freshness(unittest.TestCase):
             self.assertTrue(os.path.isfile(ts), '刷新没有写出新鲜度时间戳')
             with open(ts) as f:
                 self.assertLess(abs(now - int(f.read().strip())), 60)
+            # 端到端：助手写的缓存，渲染脚本读得懂（两边的格式约定靠这条用例对上）
+            o = strip(sb.render(sb.stdin('rt', q5=20)))
+            self.assertIn('↑10 ↓1', o)
+            self.assertIn('m1', o)
+
+    def test_cache_written_in_another_format_is_ignored(self):
+        """升级后磁盘上还留着旧格式的缓存：按没有处理，等下一轮刷新重写，不能错位显示。"""
+        with Sandbox() as sb:
+            f = os.path.join(sb.tmp, 'claude-sl-tok-old.cache')
+            for body in ('118M\t736k\t$4.9/h\t1\tok\t-\tok\t-\t-\t-\t-\t-\t-\t-\t98.2\t-\t-\t517\n',
+                         'TOK=999\nin=118M\nout=736k\nrate=$4.9/h\nmsgs=517\n',
+                         'in=118M\nout=736k\nmsgs=517\n'):
+                with open(f, 'w') as fh:
+                    fh.write(body)
+                o = strip(sb.render(sb.stdin('old', q5=20)))
+                for item in ('118M', '$4.9/h', 'm517'):
+                    self.assertNotIn(item, o, f'读了别的格式的缓存：{body[:12]!r}')
+                self.assertIn('5h 20%', o)
 
     def test_refresh_backfills_ts_from_cache_mtime(self):
         """升级迁移来的旧缓存没有 .ts：刷新要按缓存 mtime 补一个，否则会永久按新鲜展示。"""

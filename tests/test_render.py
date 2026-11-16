@@ -303,10 +303,11 @@ class Facts(unittest.TestCase):
                 f.write(conf)
             f_, r = facts(sb)
             self.assertEqual(r.stderr, '')
-            self.assertEqual(f_['cc-pills-facts'], '1')
+            self.assertEqual(f_['cc-pills-facts'], '2')
             self.assertEqual((f_['bash_min'], f_['py_min']), ('4.2', '3.9'))
             self.assertRegex(f_['version'], r'^\d+\.\d+\.\d+$')
-            self.assertEqual(f_['tok_fields'], str(len(FIELDS)), 'bash 侧的 token 段数与 statusline-tokens.py 的 FIELDS 不一致')
+            self.assertEqual(f_['tok_keys'].split(), list(FIELDS))
+            self.assertTrue(f_['tok_v'].isdigit())
             self.assertEqual((f_['theme'], f_['pill_style'], f_['pill_chroma'], f_['status_page']),
                              ('nord', 'jewel', '7', 'off'))
             self.assertEqual(f_['conf_readable'], '1')

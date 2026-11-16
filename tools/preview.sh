@@ -25,13 +25,14 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 now=$(date +%s)
 
-# 场景：名称|ctx%|ctx token|5h%|7d%|cache 剩余秒（cold = 已冷）|Claude 状态|假 token 缓存（18 段）
-T=$'\t'
+# 场景：名称|ctx%|ctx token|5h%|7d%|cache 剩余秒（cold = 已冷）|Claude 状态|假 token 缓存（空格分隔的 键=值，键见
+# statusline-tokens.py 的 FIELDS）
 SCENES=(
-  "常态|35|350000|20|40|3000|none|118M${T}736k${T}\$4.9/h${T}1${T}ok${T}-${T}ok${T}-${T}-${T}-${T}-${T}-${T}-${T}-${T}98.2${T}-${T}-${T}517"
-  "截图（5h 将提前用完、7d 88%）|18|175000|58|88|3500|none|118M${T}736k${T}\$13/h${T}1${T}warn${T}2h00m${T}high${T}16h21m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-${T}517"
-  "告警（ctx 96%、5h 82%、7d 97%、cache 已冷、Claude major）|96|960000|82|97|cold|major|118M${T}736k${T}\$24/h${T}1${T}warn${T}36m${T}bad${T}3h42m${T}-${T}-${T}-${T}-${T}-${T}-${T}98.6${T}-${T}-${T}517"
+  "常态|35|350000|20|40|3000|none|in=118M out=736k rate=\$4.9/h comp=1 q5lv=ok q7lv=ok hit=98.2 msgs=517"
+  "截图（5h 将提前用完、7d 88%）|18|175000|58|88|3500|none|in=118M out=736k rate=\$13/h comp=1 q5lv=warn q5out=2h00m q7lv=high q7out=16h21m hit=98.6 msgs=517"
+  "告警（ctx 96%、5h 82%、7d 97%、cache 已冷、Claude major）|96|960000|82|97|cold|major|in=118M out=736k rate=\$24/h comp=1 q5lv=warn q5out=36m q7lv=bad q7out=3h42m hit=98.6 msgs=517"
 )
+TOK_V=$(bash "$SRC/statusline-command.sh" --facts </dev/null | sed -n 's/^tok_v=//p')   # 缓存格式版本问渲染脚本
 mk() {   # mk <sid> <ctx%> <ctx tok> <5h%> <7d%> <cache>
   local exp=$((now + ${6/cold/0})) warm=true
   [ "$6" = cold ] && { exp=$((now - 60)); warm=false; }
@@ -43,7 +44,7 @@ i=0
 for sc in "${SCENES[@]}"; do
   IFS='|' read -r _ c ct q5 q7 cache _ tok <<< "$sc"
   mk "slpv-$i" "$c" "$ct" "$q5" "$q7" "$cache" > "$work/s$i.json"
-  printf '%s\n' "$tok" > "$work/claude-sl-tok-slpv-$i.cache"
+  { printf 'TOK=%s\n' "$TOK_V"; printf '%s\n' $tok; } > "$work/claude-sl-tok-slpv-$i.cache"   # $tok 不加引号：按空格拆成每行一个 键=值
   i=$((i + 1))
 done
 # 每种风格一份配置（沿用用户配置、只换 pill_style）；同步跑一次刷新，按配置生成色板与 git 缓存
