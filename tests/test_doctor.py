@@ -655,6 +655,15 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
         self.assertIn('普通文件', self.sb.detail(r, '安装/配置文件'))
 
+    def test_config_last_line_without_newline_is_checked(self):
+        """末行没有换行符也要解析：渲染侧会读它，诊断不能漏看这一行。"""
+        self.sb.install()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('theme = dracula\nno_such_key = 1')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
+        self.assertIn('no_such_key', self.sb.detail(r, '安装/配置文件'))
+
     def test_invalid_p_ctx_is_not_colourable(self):
         """渲染侧只接受 [0-9;] 的 P_CTX，非法值等于没有：此时整行无色，不能报 PASS。"""
         self.sb.install()

@@ -218,7 +218,7 @@ ITEM_IDS=" dir git gitst model ctx ctxin q5 q5r q5out q7 q7r q7out cost rate day
 SL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf"
 if [ -r "$SL_CONF" ]; then
   CONF_STEPS=()
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [ -n "$k" ]; do      # || -n：末行没有换行符时 read 返回非零，但变量已赋值
     k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
     case "$k" in
       ''|\#*) ;;

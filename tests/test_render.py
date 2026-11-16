@@ -158,6 +158,16 @@ class Robustness(unittest.TestCase):
             self.assertEqual(r.stderr, '')
             self.assertLessEqual(width(r.stdout), 52)
 
+    def test_config_last_line_without_newline(self):
+        """很多编辑器不补文件末尾的换行；最后一行配置不能因此被丢掉。"""
+        with Sandbox() as sb:
+            with open(os.path.join(sb.cfg, 'claude-statusline.conf'), 'w') as f:
+                f.write('theme = dracula\ntruncate_length = 1')
+            deep = os.path.join(sb.repo, 'a', 'b')
+            os.makedirs(deep)
+            o = strip(sb.render(sb.stdin(cwd=deep)))
+            self.assertNotIn('a/b', o, '末行 truncate_length = 1 没生效')
+
     def test_ascii_caps_have_background(self):
         with Sandbox(conf_extra='glyphs = ascii') as sb:
             o = sb.render(sb.stdin())

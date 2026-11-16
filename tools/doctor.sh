@@ -133,7 +133,7 @@ CFG_BAD=""; CFG_UNKNOWN=""; CFG_READABLE=0
 CONF_KEYS_ONE=" $(echo $CONF_KEYS) "     # 折叠成一行，下面逐行比对时不必每行 fork
 if [ -f "$CONF" ] && [ -r "$CONF" ]; then
   CFG_READABLE=1
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [ -n "$k" ]; do      # 与渲染脚本一致：末行没有换行符也要解析
     k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
     case "$k" in ''|\#*) continue ;; esac
     case "$CONF_KEYS_ONE" in
