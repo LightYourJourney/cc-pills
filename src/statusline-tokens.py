@@ -73,7 +73,8 @@
   1. 本脚本跑在后台刷新进程里，不阻塞渲染，但仍可能被 abort 波及杀死——按 MAX_CHUNK 分片
      解析、每片之后原子落盘（mkstemp + os.replace，0600，断点在状态文件），被杀
      只丢一片进度、绝不污染状态；单次调用在 TIME_BUDGET 内连读多片，预算跨文件共用
-     （进入下一个文件前也检查）。
+     （进入下一个文件前也检查）。游标没前进的文件不落盘：落盘是整份状态重写，给每个
+     已追平的文件都写一遍会把预算耗光，subagent 一多就永远追不平、永远不出数。
   2. 追平全部文件尾之前不输出：宁缺勿假，不显示爬升中的半截数字。
   3. 绝不向 stdout 输出错误信息；任何异常静默吞掉。
   4. 同一 API 响应会以多行重复出现（每内容块一行），后写的行会修正 usage（首行可为全 0
@@ -259,7 +260,7 @@ def save(state_path, st):
         os.makedirs(d, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=d, prefix=TMP_PREFIX, text=True)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(st, f)
+            f.write(json.dumps(st))           # dumps 走 C 编码器；流式 dump 是纯 Python，慢一个量级
         os.replace(tmp, state_path)
         tmp = None
     except Exception:
@@ -607,9 +608,10 @@ def main():
     pend = {k: (tuple(v[0]), v[1]) for k, v in st['pend']}
     order = [k for k, _ in st['pend']]
 
-    def persist():
-        for p, fs in st['files'].items():
-            fs['fp'] = tail_fp(p, fs['off'])
+    def persist(scanned=None):
+        if scanned:                            # 只有游标动过的文件要重算指纹，其余沿用状态里的
+            fs = st['files'][scanned]
+            fs['fp'] = tail_fp(scanned, fs['off'])
         st['pend'] = [[k, [list(pend[k][0]), pend[k][1]]] for k in order if k in pend]
         save(state_path, st)
 
@@ -621,8 +623,10 @@ def main():
             break
         fs = st['files'].setdefault(p, {'off': 0, 'fp': 0})
         while True:
+            off = fs['off']
             done = scan_chunk(p, fs, st, pend, order, p == path, db is not None)
-            persist()                          # 每片落盘：被杀只丢当前一片（约束 1）
+            if fs['off'] != off:               # 每片落盘：被杀只丢当前一片（约束 1）。没读到新内容
+                persist(p)                     # 就不落：否则每个已追平的文件都写一遍整份状态
             if done or time.time() - t0 >= TIME_BUDGET:
                 break
         caught_up = caught_up and done

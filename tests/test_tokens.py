@@ -194,6 +194,27 @@ class Incremental(Base):
         self.assertEqual(st['in'], 60)
         self.assertEqual(self.io(tp, 'i5'), ['90', '9', '9'], '从断点续读后总量不对')
 
+    def test_idle_call_with_many_files_still_outputs(self):
+        """已追平的文件不落盘。否则每个文件写一遍整份状态，文件一多就把 1 s 预算耗光：
+        排在后面的文件永远轮不到、永远不出数（实测去重表满时约 75 个文件即触发）。"""
+        tp = self.write('many.jsonl', [line('m', 10, 1, 'end_turn')])
+        for i in range(30):
+            self.write(f'many/subagents/agent-{i:02d}.jsonl', [line(f's{i}', 1, 1, 'end_turn')])
+        self.assertEqual(self.io(tp, 'many')[2], '31')
+        orig, n = self.t.save, [0]
+
+        def slow(*a, **k):                                  # 模拟大状态文件的序列化成本
+            n[0] += 1
+            time.sleep(0.05)
+            return orig(*a, **k)
+        self.t.save = slow
+        sys.argv = ['x', tp, 'many']
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.t.main()
+        self.assertEqual(len(self.fields(buf.getvalue())), len(FIELDS), '文件一多就不出数')
+        self.assertLessEqual(n[0], 1, '没有新内容却反复落盘')
+
 
 class Trackers(Base):
     def test_small_drop_decays_rate(self):
