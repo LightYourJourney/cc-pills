@@ -570,6 +570,7 @@ NC=1; cache_theme=""
 if [ "$SLT_OK" = 1 ] && cache_ok "$THEME_CACHE"; then
   while IFS='=' read -r k v; do
     case "$k" in
+      *[!A-Z0-9_]*) ;;                              # 键要当 printf -v 的目标名：下标里的 $(…) 会被求值
       THEME)   cache_theme=$v ;;                    # 不可直接赋给 THEME：会覆盖脚本设定
       P_*|T_*|L_*|W_*)                              # W_ = 字重 SGR，不经 sgr 换算
         case "$v" in ''|*[!0-9\;]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # 只认 R;G;B / 字重
@@ -661,6 +662,8 @@ done
 [ -n "$sp" ] && [ "$sp" -lt 100 ] && [ "$spout" = 用尽 ] && { spout=""; splv=""; }
 [ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
 case "$comp" in ''|*[!0-9]*) comp="" ;; esac
+# 命中率要进算术展开取整，而 $((…)) 会把变量内容当表达式求值：只收「数字.数字」
+case "$t_hit" in *[!0-9.]*|*.*.*|.*|*.) t_hit="" ;; *.*) ;; *) t_hit="" ;; esac
 
 # ── claude 状态缓存（过期即隐藏）─────────────────────────────────────────
 st_ind=""
@@ -994,7 +997,7 @@ esac
 
 # 辅助尾段（同一胶囊；标签弱化色、值次值灰）。hit 用会话级累计（statusline-tokens.py），拿不到再回落 stdin
 case "$st_ind" in minor|maintenance) item claudem tail MUTED "claude ${st_ind}" "$st_ind" ;; esac
-if [ -n "$t_hit" ]; then hit=$t_hit; hit0=${t_hit%.*}; [ "${t_hit#*.}" -ge 5 ] 2>/dev/null && hit0=$((hit0 + 1)); fi
+if [ -n "$t_hit" ]; then hit=$t_hit; hit0=${t_hit%.*}; [ "${t_hit#*.}" -ge 5 ] 2>/dev/null && hit0=$((10#$hit0 + 1)); fi
 item cachet tail TER "${ct:+cache ${ct}}" "$ct"; LB[cachet]=cache
 item hit    tail TER "${hit:+hit ${hit}%}" "${hit0}%"; LB[hit]=hit
 item io     tail TER "${t_in:+↑${t_in} ↓${t_out}}" "${t_in:+↑${t_in}}"

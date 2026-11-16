@@ -161,6 +161,30 @@ class ContentSafety(CacheBase):
         out = self.render('th', {'CLAUDE_SL_TMP': slt})
         self.assertNotIn('\x1b]0;', out, '色板缓存里的非数值被拼进了 SGR')
 
+    def test_theme_cache_key_cannot_run_commands(self):
+        """printf -v 的目标名来自缓存：数组下标里的 $(…) 会被求值，键必须先按字符集校验。"""
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        marker = os.path.join(self.d, 'pwned')
+        with open(os.path.join(slt, 'claude-sl-theme-term-other.cache'), 'w') as f:
+            f.write('THEME=dracula/12/tint/v4\nP_NEU=40;40;40\nP_CTX=40;40;40\nT_NEU=230;230;230\n'
+                    f'P_x[$(touch {marker})]=1;2;3\n')
+        out = self.render('thk', {'CLAUDE_SL_TMP': slt})
+        self.assertFalse(os.path.exists(marker), '色板缓存的键触发了命令执行')
+        self.assertIn('42%', strip(out))
+
+    def test_token_cache_number_cannot_run_commands(self):
+        """命中率要进算术展开取整：$((…)) 会把变量内容当表达式求值，非数字必须先丢弃。"""
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        marker = os.path.join(self.d, 'pwned')
+        with open(os.path.join(slt, 'claude-sl-tok-arith.cache'), 'w') as f:
+            f.write(tok_line(**{'in': '30M', 'out': '290k', 'hit': f'a[$(touch {marker})].5'}))
+        out = self.render('arith', {'CLAUDE_SL_TMP': slt})
+        self.assertFalse(os.path.exists(marker), 'token 缓存的命中率字段触发了命令执行')
+        self.assertNotIn('hit', out, '非数字的命中率不该显示')
+        self.assertIn('↑30M', out, '其余合法字段不应被连带丢弃')
+
 
 class Lifecycle(CacheBase):
     """缓存生命周期：默认根里 30 天没动的缓存由后台每天清一次，显式根不清理。"""
