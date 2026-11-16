@@ -8,7 +8,7 @@ import re
 import subprocess
 import unittest
 
-from _util import STYLES, Sandbox, color_of, strip, width
+from _util import FIELDS, SCRIPT, STYLES, THEME, Sandbox, color_of, strip, width
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'golden', 'render.json')
 WIDTHS = (220, 120, 80)
@@ -284,6 +284,106 @@ class Semantics(unittest.TestCase):
             sb.refresh(sb.repo)
             self.assertFalse(os.path.exists(os.path.join(sb.tmp, 'claude-sl-status.try')),
                              'status_page = off 时不应发起状态页请求')
+
+
+def facts(sb, env=None, bash='bash'):
+    """--facts：渲染脚本自述它解析出的配置、路径与常量（诊断工具读它，而不是另抄一份）。"""
+    r = subprocess.run([bash, SCRIPT, '--facts'], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, env=dict(sb.env, **(env or {})))
+    return dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l), r
+
+
+class Facts(unittest.TestCase):
+    def test_reports_parsed_config(self):
+        conf = ('theme = nord\npill_style = jewel\npill_chroma = 7\nstatus_page = off\n'
+                'no_such_key = 1\nglyphs = fancy\nwarn_at = abc\npill_chroma = 99\n'
+                'step = drop nothing\nstep = explode cost\nstep = drop api\n')
+        with Sandbox() as sb:
+            with open(os.path.join(sb.cfg, 'claude-statusline.conf'), 'w') as f:
+                f.write(conf)
+            f_, r = facts(sb)
+            self.assertEqual(r.stderr, '')
+            self.assertEqual(f_['cc-pills-facts'], '1')
+            self.assertEqual((f_['bash_min'], f_['py_min']), ('4.2', '3.9'))
+            self.assertEqual(f_['tok_fields'], str(len(FIELDS)), 'bash 侧的 token 段数与 statusline-tokens.py 的 FIELDS 不一致')
+            self.assertEqual((f_['theme'], f_['pill_style'], f_['pill_chroma'], f_['status_page']),
+                             ('nord', 'jewel', '7', 'off'))
+            self.assertEqual(f_['conf_readable'], '1')
+            self.assertEqual(f_['conf_unknown'].split(), ['no_such_key'])
+            self.assertEqual(f_['conf_bad'].split(' ', 3)[:3], ['glyphs', 'warn_at', 'pill_chroma'])
+            self.assertIn('step(drop nothing)', f_['conf_bad'])
+            self.assertIn('step(explode)', f_['conf_bad'])
+            self.assertNotIn('api', f_['conf_bad'])
+
+    def test_accepts_every_theme_and_style_the_palette_helper_knows(self):
+        """配置白名单落后于 statusline-theme.py 时，合法的 theme / pill_style 会被静默忽略。"""
+        with Sandbox() as sb:
+            conf = os.path.join(sb.cfg, 'claude-statusline.conf')
+            for key, values in (('theme', ['auto'] + list(THEME.THEMES)), ('pill_style', list(THEME.STYLES))):
+                for v in values:
+                    with open(conf, 'w') as f:
+                        f.write(f'{key} = {v}\n')
+                    f_, _ = facts(sb)
+                    self.assertEqual((f_[key], f_['conf_bad']), (v, ''), f'{key} = {v} 没被接受')
+
+    def test_every_default_step_is_accepted_from_config(self):
+        """示例配置里注释着的默认序列，取消注释后每一行都必须被认——项名单曾跨行书写，
+        行尾的 today 后面跟的是换行而不是空格，`step = drop today` 被静默忽略。"""
+        with open(os.path.join(os.path.dirname(SCRIPT), '..', 'config', 'claude-statusline.conf.example')) as f:
+            steps = re.findall(r'^\s*#\s*(step\s*=\s*\w+\s+\w+)', f.read(), re.M)
+        self.assertGreater(len(steps), 30)
+        with Sandbox() as sb:
+            with open(os.path.join(sb.cfg, 'claude-statusline.conf'), 'w') as f:
+                f.write('\n'.join(steps) + '\n')
+            self.assertEqual(facts(sb)[0]['conf_bad'], '')
+
+    def test_missing_config_is_not_an_error(self):
+        with Sandbox() as sb:
+            os.remove(os.path.join(sb.cfg, 'claude-statusline.conf'))
+            f_, r = facts(sb)
+            self.assertEqual((f_['conf_readable'], f_['theme'], r.stderr), ('0', 'auto', ''))
+
+    def test_paths_are_the_ones_refresh_writes(self):
+        with Sandbox(style='jewel') as sb:
+            f_, _ = facts(sb)
+            self.assertEqual((f_['slt'], f_['slt_explicit'], f_['slt_ok']), (sb.tmp, '1', '1'))
+            self.assertTrue(os.path.isfile(f_['theme_cache']), '自述的色板路径不是刷新实际写的那个')
+            with open(f_['theme_cache']) as f:
+                self.assertEqual(f.readline().rstrip('\n'), f_['theme_want'])
+            self.assertEqual((f_['palette_usable'], f_['color_depth']), ('1', '2'))
+            os.remove(f_['theme_cache'])
+            self.assertEqual(facts(sb)[0]['palette_usable'], '0')
+            self.assertEqual(facts(sb, {'COLORTERM': '', 'TERM': 'dumb'})[0]['color_depth'], '0')
+
+    def test_relay_judgement_follows_base_url(self):
+        with Sandbox() as sb:
+            for url, want in (('', '0'), ('https://api.anthropic.com', '0'),
+                              ('https://api.anthropic.com/v1', '0'), ('https://relay.example/v1', '1')):
+                self.assertEqual(facts(sb, {'ANTHROPIC_BASE_URL': url})[0]['relay_env'], want, url)
+
+    def test_has_no_side_effects(self):
+        """诊断是只读的：自述模式不读 stdin、不建缓存目录、不派生后台刷新。"""
+        with Sandbox() as sb:
+            root = os.path.join(sb.dir, 'T')
+            os.makedirs(root)
+            env = {k: v for k, v in sb.env.items() if k not in ('CLAUDE_SL_TMP', 'CLAUDE_SL_NO_REFRESH')}
+            r = subprocess.run(['bash', SCRIPT, '--facts'], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, env=dict(env, TMPDIR=root), timeout=20)
+            f_ = dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l)
+            self.assertEqual((f_['slt_explicit'], f_['slt_ok']), ('0', '0'))
+            self.assertEqual(f_['slt'], os.path.join(root, f'claude-sl-{os.getuid()}'))
+            self.assertEqual(os.listdir(root), [], '自述模式动了缓存目录')
+
+    def test_runs_on_system_bash_3_2(self):
+        """诊断要在只有 bash 3.2 的机器上也能回答问题，所以自述模式不走版本守卫。"""
+        v = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True, text=True).stdout.strip()
+        if v != '3':
+            self.skipTest(f'/bin/bash 不是 3.x（{v or "不存在"}）')
+        with Sandbox() as sb:
+            old, r = facts(sb, bash='/bin/bash')
+            self.assertEqual(r.stderr, '')
+            self.assertEqual(old, facts(sb)[0])
+            self.assertEqual(old['bash_min'], '4.2')
 
 
 if __name__ == '__main__':

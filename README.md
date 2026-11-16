@@ -209,6 +209,7 @@ src/subagent-statusline.sh    the agent panel's per-subagent lines
 tools/preview.sh              side-by-side style preview
 tools/doctor.sh               read-only diagnostics (entry point)
 tools/doctor/*.sh             check groups: env / install / cache / data
+tools/lib/points_to.sh        settings-command matching shared by install and doctor
 tests/                        unit + golden + property + contrast-matrix tests
 .github/workflows/tests.yml   CI: full suite on macOS and Linux
 install.sh  run_tests.sh

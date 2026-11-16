@@ -134,6 +134,8 @@
 #  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件，
 #      不递归、不碰锁 / 色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
 #      （claude-statusline-*.json）另加 transcript 守卫，见 docs/DECISIONS.md
+#  20. --facts（自述模式）分支及其之前的全部代码保持 bash 3.2 可跑、且没有副作用：仓库里的
+#      诊断工具靠它取配置解析结果、路径与阈值，不另抄一份（判据只在本脚本一处）
 #
 # 开发：bash run_tests.sh（隔离沙箱，不碰线上缓存）；安装：bash install.sh
 # 调试渲染：CLAUDE_SL_NO_REFRESH=1 bash install.sh 后手工喂 stdin（见 tests/_util.py）
@@ -142,9 +144,11 @@
 # ── bash 版本守卫（约束 14）─────────────────────────────────────────────
 # 关联数组需要 bash ≥ 4.2；macOS 自带 /bin/bash 是 3.2。
 # 先换用常见位置的 ≥4.2 bash 重跑，找不到就只输出「模型 · ctx%」的最简行。
-if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
+# --facts（自述模式，见下）不走守卫：它只用到 3.2 也有的语法，最坏环境里也要能回答问题。
+BASH_MIN=402             # 主版本 × 100 + 次版本
+if [ "${1:-}" != --facts ] && [ $(( ${BASH_VERSINFO[0]:-0} * 100 + ${BASH_VERSINFO[1]:-0} )) -lt "$BASH_MIN" ]; then
   for b in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
-    [ -x "$b" ] && "$b" -c 'v=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1])); [ "$v" -ge 402 ]' 2>/dev/null \
+    [ -x "$b" ] && "$b" -c '[ $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1])) -ge "$1" ]' _ "$BASH_MIN" 2>/dev/null \
       && exec "$b" "$0" "$@"
   done
   [ "${1:-}" = "--refresh" ] && exit 0
@@ -180,6 +184,10 @@ CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存与残留临时
                          # （会话状态另外要求记录里的 transcript 已不存在；后台每天清一次）
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
+PY_MIN=3.9               # 两个 python 助手要求的最低版本（str.removesuffix 是 3.9，math.dist 是 3.8）
+# token 缓存各段的变量名，顺序以 statusline-tokens.py 的 FIELDS 为准（tests/test_tokens.py 的契约测试守护）
+F_TOK="t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout
+  r_cost r_unpriced r_today r_limit t_hit splv spout msgs"
 # 全部缓存 / 锁 / 状态文件的根。显式 CLAUDE_SL_TMP（预览 / 测试）由调用方负责隔离；
 # 否则用每用户私有目录 $TMPDIR/claude-sl-<uid>（0700），不再落到共享 /tmp。
 # 根必须是本人拥有的真实目录：符号链接（哪怕是本人建的）一律不跟随。
@@ -208,35 +216,40 @@ STEPS=(                                               # 逐项裁定去留，见
   "shrink claude" "drop claude" "drop dout" "drop spout" "drop q7out" "drop q5out"
   "shrink ctx" "shrink cache" "shrink model" "shrink model" "shrink model"
 )
-# 合法的项名（配置文件里写错的项名会被忽略）
-ITEM_IDS=" dir git gitst model ctx ctxin q5 q5r q5out q7 q7r q7out cost rate day dout today
-  spend spout cache recache claude claudem comp cachet hit io api msgs "
+# 合法的项名（配置文件里写错的项名会被忽略）。必须写在一行里：判定按「空格 + 项名 + 空格」
+# 匹配，折行会让行尾那一项后面跟的是换行——today 曾因此被当成非法项名。
+ITEM_IDS=" dir git gitst model ctx ctxin q5 q5r q5out q7 q7r q7out cost rate day dout today spend spout cache recache claude claudem comp cachet hit io api msgs "
 
 # ── 用户配置文件（覆盖上面的参数与优先级；不存在则全用默认）──────────────
 # 格式：每行「键 = 值」，# 开头为注释。只认白名单里的键，值不合法则忽略——
 # 用 read 逐行解析而非 source，配置文件里的任何内容都不会被当作代码执行。
 SL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf"
-if [ -r "$SL_CONF" ]; then
-  CONF_STEPS=()
+# CONF_UNKNOWN / CONF_BAD 记下不认识的键与不合法的值：渲染照旧忽略它们，--facts 把它们报给诊断工具。
+CONF_READ=0; CONF_UNKNOWN=""; CONF_BAD=""
+if [ -f "$SL_CONF" ] && [ -r "$SL_CONF" ]; then
+  CONF_READ=1; CONF_STEPS=()
   while IFS='=' read -r k v || [ -n "$k" ]; do      # || -n：末行没有换行符时 read 返回非零，但变量已赋值
     k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
     case "$k" in
       ''|\#*) ;;
-      theme)  case "$v" in auto|tokyonight|dracula|catppuccin|onedark|nord) THEME=$v ;; esac ;;
-      glyphs) case "$v" in nerd|ascii) GLYPHS=$v ;; esac ;;
-      status_page) case "$v" in on|off) STATUS_PAGE=$v ;; esac ;;
-      pill_style) case "$v" in tint|cool|jewel|glass|mono|pastel|tokyo-glass) PILL_STYLE=$v ;; esac ;;
+      theme)  case "$v" in auto|tokyonight|dracula|catppuccin|onedark|nord) THEME=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
+      glyphs) case "$v" in nerd|ascii) GLYPHS=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
+      status_page) case "$v" in on|off) STATUS_PAGE=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
+      pill_style) case "$v" in tint|cool|jewel|glass|mono|pastel|tokyo-glass) PILL_STYLE=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
       safe_margin|truncate_length|warn_at|bad_at|ctx_warn|ctx_bad|crit_at|pill_chroma)
-        case "$v" in ''|*[!0-9]*) ;; *) v=$((10#$v)); case "$k" in   # 约束 18：08 不当八进制
+        case "$v" in ''|*[!0-9]*) CONF_BAD="$CONF_BAD $k" ;; *) v=$((10#$v)); case "$k" in   # 约束 18：08 不当八进制
           safe_margin) SAFE_MARGIN=$v ;; truncate_length) TRUNCATE_LENGTH=$v ;;
           warn_at) WARN_AT=$v ;; bad_at) BAD_AT=$v ;;
           ctx_warn) CTX_WARN=$v ;; ctx_bad) CTX_BAD=$v ;; crit_at) CRIT_AT=$v ;;
-          pill_chroma) [ "$v" -le 40 ] && PILL_CHROMA=$v ;; esac ;; esac ;;
+          pill_chroma) if [ "$v" -le 40 ]; then PILL_CHROMA=$v; else CONF_BAD="$CONF_BAD $k"; fi ;; esac ;; esac ;;
       step)
         read -r act sid_ _ <<< "$rv"
         case "$act" in
-          drop|shrink) [[ "$ITEM_IDS" == *" $sid_ "* ]] && CONF_STEPS+=("$act $sid_") ;;
+          drop|shrink) if [[ "$ITEM_IDS" == *" $sid_ "* ]]; then CONF_STEPS+=("$act $sid_")
+                       else CONF_BAD="$CONF_BAD step($act $sid_)"; fi ;;
+          *) CONF_BAD="$CONF_BAD step($act)" ;;
         esac ;;
+      *) CONF_UNKNOWN="$CONF_UNKNOWN $k" ;;
     esac
   done < "$SL_CONF"
   [ "${#CONF_STEPS[@]}" -gt 0 ] && STEPS=("${CONF_STEPS[@]}")
@@ -253,6 +266,8 @@ else
 fi
 PKEY=${PKEY//[^A-Za-z0-9_-]/_}
 THEME_CACHE="${SLT}/claude-sl-theme-${PKEY}.cache"
+# 色板缓存首行应有的样子；带格式版本 v$PALETTE_V，旧版脚本生成的缓存首行不符即重算
+THEME_WANT="THEME=${THEME}/${PILL_CHROMA}/${PILL_STYLE}/v${PALETTE_V}"
 
 if [ "$GLYPHS" = ascii ]; then
   GLYPH_BRANCH=""; PL_LCAP=" "; PL_RCAP=" "
@@ -281,6 +296,56 @@ put() {
   printf '%s\n' "$3" > "$t" 2>/dev/null && mv -f "$t" "$1" 2>/dev/null && return 0
   rm -f "$t" 2>/dev/null; return 1
 }
+
+# 设了非官方 ANTHROPIC_BASE_URL → 真（模式判定的后半句，见头部「费用口径」）
+relay_env() {
+  case "${ANTHROPIC_BASE_URL:-}" in ''|https://api.anthropic.com|https://api.anthropic.com/*) return 1 ;; esac
+}
+# 读色板缓存 → P_* / T_* / L_* / W_*；NC=0 表示本轮可以上色，PAL_OK 是不看终端色深时的结论，
+# CDEPTH 是色深（2 真彩 / 5 256 色 / 0 无色）。同步路径与 --facts 共用这一份判定。
+load_palette() {
+  local k v
+  NC=1; cache_theme=""
+  if [ "$SLT_OK" = 1 ] && cache_ok "$THEME_CACHE"; then
+    while IFS='=' read -r k v; do
+      case "$k" in
+        *[!A-Z0-9_]*) ;;                            # 键要当 printf -v 的目标名：下标里的 $(…) 会被求值
+        THEME)   cache_theme=$v ;;                  # 不可直接赋给 THEME：会覆盖脚本设定
+        P_*|T_*|L_*|W_*)                            # W_ = 字重 SGR，不经 sgr 换算
+          case "$v" in ''|*[!0-9\;]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # 只认 R;G;B / 字重
+      esac
+    done < "$THEME_CACHE"
+    # 只改了 pill_chroma / pill_style 时先沿用旧色板（后台按首行不符重算），免得闪一次无色
+    [ "${cache_theme%%/*}" = "$THEME" ] && [ -n "${P_CTX:-}" ] && NC=0
+  fi
+  PAL_OK=$((1 - NC))
+  case "${COLORTERM:-}" in
+    truecolor|24bit) CDEPTH=2 ;;
+    *) case "${TERM:-}" in *256color*) CDEPTH=5 ;; *) CDEPTH=0; NC=1 ;; esac ;;
+  esac
+}
+
+# ── 自述模式（--facts）──────────────────────────────────────────────────
+# 把本脚本解析出的配置、路径与常量按「键=值」逐行打出来，给仓库里的诊断工具读。那些判据
+# 此前在诊断侧各抄一份、靠比对源码文本的测试对齐，抄的那份错了也没人知道（配置末行无换行
+# 符那次，两边错得一模一样）。只读：不读 stdin、不建目录、不派生后台刷新。到这里为止的
+# 代码必须保持 bash 3.2 可跑（不用关联数组）——诊断要在只有系统 bash 的机器上也能工作。
+if [ "${1:-}" = --facts ]; then
+  load_palette
+  slt_explicit=0; [ -n "${CLAUDE_SL_TMP:-}" ] && slt_explicit=1
+  relay=0; relay_env && relay=1
+  set -- $F_TOK
+  printf '%s\n' "cc-pills-facts=1" \
+    "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" \
+    "conf=$SL_CONF" "conf_readable=$CONF_READ" "conf_unknown=${CONF_UNKNOWN# }" "conf_bad=${CONF_BAD# }" \
+    "theme=$THEME" "pill_style=$PILL_STYLE" "pill_chroma=$PILL_CHROMA" "status_page=$STATUS_PAGE" \
+    "slt=$SLT" "slt_explicit=$slt_explicit" "slt_ok=$SLT_OK" \
+    "theme_cache=$THEME_CACHE" "theme_want=$THEME_WANT" \
+    "palette_usable=$PAL_OK" "color_depth=$CDEPTH" \
+    "theme_ttl=$THEME_TTL" "tok_stale=$TOK_STALE" "status_stale=$STATUS_STALE" "lock_stale=$LOCK_STALE" \
+    "tok_fields=$#" "relay_env=$relay" "ccswitch_db=$CCSWITCH_DB"
+  exit 0
+fi
 
 # 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
@@ -383,8 +448,7 @@ if [ "${1:-}" = "--refresh" ]; then
   # 色板：缺失 / THEME、PILL_CHROMA 或 PILL_STYLE 改过 / 超过 THEME_TTL 时重算
   tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
   tm=$(mtime "$THEME_CACHE"); tage=$(( now - ${tm:-0} ))
-  # 首行带格式版本 v$PALETTE_V：旧版脚本生成的缓存首行不符，立即重算而不等 THEME_TTL
-  want="THEME=${THEME}/${PILL_CHROMA}/${PILL_STYLE}/v${PALETTE_V}"
+  want=$THEME_WANT                       # 首行不符（含格式版本）立即重算，不等 THEME_TTL
   failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
   if { [ "$tline" != "$want" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
@@ -562,28 +626,10 @@ for v in $F_STDIN; do
 done
 # 模式（见头部「费用口径」）：有 5h / 7d → 订阅；否则非官方 ANTHROPIC_BASE_URL → 中转站；都没有 → 订阅
 mode=sub
-if [ -z "$q5" ] && [ -z "$q7" ]; then
-  case "${ANTHROPIC_BASE_URL:-}" in ''|https://api.anthropic.com|https://api.anthropic.com/*) ;; *) mode=relay ;; esac
-fi
+[ -z "$q5" ] && [ -z "$q7" ] && relay_env && mode=relay
 
 # ── 色板缓存（约束 11）→ SGR 片段：truecolor "2;R;G;B"，否则 256 色 "5;N" ──
-NC=1; cache_theme=""
-if [ "$SLT_OK" = 1 ] && cache_ok "$THEME_CACHE"; then
-  while IFS='=' read -r k v; do
-    case "$k" in
-      *[!A-Z0-9_]*) ;;                              # 键要当 printf -v 的目标名：下标里的 $(…) 会被求值
-      THEME)   cache_theme=$v ;;                    # 不可直接赋给 THEME：会覆盖脚本设定
-      P_*|T_*|L_*|W_*)                              # W_ = 字重 SGR，不经 sgr 换算
-        case "$v" in ''|*[!0-9\;]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # 只认 R;G;B / 字重
-    esac
-  done < "$THEME_CACHE"
-  # 只改了 pill_chroma / pill_style 时先沿用旧色板（后台按首行不符重算），免得闪一次无色
-  [ "${cache_theme%%/*}" = "$THEME" ] && [ -n "${P_CTX:-}" ] && NC=0
-fi
-case "${COLORTERM:-}" in
-  truecolor|24bit) CDEPTH=2 ;;
-  *) case "${TERM:-}" in *256color*) CDEPTH=5 ;; *) NC=1 ;; esac ;;
-esac
+load_palette
 # 256 色：xterm 色块的六档是 0/95/135/175/215/255（不是等距），另有 232–255 共 24 级灰
 # （8 + 10k）；两者各取最近，再按平方距离择优。此前按等距六档换算且不看灰阶，
 # #44475a 这类中性胶囊会落到偏色的色块上（2026-10-28 复核）。
@@ -631,9 +677,6 @@ gstatus=${gstatus//[[:cntrl:]]/}
 
 # ── token / 节奏 / 中转站缓存（十八段，见 statusline-tokens.py）──────────
 skey=${sid//\//_}; skey=${skey// /_}
-# 变量名单只写一份，顺序以 statusline-tokens.py 的 FIELDS 为准（tests/test_tokens.py 的契约测试守护）
-F_TOK="t_in t_out p_rate comp q5lv q5out q7lv q7out dlv dout
-  r_cost r_unpriced r_today r_limit t_hit splv spout msgs"
 for v in $F_TOK; do printf -v "$v" '%s' ''; done
 tokf="${SLT}/claude-sl-tok-${skey}.cache"
 tok_ok=1

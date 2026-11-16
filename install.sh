@@ -46,18 +46,22 @@ check_deps() {
   for c in bash jq python3 git; do
     command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖：$c" >&2; miss=1; }
   done
-  # 与 tools/doctor.sh 的 PY_MIN 一致：statusline-tokens.py 用到 str.removesuffix（3.9）。
+  # 版本下限问渲染脚本（--facts，bash 3.2 也能跑），不在这里另抄一份
+  local facts py_min bash_min
+  facts=$("$BASH" "$REPO/src/statusline-command.sh" --facts </dev/null 2>/dev/null)
+  py_min=$(sed -n 's/^py_min=//p' <<< "$facts"); bash_min=$(sed -n 's/^bash_min=//p' <<< "$facts")
+  [ -n "$py_min" ] && [ -n "$bash_min" ] || { echo "读不到版本下限：src/statusline-command.sh --facts 没有输出" >&2; return 1; }
   if command -v python3 >/dev/null 2>&1 &&
-     ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
-    echo "需要 python3 ≥ 3.9（当前 $(python3 -V 2>&1)）：后台 token / 色板助手无法运行" >&2
+     ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= tuple(map(int, sys.argv[1].split("."))) else 1)' "$py_min" 2>/dev/null; then
+    echo "需要 python3 ≥ ${py_min}（当前 $(python3 -V 2>&1)）：后台 token / 色板助手无法运行" >&2
     miss=1
   fi
   # curl 只在 status_page = on 时用到（见 README），缺了只提示，不拦安装
   command -v curl >/dev/null 2>&1 || \
     echo "提示：未找到 curl；status_page = on（默认）时状态页不可用，可设 status_page = off" >&2
   local major=${BASH_VERSINFO[0]} minor=${BASH_VERSINFO[1]}
-  if [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 2 ]; }; then
-    echo "需要 bash ≥ 4.2（当前 ${major}.${minor}）；macOS 自带 3.2 请装 Homebrew bash" >&2
+  if [ $((major * 100 + minor)) -lt $(( ${bash_min%%.*} * 100 + ${bash_min#*.} )) ]; then
+    echo "需要 bash ≥ ${bash_min}（当前 ${major}.${minor}）；macOS 自带 3.2 请装 Homebrew bash" >&2
     miss=1
   fi
   return "$miss"
@@ -70,34 +74,8 @@ settings_cmd() {  # settings_cmd <settings.json 路径> <键> → 打印该键�
 has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
 }
-# 剥掉「文件名后紧跟单词字符」的出现（statusline-command.sh.bak / .tmp 指向的是另一个文件）。
-# 同一命令里可能既有 .bak 又有真引用，所以逐次剥离而不是一次 case。结果在 CLEAN。
-strip_dirty() {
-  local rest=$1 out=""
-  while case "$rest" in *"$2"*) true ;; *) false ;; esac; do
-    out=$out${rest%%"$2"*}
-    rest=${rest#*"$2"}
-    case "$rest" in
-      [A-Za-z0-9_.-]*) ;;
-      *) out=$out$2 ;;
-    esac
-  done
-  CLEAN=$out$rest
-}
-points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 只含名字 / 1 未指向
-  strip_dirty "$1" "$2"
-  case "$CLEAN" in
-    *"$3/$2"*)                  return 0 ;;          # 指向已安装副本
-    *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;        # 建议写法：运行时展开到同一目录
-  esac
-  if [ "$3" = "$HOME/.claude" ]; then
-    case "$CLEAN" in
-      *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;;   # 默认目录的等价写法
-    esac
-  fi
-  case "$CLEAN" in *"$2"*) return 2 ;; esac              # 只是文件名相同，路径不明
-  return 1
-}
+# settings 命令是否指向已安装副本：与诊断工具共用 tools/lib/points_to.sh
+. "$REPO/tools/lib/points_to.sh" || { echo "找不到 tools/lib/points_to.sh（需要在完整的仓库里运行）" >&2; exit 1; }
 
 case $MODE in
 install)

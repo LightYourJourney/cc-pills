@@ -31,29 +31,16 @@
 #
 # 本入口与 tools/doctor/*.sh 只在 bash ≥ 3.2 上要求可运行（诊断要在最坏环境里也能跑），
 # 因此不用关联数组；模块随入口一起 source，同样不得使用 3.2 之后的语法。
-# 下列「与渲染脚本同源」的常量由 tests/test_doctor.py 守护，改了渲染脚本这里要跟着改。
+# 渲染侧的配置、路径、阈值不在这里另抄：见下面的「事实来源」。
 
 set -u
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEST=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-CONF=${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf
-CCSWITCH_DB=$HOME/.cc-switch/cc-switch.db
 
-# ── 与 statusline-command.sh 同源的常量（契约测试比对）──────────────────
-THEME_TTL=300        # 色板重算间隔
-TOK_STALE=900        # token 缓存超此秒数即判陈旧（派生项隐藏）
-STATUS_STALE=600     # 状态页缓存超此秒数未更新即隐藏
-LOCK_STALE=30        # 后台刷新残锁的判定秒数
-PALETTE_V=4          # 色板缓存格式版本
-TOK_FIELDS=18        # 18 段 token 协议（与 statusline-tokens.py 的 FIELDS 一致）
-BASH_MIN=4.2         # 渲染脚本要求的最低 bash
-PY_MIN=3.9           # 渲染脚本用到 math.dist（3.8）与 str.removesuffix（3.9）
 # 诊断自己的阈值（渲染侧没有对应常量）
 PANEL_FAIL_STALE=86400  # 面板写回失败标记超过此秒数视为「此后没有写回尝试」
-# 配置文件认的键（必须与 statusline-command.sh 里 case "$k" 的分支一致）
-CONF_KEYS="theme glyphs status_page pill_style safe_margin truncate_length warn_at bad_at
-  ctx_warn ctx_bad crit_at pill_chroma step"
+FACTS_V=1               # 本工具读得懂的自述格式版本（渲染脚本 --facts 的首行）
 
 DIR=$PWD
 TRANSCRIPT=""
@@ -116,55 +103,6 @@ ver_ge() {
   [ "$a2" -ge "$b2" ]
 }
 
-# ── 配置（只按白名单解析，与渲染脚本同一套规则；非法值按默认处理）──────
-# 降级序列的合法项名从渲染脚本的 ITEM_IDS 取（单一来源）：取不到就跳过 step 校验，
-# 宁可少判一项，也不在这里再抄一份会漂移的清单。
-stepids=""
-for s in "$DEST/statusline-command.sh" "$REPO/src/statusline-command.sh"; do
-  [ -r "$s" ] || continue
-  raw=$(sed -n '/^ITEM_IDS="/,/"/p' "$s" 2>/dev/null)
-  [ -n "$raw" ] || continue
-  raw=${raw#*ITEM_IDS=}; raw=${raw#\"}; raw=${raw%\"*}
-  stepids=" $(echo $raw) "
-  break
-done
-C_THEME=auto; C_CHROMA=12; C_STYLE=tint; C_PAGE=on
-CFG_BAD=""; CFG_UNKNOWN=""; CFG_READABLE=0
-CONF_KEYS_ONE=" $(echo $CONF_KEYS) "     # 折叠成一行，下面逐行比对时不必每行 fork
-if [ -f "$CONF" ] && [ -r "$CONF" ]; then
-  CFG_READABLE=1
-  while IFS='=' read -r k v || [ -n "$k" ]; do      # 与渲染脚本一致：末行没有换行符也要解析
-    k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
-    case "$k" in ''|\#*) continue ;; esac
-    case "$CONF_KEYS_ONE" in
-      *" $k "*) ;;
-      *) CFG_UNKNOWN="$CFG_UNKNOWN $k"; continue ;;
-    esac
-    case "$k" in
-      theme) case "$v" in auto|tokyonight|dracula|catppuccin|onedark|nord) C_THEME=$v ;;
-                            *) CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      glyphs) case "$v" in nerd|ascii) ;; *) CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      status_page) case "$v" in on|off) C_PAGE=$v ;; *) CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      pill_style) case "$v" in tint|cool|jewel|glass|mono|pastel|tokyo-glass) C_STYLE=$v ;;
-                              *) CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      pill_chroma) case "$v" in ''|*[!0-9]*) CFG_BAD="$CFG_BAD $k" ;;
-                              *) [ $((10#$v)) -le 40 ] && C_CHROMA=$((10#$v)) || CFG_BAD="$CFG_BAD $k" ;; esac ;;
-      step)
-        if [ -n "$stepids" ]; then
-          read -r act sid_ _ <<< "$rv"
-          case "$act" in
-            drop|shrink) case "$stepids" in
-                           *" $sid_ "*) ;;
-                           *) CFG_BAD="$CFG_BAD step($act $sid_)" ;;
-                         esac ;;
-            *) CFG_BAD="$CFG_BAD step($act)" ;;
-          esac
-        fi ;;
-      *) case "$v" in ''|*[!0-9]*) CFG_BAD="$CFG_BAD $k" ;; esac ;;
-    esac
-  done < "$CONF"
-fi
-
 # ── 诊断模块：每组检查一个文件，入口只负责共享状态、加载顺序与汇总 ──────
 DOCTOR_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/doctor
 for _m in env install cache data; do
@@ -172,6 +110,52 @@ for _m in env install cache data; do
     echo "缺少诊断模块：$DOCTOR_LIB/$_m.sh" >&2
     exit 1
   fi
+done
+
+# ── 事实来源：渲染脚本自述（--facts）──────────────────────────────────────
+# 配置解析结果、缓存路径、阈值与版本下限都去问渲染脚本，不在这里另抄一份。优先问已安装的
+# 副本——诊断要回答的是「装着的那一版会怎么做」；它答不出（没装、旧版、被换成别的脚本）
+# 再问仓库里的源文件。用跑本工具的同一个 bash 去执行：自述模式在 bash 3.2 上也能工作，
+# 且不读 stdin、不写缓存、不派生后台刷新（旧版脚本不认这个参数，会当成一次普通渲染，
+# 所以仍给它空 stdin 与 CLAUDE_SL_NO_REFRESH=1）。
+load_facts() {  # load_facts <脚本> <变量前缀>：首行必须是 cc-pills-facts=<FACTS_V>，否则返回 1
+  local k v first=1
+  [ -f "$1" ] || return 1
+  while IFS='=' read -r k v; do
+    if [ "$first" = 1 ]; then
+      first=0
+      [ "$k=$v" = "cc-pills-facts=$FACTS_V" ] || return 1
+      continue
+    fi
+    case "$k" in ''|*[!a-z_]*) continue ;; esac     # 键要当变量名用，只收小写字母与下划线
+    printf -v "$2$k" '%s' "$v"
+  done <<EOF
+$(CLAUDE_SL_NO_REFRESH=1 "$BASH" "$1" --facts </dev/null 2>/dev/null)
+EOF
+  [ "$first" = 0 ]
+}
+FACTS_SRC=""
+for s in "$DEST/statusline-command.sh" "$REPO/src/statusline-command.sh"; do
+  if load_facts "$s" F_; then FACTS_SRC=$s; break; fi
+done
+PANEL_SRC=""
+for s in "$DEST/subagent-statusline.sh" "$REPO/src/subagent-statusline.sh"; do
+  if load_facts "$s" P_; then PANEL_SRC=$s; break; fi
+done
+if [ -z "$FACTS_SRC" ] || [ -z "$PANEL_SRC" ]; then
+  echo "渲染脚本答不出自述信息（--facts）：$DEST 与 $REPO/src 里的脚本都不可用" >&2
+  exit 1
+fi
+CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
+THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
+TOK_FIELDS=$F_tok_fields; BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
+C_THEME=$F_theme; C_CHROMA=$F_pill_chroma; C_STYLE=$F_pill_style; C_PAGE=$F_status_page
+CFG_READABLE=$F_conf_readable
+CFG_BAD=${F_conf_bad:+ $F_conf_bad}; CFG_UNKNOWN=${F_conf_unknown:+ $F_conf_unknown}
+
+. "$REPO/tools/lib/points_to.sh" || { echo "缺少 $REPO/tools/lib/points_to.sh" >&2; exit 1; }
+
+for _m in env install cache data; do
   . "$DOCTOR_LIB/$_m.sh" || { echo "诊断模块加载失败：$DOCTOR_LIB/$_m.sh" >&2; exit 1; }
 done
 

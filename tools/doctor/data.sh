@@ -87,11 +87,9 @@ fi
 if [ -z "$base" ]; then
   base=${ANTHROPIC_BASE_URL:-}; base_src="shell 环境变量"
 fi
-relay=0
-case "$base" in
-  ''|https://api.anthropic.com|https://api.anthropic.com/*) ;;
-  *) relay=1 ;;
-esac
+# 这个地址算不算中转站，由渲染脚本判（它的模式判定里就是这一句）
+relay=$(ANTHROPIC_BASE_URL=$base CLAUDE_SL_NO_REFRESH=1 "$BASH" "$FACTS_SRC" --facts </dev/null 2>/dev/null | sed -n 's/^relay_env=//p')
+relay=${relay:-0}
 if [ "$relay" = 1 ]; then
   host=${base#*://}; host=${host%%/*}
   host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕
@@ -113,53 +111,10 @@ elif [ -z "$py" ]; then
 elif [ ! -r "$CCSWITCH_DB" ]; then
   res WARN 数据/CCSwitch库 "${CCSWITCH_DB} 不可读：中转站费用会回落为 \$x*" "chmod 644 \"$CCSWITCH_DB\"（只读访问需要读权限）"
 else
-  probe=$(python3 - "$CCSWITCH_DB" <<'PY' 2>/dev/null
-import json, math, sqlite3, sys
-try:
-    con = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True, timeout=2)
-    n = con.execute('SELECT COUNT(*) FROM proxy_request_logs').fetchone()[0]
-except Exception:
-    sys.exit(1)                      # 账本表都读不到 = 真的用不了
-
-
-def limit_state(row):
-    """与 statusline-tokens.py 的 current_provider / _limit_usd 同口径。
-    → 'ok' 有效 / 'none' 未设置 / 'bad' 值非法或元数据损坏。"""
-    _, col, meta = row
-    lim = col
-    if meta:
-        try:
-            m = json.loads(meta)
-        except Exception:
-            return 'bad'             # 元数据坏了：未知，不回落旧列
-        if isinstance(m, dict):
-            if 'limitDailyUsd' in m:
-                lim = m.get('limitDailyUsd')
-            # 字典里没有该键：回落旧列（与上游一致）
-        else:
-            return 'bad'
-    if lim is None:
-        return 'none'
-    try:
-        f = float(lim)
-    except (TypeError, ValueError):
-        return 'bad'
-    return 'ok' if math.isfinite(f) and f > 0 else 'bad'
-
-
-try:
-    try:
-        rows = con.execute("SELECT id, limit_daily_usd, meta FROM providers "
-                           "WHERE app_type='claude' AND is_current=1").fetchall()
-    except Exception:                # 旧库没有 meta 列
-        rows = con.execute("SELECT id, limit_daily_usd, NULL FROM providers "
-                           "WHERE app_type='claude' AND is_current=1").fetchall()
-except Exception:
-    print(n, '-', '-', sep='\t')     # providers 表 / 列不完整：渲染侧返回 (None, None)
-    sys.exit(0)
-print(n, len(rows), limit_state(rows[0]) if len(rows) == 1 else '-', sep='\t')
-PY
-  )
+  # 限额口径由 statusline-tokens.py 自己答（与渲染用的是同一段代码），取与事实来源同目录的那一份
+  tokpy=${FACTS_SRC%/*}/statusline-tokens.py
+  [ -f "$tokpy" ] || tokpy=$REPO/src/statusline-tokens.py
+  probe=$(python3 "$tokpy" --provider-state "$CCSWITCH_DB" 2>/dev/null)
   case "$probe" in
     '') res WARN 数据/CCSwitch库 "无法只读打开 ${CCSWITCH_DB}：中转站费用会回落为 \$x*（标价估算）" \
           "确认没有被其他进程独占，且文件确实是 SQLite 库；本工具不会写它" ;;

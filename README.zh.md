@@ -193,6 +193,7 @@ src/subagent-statusline.sh    agent 面板里每个 subagent 的状态行
 tools/preview.sh              并排预览
 tools/doctor.sh               只读诊断（入口）
 tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
+tools/lib/points_to.sh        install 与 doctor 共用的 settings 命令判定
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
 .github/workflows/tests.yml   CI：macOS 与 Linux 全量
 install.sh  run_tests.sh

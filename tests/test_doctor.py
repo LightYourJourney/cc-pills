@@ -655,6 +655,25 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
         self.assertIn('普通文件', self.sb.detail(r, '安装/配置文件'))
 
+    def test_facts_come_from_installed_copy_first(self):
+        """诊断回答的是「装着的那一版会怎么做」：已安装副本能自述（--facts）就以它为准，
+        答不出（旧版、被换成别的脚本）才问仓库里的源文件。"""
+        self.sb.healthy()
+        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
+        with open(inst) as f:
+            src = f.read()
+        self.assertEqual(src.count('\nTHEME=auto '), 1)
+        os.remove(inst)
+        with open(inst, 'w') as f:
+            f.write(src.replace('\nTHEME=auto ', '\nTHEME=nord '))
+        self.assertIn('不能上色', self.sb.detail(self.sb.run(), '缓存/色板'), '没按已安装副本的 theme=nord 判读')
+        os.remove(inst)
+        with open(inst, 'w') as f:
+            f.write('#!/bin/sh\necho hello\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '已安装副本答不出时应回落到仓库源文件')
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+
     def test_config_last_line_without_newline_is_checked(self):
         """末行没有换行符也要解析：渲染侧会读它，诊断不能漏看这一行。"""
         self.sb.install()
@@ -992,16 +1011,6 @@ class Doctor(unittest.TestCase):
         self.assertFalse(os.path.exists(marker), 'doctor 默认不得发起任何网络请求')
 
     # ── 8. 契约：常量与判据不得与渲染脚本漂移 ───────────────────────────
-    def test_thresholds_match_renderer(self):
-        with open(DOCTOR) as f:
-            src = f.read()
-        for name, want in (('THEME_TTL', THEME_TTL), ('TOK_STALE', TOK_STALE),
-                           ('STATUS_STALE', STATUS_STALE),
-                           ('LOCK_STALE', LOCK_STALE), ('PALETTE_V', PALETTE_V)):
-            m = re.search(rf'^{name}=(\d+)', src, re.M)
-            self.assertIsNotNone(m, f'doctor 里没有 {name}')
-            self.assertEqual(m.group(1), str(want), f'{name} 与 statusline-command.sh 不一致')
-
     def _points_to_verdict(self, cmd):
         """写 settings → 跑 doctor 与 install --check，断言两者一致，返回 doctor 结论。"""
         self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
@@ -1022,60 +1031,6 @@ class Doctor(unittest.TestCase):
                           (f'cp {d}/statusline-command.sh {d}/statusline-command.sh.bak; '
                            f'bash {d}/statusline-command.sh', 'PASS')):
             self.assertEqual(self._points_to_verdict(cmd), want, cmd)
-
-    def test_token_field_count_matches_tokens_module(self):
-        with open(DOCTOR, encoding='utf-8') as f:
-            m = re.search(r'^TOK_FIELDS=(\d+)', f.read(), re.M)
-        self.assertIsNotNone(m, 'doctor 里没有 TOK_FIELDS')
-        self.assertEqual(int(m.group(1)), len(TOKENS.FIELDS))
-
-    def test_theme_and_style_lists_match_theme_module(self):
-        """doctor 的白名单一旦落后于 statusline-theme.py，合法配置会被报成「值不合法」。"""
-        with open(DOCTOR, encoding='utf-8') as f:
-            src = f.read()
-        m = re.search(r'theme\) case "\$v" in ([\w|]+)\)', src)
-        self.assertIsNotNone(m, '没找到 theme 白名单')
-        self.assertEqual(set(m.group(1).split('|')), {'auto'} | set(THEME.THEMES))
-        m = re.search(r'pill_style\) case "\$v" in ([\w|-]+)\)', src)
-        self.assertIsNotNone(m, '没找到 pill_style 白名单')
-        self.assertEqual(set(m.group(1).split('|')), set(THEME.STYLES))
-
-    def test_official_url_list_matches_renderer(self):
-        """中转站判定用的「官方地址」白名单必须与渲染脚本逐字一致。"""
-        pat = re.compile(r"''\|((?:https://[^\s|)]+)(?:\|https://[^\s|)]+)*)\)")
-        doc = None
-        for p in doctor_sources():
-            with open(p, encoding='utf-8') as f:
-                doc = pat.search(f.read())
-            if doc:
-                break
-        with open(os.path.join(SRC, 'statusline-command.sh'), encoding='utf-8') as f:
-            src = pat.search(f.read())
-        self.assertIsNotNone(doc, 'doctor 里没找到官方地址白名单')
-        self.assertIsNotNone(src, '渲染脚本里没找到官方地址白名单')
-        self.assertEqual(doc.group(1), src.group(1))
-
-    def test_bash_min_matches_renderer_guard(self):
-        with open(os.path.join(SRC, 'statusline-command.sh'), encoding='utf-8') as f:
-            src = f.read()
-        major = re.search(r'BASH_VERSINFO\[0\]:-0\}" -lt (\d+)', src)
-        minor = re.search(r'BASH_VERSINFO\[1\]\}" -lt (\d+)', src)
-        self.assertIsNotNone(major)
-        self.assertIsNotNone(minor)
-        # 换壳守卫与 doctor 的替代版判定必须用同一条下限，不能一边要求 ≥5。
-        # 锚在守卫自己那句 -ge <major*100+minor> 上：散落的字面量（ctx 42%、FNV 常数、
-        # 八进制转义）会让裸 assertIn 恒真，把下限改了也照样通过。
-        floor = int(major.group(1)) * 100 + int(minor.group(1))
-        self.assertIn(f'; [ "$v" -ge {floor} ]\'', src)
-        with open(DOCTOR, encoding='utf-8') as f:
-            doc = f.read()
-        self.assertIn(f'BASH_MIN={major.group(1)}.{minor.group(1)}', doc)
-        alt = []
-        for p in doctor_sources():
-            with open(p, encoding='utf-8') as f:
-                if 'if ver_ge "$v" "$BASH_MIN"; then alt=' in f.read():
-                    alt.append(p)
-        self.assertTrue(alt, 'doctor 的替代 bash 判定没有用 BASH_MIN')
 
     def test_panel_fail_codes_match_doctor(self):
         """面板写出的原因码与 doctor 解码的集合必须相等（也等于测试用的文案表）。"""
@@ -1101,21 +1056,6 @@ class Doctor(unittest.TestCase):
         self.assertIn('claude-sl-theme-term-wezterm.cache', os.listdir(self.sb.cache))
         r = self.sb.run(env={'TERM_PROGRAM': 'wezterm'})
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS')
-
-    def test_config_keys_match_parser(self):
-        with open(DOCTOR) as f:
-            doc = re.search(r'^CONF_KEYS="([^"]*)"', f.read(), re.M)
-        self.assertIsNotNone(doc, 'doctor 里没有 CONF_KEYS')
-        keys = set(doc.group(1).split())
-        with open(os.path.join(SRC, 'statusline-command.sh')) as f:
-            src = f.read()
-        block = src[src.index('SL_CONF='):src.index('done < "$SL_CONF"')]
-        arms = set()
-        for line in block.splitlines():
-            m = re.match(r'^ {6}([a-z_]+(?:\|[a-z_]+)*)\)', line)
-            if m:
-                arms.update(m.group(1).split('|'))
-        self.assertEqual(keys, arms, 'CONF_KEYS 必须与配置解析器的 case 分支一致')
 
     def test_no_bare_var_before_multibyte(self):
         """`$var` 紧跟多字节字符时，bash 会把首字节吞进变量名（渲染脚本约束 6 同一条坑）。

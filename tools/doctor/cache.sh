@@ -1,17 +1,13 @@
 # ═══ 缓存与后台任务 ════════════════════════════════════════════════════
 # 随 tools/doctor.sh 一起 source；必须保持 bash 3.2 兼容。
 sec 缓存与后台任务
-if [ -n "${CLAUDE_SL_TMP:-}" ]; then
-  SLT=$CLAUDE_SL_TMP; src_note="（CLAUDE_SL_TMP）"
-else
-  tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}       # TMPDIR 常以 / 结尾，显示时避免 //
-  SLT=$tmpdir/claude-sl-${UID:-0}; src_note=""
-fi
+SLT=$F_slt; src_note=""                 # 缓存根由渲染脚本自述；显式 CLAUDE_SL_TMP 时注明来源
+[ "$F_slt_explicit" = 1 ] && src_note="（CLAUDE_SL_TMP）"
 SLT_OK=0
 if [ -L "$SLT" ]; then
   res FAIL 缓存/根 "$SLT$src_note 是符号链接：渲染不会跟随" "换成真实目录，或删掉链接后让刷新重建"
 elif [ ! -e "$SLT" ]; then
-  if [ -n "${CLAUDE_SL_TMP:-}" ]; then
+  if [ "$F_slt_explicit" = 1 ]; then
     res FAIL 缓存/根 "${SLT}（CLAUDE_SL_TMP）不存在：显式路径必须由调用方建好，后台刷新不会创建" \
       "mkdir -m 700 \"$SLT\"，或取消 CLAUDE_SL_TMP"
   else
@@ -38,15 +34,10 @@ else
   res SKIP 缓存/权限 "缓存根不可用"
 fi
 
-# 色板：PKEY 与渲染脚本同一算法（iTerm 按 profile，其余按终端程序名）
-if [ "${TERM_PROGRAM:-}" = iTerm.app ] || [ "${LC_TERMINAL:-}" = iTerm2 ]; then
-  PKEY="iterm-${ITERM_PROFILE:-default}"
-else
-  PKEY="term-${TERM_PROGRAM:-other}"
-fi
-PKEY=${PKEY//[^A-Za-z0-9_-]/_}
-tc=$SLT/claude-sl-theme-$PKEY.cache
-COLOUR_OK=0     # 渲染侧此刻能不能上色（statusline-command.sh 的 NC=0）
+# 色板：路径、期望首行、此刻能不能上色都由渲染脚本自述（终端键只为显示从文件名里取）
+tc=$F_theme_cache
+PKEY=${tc##*/claude-sl-theme-}; PKEY=${PKEY%.cache}
+COLOUR_OK=0     # 渲染侧此刻能不能上色（不看终端色深；色深见 环境/终端）
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/色板 "缓存根不可用"
 elif [ ! -e "$tc" ]; then
@@ -55,21 +46,12 @@ elif [ ! -e "$tc" ]; then
 elif [ -L "$tc" ] || [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
   res WARN 缓存/色板 "色板缓存不是属于本人的普通文件（目录或符号链接），渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
 else
-  # 上色的实际条件（statusline-command.sh「色板缓存」一段）：
-  #   1) 某行 THEME=<主题>/… 的主题部分等于当前 theme；
-  #   2) 某行 P_CTX 的值只含数字与分号（渲染侧 ''|*[!0-9;]*) 会整条丢弃非法值）。
-  # chroma / 风格 / 格式版本不符只触发后台重算，本轮照常上色。
-  cache_theme=""; have_ctx=0
-  while IFS='=' read -r k v; do
-    case "$k" in
-      THEME)   cache_theme=$v ;;
-      P_CTX)   case "$v" in ''|*[!0-9\;]*) ;; *) have_ctx=1 ;; esac ;;
-    esac
-  done < "$tc"
-  [ "${cache_theme%%/*}" = "$C_THEME" ] && [ "$have_ctx" = 1 ] && COLOUR_OK=1
+  # 上色条件由渲染脚本判（主题部分与当前 theme 相同且有合法的 P_CTX）；chroma / 风格 /
+  # 格式版本不符只触发后台重算，本轮照常上色。
+  COLOUR_OK=$F_palette_usable
   line=""; read -r line < "$tc"
   line=${line//[[:cntrl:]]/}                       # 与渲染侧约束 16 一致：别把控制字符打上屏
-  want="THEME=$C_THEME/$C_CHROMA/$C_STYLE/v$PALETTE_V"
+  want=$F_theme_want
   if [ "$line" != "$want" ]; then
     if [ "$COLOUR_OK" = 1 ]; then
       res WARN 缓存/色板 "首行是「${line}」，与当前配置不符（期望 ${want}）；仍按旧色板上色，后台会重算" \
@@ -234,8 +216,8 @@ fi
 
 # 面板共享状态（subagent-statusline.sh）：与主栏共用缓存根，文件名固定带 uid。
 # 只判归属、类型与权限，不读内容（里面只有每个 task 的速率基线）。
-sstate="$SLT/claude-subagent-sl-${UID:-0}.json"
-if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
+sstate=$P_state                         # 面板脚本自述的状态文件路径
+if [ "$P_state_explicit" = 1 ]; then
   res SKIP 缓存/面板状态 "CLAUDE_SUBAGENT_SL_STATE 指定了文件，归属与生命周期由调用方负责"
 elif [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/面板状态 "缓存根不可用"
@@ -259,7 +241,7 @@ fi
 # 面板锁：结构问题（锁路径被非目录占住）当场判；写回失败由面板自己落 STATE.fail，
 # 这里只读结果，不再推演锁目录的年龄与 PID。
 plock="$sstate.lock"; pmark="$sstate.fail"
-if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
+if [ "$P_state_explicit" = 1 ]; then
   res SKIP 缓存/面板锁 "CLAUDE_SUBAGENT_SL_STATE 指定了状态文件，锁由调用方负责"
 elif [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/面板锁 "缓存根不可用"
@@ -303,7 +285,7 @@ elif [ -e "$failf" ]; then
     res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"
   else
     res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前），且没有可用色板：整行无色，后台按 THEME_TTL 重试" \
-      "手工重跑看报错：python3 \"$DEST/statusline-theme.py\" $C_THEME /tmp/palette.txt $C_CHROMA $C_STYLE $PALETTE_V"
+      "手工重跑看报错：python3 \"$DEST/statusline-theme.py\" $C_THEME /tmp/palette.txt $C_CHROMA $C_STYLE ${F_theme_want##*/v}"
   fi
 fi
 

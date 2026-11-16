@@ -65,9 +65,10 @@ else
   res PASS 环境/curl "可用；status_page = on（每分钟请求 status.claude.com）"
 fi
 
-case "${COLORTERM:-}" in
-  truecolor|24bit) cdepth="真彩（24 位）" ;;
-  *) case "${TERM:-}" in *256color*) cdepth="256 色" ;; *) cdepth="无色（状态栏退化为纯文本）" ;; esac ;;
+case "$F_color_depth" in                # 渲染脚本按 COLORTERM / TERM 判出的色深
+  2) cdepth="真彩（24 位）" ;;
+  5) cdepth="256 色" ;;
+  *) cdepth="无色（状态栏退化为纯文本）" ;;
 esac
 case "$cdepth" in
   无色*) res WARN 环境/终端 "TERM=${TERM:-<未设>} COLORTERM=${COLORTERM:-<未设>} → $cdepth" \

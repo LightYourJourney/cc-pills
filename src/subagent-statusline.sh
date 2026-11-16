@@ -57,7 +57,8 @@
 # 配套设置键：subagentStatusLine（用户级 settings.json + CC Switch 共享层）
 #
 
-command -v jq >/dev/null 2>&1 || { while IFS= read -r _; do :; done; exit 0; }  # 纯 builtin 排空 stdin，不依赖 PATH
+# --facts（自述模式，见下）不需要 jq，也不读 stdin
+[ "${1:-}" = --facts ] || command -v jq >/dev/null 2>&1 || { while IFS= read -r _; do :; done; exit 0; }  # 纯 builtin 排空 stdin，不依赖 PATH
 
 umask 077                                    # 状态文件只给本人读写
 # 显式 CLAUDE_SUBAGENT_SL_STATE 最高优先；否则与主栏共用私有根，让
@@ -73,8 +74,13 @@ else
     sroot="$t/claude-sl-${UID:-0}"; make_root=1
   fi
   STATE="$sroot/claude-subagent-sl-${UID:-0}.json"
-  [ "$make_root" = 1 ] && [ ! -d "$sroot" ] && mkdir -m 700 "$sroot" 2>/dev/null
+  [ "$make_root" = 1 ] && [ "${1:-}" != --facts ] && [ ! -d "$sroot" ] && mkdir -m 700 "$sroot" 2>/dev/null
   [ -d "$sroot" ] && [ ! -L "$sroot" ] && [ -O "$sroot" ] && state_ok=1
+fi
+# 自述模式：把状态文件路径报给仓库里的诊断工具（它不必再抄一份路径规则）。只读，不建目录。
+if [ "${1:-}" = --facts ]; then
+  printf '%s\n' "cc-pills-facts=1" "state=$STATE" "state_explicit=$([ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ] && echo 1 || echo 0)"
+  exit 0
 fi
 
 # 残锁判定：lock 目录的 mtime（BSD / GNU stat 顺序同主脚本，不能反）

@@ -2,6 +2,7 @@
 """cc-pills token / 节奏 / 中转站账本助手（由 statusline-command.sh 的 --refresh 后台模式调用）。
 
 用法：statusline-tokens.py <transcript_path> <session_id> [key=value ...]
+      statusline-tokens.py --provider-state <cc-switch.db>   诊断探针，见 provider_probe
   cost=<美元>            stdin cost.total_cost_usd（订阅模式的等价价值；中转站无账本时的回落）
   q5=<已用%>,<resets_at>  5 小时额度（rate_limits.five_hour）
   q7=<已用%>,<resets_at>  7 天额度（rate_limits.seven_day）
@@ -363,43 +364,67 @@ def _limit_usd(v):
     return f if math.isfinite(f) and f > 0 else None
 
 
-def current_provider(conn):
-    """→ (provider_id, 日限额 USD 或 None)。
-
-    与 CC Switch 4.x 的 check_provider_limits 同源：限额写在 providers.meta 的
-    limitDailyUsd（旧库只有 limit_daily_usd 列）。没有或不止一个 is_current 时返回
-    (None, None)——供应商归属不可靠，额度项必须隐藏，不能拿未知当 0。meta 存在但
-    解析失败 / 不是对象，同样按未知处理，不回落旧列（上游已经不读那一列）。
-    """
+def current_rows(conn):
+    """当前供应商的 (id, limit_daily_usd, meta) 行；providers 表 / 列不完整时返回 None。"""
     try:
-        rows = conn.execute(
+        return conn.execute(
             "SELECT id, limit_daily_usd, meta FROM providers "
             "WHERE app_type = 'claude' AND is_current = 1").fetchall()
     except sqlite3.OperationalError:            # 旧库没有 meta 列
         try:
-            rows = conn.execute(
+            return conn.execute(
                 "SELECT id, limit_daily_usd, NULL FROM providers "
                 "WHERE app_type = 'claude' AND is_current = 1").fetchall()
         except sqlite3.OperationalError:
-            return None, None
-    if len(rows) != 1:
-        return None, None
-    pid, col, meta = rows[0]
-    lim, has_meta = None, False
+            return None
+
+
+def limit_state(col, meta):
+    """→ (状态, 日限额 USD)：'ok' 有效 / 'none' 未设置 / 'bad' 值非法或 meta 损坏。
+
+    与 CC Switch 4.x 的 check_provider_limits 同源：限额写在 providers.meta 的
+    limitDailyUsd（旧库只有 limit_daily_usd 列）。meta 里明确写了就以它为准，值坏了也不
+    回落旧列；meta 解析失败 / 不是对象按未知处理（上游已经不读那一列）。
+    """
+    lim = col
     if meta:
         try:
             m = json.loads(meta)
         except Exception:
-            m = None
-        if isinstance(m, dict):
-            if 'limitDailyUsd' in m:            # 明确写了就以它为准，值坏了也不回落到旧列
-                has_meta = True
-                lim = _limit_usd(m.get('limitDailyUsd'))
+            return 'bad', None
+        if not isinstance(m, dict):
+            return 'bad', None
+        if 'limitDailyUsd' in m:
+            lim = m.get('limitDailyUsd')
+    if lim is None:
+        return 'none', None
+    f = _limit_usd(lim)
+    return ('ok', f) if f is not None else ('bad', None)
+
+
+def current_provider(conn):
+    """→ (provider_id, 日限额 USD 或 None)。没有或不止一个 is_current 时返回 (None, None)——
+    供应商归属不可靠，额度项必须隐藏，不能拿未知当 0。"""
+    rows = current_rows(conn)
+    if rows is None or len(rows) != 1:
+        return None, None
+    pid, col, meta = rows[0]
+    return pid, limit_state(col, meta)[1]
+
+
+def provider_probe(db):
+    """诊断探针（--provider-state <db>）：打印「代理日志行数 \t 当前供应商个数 \t 限额状态」，
+    后两段在 providers 表不完整 / 供应商不唯一时为 "-"。账本表读不到则无输出。只读打开。"""
+    conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=2)   # 约束 7
+    try:
+        n = conn.execute('SELECT COUNT(*) FROM proxy_request_logs').fetchone()[0]
+        rows = current_rows(conn)
+        if rows is None:
+            print(n, '-', '-', sep='\t')
         else:
-            has_meta = True                     # meta 坏了：未知，不回落旧列
-    if not has_meta:                            # 旧库没有 meta / meta 是空对象
-        lim = _limit_usd(col)
-    return pid, lim
+            print(n, len(rows), limit_state(*rows[0][1:])[0] if len(rows) == 1 else '-', sep='\t')
+    finally:
+        conn.close()
 
 
 def provider_today(conn, pid, midnight, day):
@@ -566,6 +591,8 @@ def pace(used, cap, left, rates, th, urgent):
 def main():
     if len(sys.argv) < 3:
         return
+    if sys.argv[1] == '--provider-state':
+        return provider_probe(sys.argv[2])
     path, sid = sys.argv[1], sys.argv[2]
     kv = dict(a.split('=', 1) for a in sys.argv[3:] if '=' in a)
 

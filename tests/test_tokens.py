@@ -485,6 +485,27 @@ class DailyLimit(Base):
         self.assertAlmostEqual(r['today_global'] - r['today_cur'], 37.0, places=6,
                                msg='不可归属 = 全局 - 当前供应商（其它供应商 + _session + 尾部）')
 
+    def probe(self, db):
+        return subprocess.run([sys.executable, PATH, '--provider-state', db],
+                              capture_output=True, text=True, env=self.env).stdout
+
+    def test_provider_probe_reports_what_the_renderer_would_use(self):
+        """--provider-state：诊断工具问「限额口径能不能确定」，答案来自渲染用的同一段代码。"""
+        now = int(time.time())
+        cases = [(dict(), '1\tok'),
+                 (dict(current=()), '0\t-'),
+                 (dict(current=('A', 'B')), '2\t-'),
+                 (dict(b_meta=None, b_col=None), '1\tnone'),
+                 (dict(b_meta='{"limitDailyUsd":"abc"}'), '1\tbad'),
+                 (dict(b_meta='not json'), '1\tbad'),
+                 (dict(b_meta='{}', b_col='12.5'), '1\tok')]
+        for kw, want in cases:
+            out = self.probe(self.provider_db(now, **kw)).rstrip('\n')
+            n, rest = out.split('\t', 1)
+            self.assertTrue(n.isdigit() and int(n) > 0, out)
+            self.assertEqual(rest, want, kw)
+        self.assertEqual(self.probe(os.path.join(self.d, 'nope.db')), '', '打不开的库应当无输出')
+
 
 # FIELDS 里各段在 bash 侧对应的变量名（顺序由 FIELDS 决定，见下一个用例）
 BASH_NAMES = {'in': 't_in', 'out': 't_out', 'rate': 'p_rate', 'comp': 'comp',

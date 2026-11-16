@@ -24,7 +24,7 @@ jobs:
         run: |
           BASH=/bin/bash
           for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH=$b && break; done
-          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh; do "$BASH" -n "$f"; done
+          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh; do "$BASH" -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
       - name: 跑测试（隔离沙箱，不联网）
         run: bash run_tests.sh
@@ -42,7 +42,7 @@ jobs:
           jq --version
       - name: 语法检查
         run: |
-          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh; do bash -n "$f"; done
+          for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh; do bash -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
       # 全量：渲染 / tokens / 色板三个模块也要在这里的 bash 与 jq 版本上跑一遍
       # （2026-11-17 裁定，此前只跑平台敏感子集）。

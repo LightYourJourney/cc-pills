@@ -300,6 +300,26 @@ class SubagentState(unittest.TestCase):
                             f'claude-subagent-sl-{os.getuid()}.json')
         self.assertTrue(os.path.isfile(want), '含空格 / 中文的缓存路径不可用')
 
+    def panel_facts(self, env):
+        r = subprocess.run(['bash', SCRIPT, '--facts'], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, env=dict(self.env, **env), timeout=20)
+        return dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l)
+
+    def test_facts_report_state_path_without_touching_disk(self):
+        """--facts：面板自述状态文件路径给诊断工具；只读，不建缓存目录。"""
+        tmp = os.path.join(self.d, 'T')
+        os.makedirs(tmp)
+        f = self.panel_facts({'TMPDIR': tmp + os.sep})
+        root = os.path.join(tmp, f'claude-sl-{os.getuid()}')
+        self.assertEqual(f, {'cc-pills-facts': '1', 'state_explicit': '0',
+                             'state': os.path.join(root, f'claude-subagent-sl-{os.getuid()}.json')})
+        self.assertEqual(os.listdir(tmp), [], '自述模式建了缓存目录')
+        slt = os.path.join(self.d, 'slt')
+        self.assertEqual(self.panel_facts({'CLAUDE_SL_TMP': slt})['state'],
+                         os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json'))
+        f = self.panel_facts({'CLAUDE_SUBAGENT_SL_STATE': '/x/y.json', 'CLAUDE_SL_TMP': slt})
+        self.assertEqual((f['state'], f['state_explicit']), ('/x/y.json', '1'))
+
 
 if __name__ == '__main__':
     unittest.main()
