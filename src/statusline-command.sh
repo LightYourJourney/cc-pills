@@ -698,15 +698,21 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
   fi
 fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
-  # 每行「键=值」，按 TOK_MAP 落到变量；不认识的键忽略。键只收小写字母与数字（它要进
-  # 模式匹配），值剔除控制字符（约束 16：缓存内容同样不可信）。
-  tokv=""
-  while IFS='=' read -r k v; do
-    case "$k" in TOK) tokv=$v; continue ;; ''|*[!a-z0-9]*) continue ;; esac
-    case "$TOK_MAP" in *" $k:"*) m=${TOK_MAP#*" $k:"}; printf -v "${m%% *}" '%s' "${v//[[:cntrl:]]/}" ;; esac
-  done < "$tokf"
-  # 别的格式版本写的缓存（升级后磁盘上的旧文件）：整份不用，等下一轮刷新重写
-  [ "$tokv" = "$TOK_V" ] || for m in $TOK_MAP; do printf -v "${m#*:}" '%s' ''; done
+  # 首行是格式版本：不符（升级后磁盘上的旧文件、别的版本写的）整份不读，等下一轮刷新重写。
+  # 其后每行「键=值」，按 TOK_MAP 落到变量；不认识的键忽略。缓存内容同样不可信（约束 16）：
+  # 键只收小写字母与数字（它要进模式匹配）；值只收生产者会写的形状——等级四种，其余是
+  # 字母数字加 . $ / 或「用尽」——形状不对的那一项按没有处理（宁缺勿假）。
+  {
+    read -r k
+    [ "$k" = "TOK=$TOK_V" ] && while IFS='=' read -r k v; do
+      case "$k" in
+        ''|*[!a-z0-9]*) continue ;;
+        *lv) case "$v" in ok|warn|high|bad) ;; *) continue ;; esac ;;
+        *)   case "$v" in 用尽) ;; *[!A-Za-z0-9.\$/]*) continue ;; esac ;;
+      esac
+      case "$TOK_MAP" in *" $k:"*) m=${TOK_MAP#*" $k:"}; printf -v "${m%% *}" '%s' "$v" ;; esac
+    done
+  } < "$tokf"
 fi
 # 跨窗口一致性：当前 stdin 已用 <100% 时，缓存里的「用尽」不可能属于这个窗口，
 # 直接丢弃等级与 out。bad 但 out 是真实倒计时仍保留——那是「很快用完」的预测。

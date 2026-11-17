@@ -113,7 +113,8 @@ class Freshness(unittest.TestCase):
             f = os.path.join(sb.tmp, 'claude-sl-tok-old.cache')
             for body in ('118M\t736k\t$4.9/h\t1\tok\t-\tok\t-\t-\t-\t-\t-\t-\t-\t98.2\t-\t-\t517\n',
                          'TOK=999\nin=118M\nout=736k\nrate=$4.9/h\nmsgs=517\n',
-                         'in=118M\nout=736k\nmsgs=517\n'):
+                         'in=118M\nout=736k\nmsgs=517\n',
+                         'in=118M\nout=736k\nmsgs=517\nTOK=1\n'):       # 版本行必须是首行
                 with open(f, 'w') as fh:
                     fh.write(body)
                 o = strip(sb.render(sb.stdin('old', q5=20)))

@@ -47,6 +47,7 @@ TOK_STALE = int(read_const('TOK_STALE'))
 STATUS_STALE = int(read_const('STATUS_STALE'))
 LOCK_STALE = int(read_const('LOCK_STALE'))
 PANEL_FAIL_STALE = int(read_const('PANEL_FAIL_STALE', DOCTOR))
+FACTS_V = read_const('FACTS_V', DOCTOR)
 # 面板写回失败的原因码 → doctor 文案里的关键词（集合由契约测试与两边源码对齐）
 PANEL_FAIL_TEXT = {'busy': '抢锁超时', 'merge': '状态合并失败', 'tmp': '临时文件创建失败',
                    'write': '写入失败', 'mv': '替换失败'}
@@ -674,6 +675,62 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '已安装副本答不出时应回落到仓库源文件')
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+
+    def test_old_installed_copy_is_not_executed(self):
+        """只读承诺：不认识 --facts 的旧副本会把它当普通参数、照常跑一遍（建缓存目录）。
+        所以脚本里没有自述标记就不执行它，直接问仓库源文件，并在首行说明装的是旧版。"""
+        self.sb.install()
+        for name in ('statusline-command.sh', 'subagent-statusline.sh'):
+            p = os.path.join(self.sb.dest, name)
+            os.remove(p)
+            with open(p, 'w') as f:
+                f.write('#!/usr/bin/env bash\nmkdir -p "${CLAUDE_SL_TMP:-$TMPDIR/claude-sl-$(id -u)}"\necho hello\n')
+        r = self.sb.run()
+        self.assertFalse(os.path.exists(self.sb.cache), '诊断执行了答不出 --facts 的旧副本')
+        self.assertEqual(self.sb.status(r, '缓存/根'), 'SKIP')
+        first = r.stdout.splitlines()[0]
+        self.assertIn('旧版', first)
+        self.assertIn('install.sh', first)
+
+    def test_facts_of_another_version_are_not_used(self):
+        """自述格式版本不认识（比诊断工具新或旧的副本）：它的键不能按这一版的含义读，问仓库源文件。"""
+        self.sb.healthy()
+        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
+        with open(inst) as f:
+            src = f.read()
+        self.assertEqual(src.count('cc-pills-facts=' + FACTS_V), 1)
+        os.remove(inst)
+        with open(inst, 'w') as f:
+            f.write(src.replace('cc-pills-facts=' + FACTS_V, 'cc-pills-facts=999').replace('\nTHEME=auto ', '\nTHEME=nord '))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '用了别的自述版本报出的 theme=nord')
+        self.assertIn('仓库源文件', r.stdout.splitlines()[0])
+
+    def test_old_copy_caches_are_not_judged_by_the_new_format(self):
+        """装着旧版时磁盘上的 token 缓存是旧格式、旧渲染脚本照常读它：不能按仓库这一版的格式
+        报「渲染侧整份不读」。"""
+        env = self.sb.healthy()
+        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
+        os.remove(inst)
+        with open(inst, 'w') as f:
+            f.write('#!/usr/bin/env bash\necho hello\n')
+        with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache'), 'w') as f:
+            f.write('118M\t736k\t$4.9/h\t1\n')
+        r = self.sb.run(env=env)
+        self.assertNotIn('格式', self.sb.detail(r, '缓存/token'))
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+
+    def test_leftover_old_format_caches_do_not_hide_a_stale_one(self):
+        """升级后已结束会话的旧格式缓存会留到被清理为止；其间活跃会话的陈旧告警不能被它盖住。"""
+        env = self.sb.healthy(tok_age=TOK_STALE + 60)
+        ended = os.path.join(self.sb.cache, 'claude-sl-tok-ended.cache')
+        with open(ended, 'w') as f:
+            f.write('118M\t736k\t-\t1\n')
+        with open(ended + '.ts', 'w') as f:
+            f.write(f'{int(time.time())}\n')
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('TOK_STALE', self.sb.detail(r, '缓存/token'))
 
     def test_reports_installed_version(self):
         """提 issue 时要能说清装的是哪一版：首行给出已安装副本的版本；与仓库不同时两个都给。"""

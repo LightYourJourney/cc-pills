@@ -3,8 +3,10 @@
 sec 缓存与后台任务
 SLT=$F_slt; src_note=""                 # 缓存根由渲染脚本自述；显式 CLAUDE_SL_TMP 时注明来源
 [ "$F_slt_explicit" = 1 ] && src_note="（CLAUDE_SL_TMP）"
-SLT_OK=0
-if [ -L "$SLT" ]; then
+SLT_OK=$F_slt_ok                        # 可不可用由渲染脚本说了算；下面只负责解释为什么不可用
+if [ "$SLT_OK" = 1 ]; then
+  res PASS 缓存/根 "$SLT$src_note"
+elif [ -L "$SLT" ]; then
   res FAIL 缓存/根 "$SLT$src_note 是符号链接：渲染不会跟随" "换成真实目录，或删掉链接后让刷新重建"
 elif [ ! -e "$SLT" ]; then
   if [ "$F_slt_explicit" = 1 ]; then
@@ -15,11 +17,8 @@ elif [ ! -e "$SLT" ]; then
   fi
 elif [ ! -d "$SLT" ]; then
   res FAIL 缓存/根 "$SLT$src_note 存在但不是目录" "删掉它：rm -f \"$SLT\"（下次刷新重建）"
-elif [ ! -O "$SLT" ]; then
-  res FAIL 缓存/根 "$SLT$src_note 不属于当前用户；渲染会拒绝读取" "换一个 CLAUDE_SL_TMP，或删掉该目录"
 else
-  SLT_OK=1
-  res PASS 缓存/根 "$SLT$src_note"
+  res FAIL 缓存/根 "$SLT$src_note 不属于当前用户；渲染会拒绝读取" "换一个 CLAUDE_SL_TMP，或删掉该目录"
 fi
 
 if [ "$SLT_OK" = 1 ]; then
@@ -83,8 +82,12 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
   [ -O "$f" ] || tok_notmine=$((tok_notmine + 1))
-  _first=""; read -r _first < "$f" 2>/dev/null    # 首行是格式版本；不符的缓存渲染侧整份不读
-  [ "$_first" = "TOK=$F_tok_v" ] || tok_malformed=$((tok_malformed + 1))
+  # 首行是格式版本；不符的缓存渲染侧整份不读，所以也不参与下面的新鲜度统计。装着旧副本
+  # （COPY_OLD）时不判：那些缓存是它写的、它照常读，仓库这一版的格式不适用。
+  _first=""; read -r _first < "$f" 2>/dev/null
+  if [ "$COPY_OLD" != 1 ] && [ "$_first" != "TOK=$F_tok_v" ]; then
+    tok_malformed=$((tok_malformed + 1)); continue
+  fi
   ts=$f.ts
   if [ -f "$ts" ] && [ ! -L "$ts" ] && [ -O "$ts" ]; then
     tv=""; read -r tv < "$ts"
@@ -110,9 +113,6 @@ else
   age=$(( NOW - tok_newest ))
   if [ "$tok_notmine" -gt 0 ]; then
     res WARN 缓存/token "$tok_n 个缓存里有 $tok_notmine 个不属于当前用户，会被跳过" "rm -f \"$SLT\"/claude-sl-tok-*"
-  elif [ "$tok_malformed" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_malformed 个缓存不是当前格式（首行应为 TOK=${F_tok_v}；旧版留下的或被截断）：渲染侧整份不读，派生项消失" \
-      "回到那个会话让它刷新一次即可重写；已结束的会话留着无害，30 天后自动清理"
   elif [ "$tok_tsbad" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
@@ -122,6 +122,10 @@ else
   elif [ "$tok_no_ts_old" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：本轮仍沿用旧值，后台刷新按 mtime 回填 .ts 后派生项会被隐藏" \
       "让该会话刷新一次即可补写 .ts；持续出现就查后台 token 计算是否在更新缓存"
+  elif [ "$tok_malformed" -gt 0 ]; then
+    # 排在陈旧之后：升级后已结束会话的旧格式缓存会留很久，不能盖住活跃会话的陈旧告警
+    res WARN 缓存/token "有 $tok_malformed 个缓存不是当前格式（首行应为 TOK=${F_tok_v}；旧版留下的或被截断）：渲染侧整份不读，派生项消失" \
+      "回到那个会话让它刷新一次即可重写；已结束的会话留着无害"
   else
     res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前"
   fi

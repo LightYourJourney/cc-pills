@@ -121,6 +121,9 @@ done
 load_facts() {  # load_facts <脚本> <变量前缀>：首行必须是 cc-pills-facts=<FACTS_V>，否则返回 1
   local k v first=1
   [ -f "$1" ] || return 1
+  # 只读承诺：不认识 --facts 的旧副本会把它当普通参数照常跑一遍（建缓存目录、写面板状态），
+  # 所以源码里没有自述标记就不执行它。
+  case "$(<"$1")" in *cc-pills-facts=*) ;; *) return 1 ;; esac
   while IFS='=' read -r k v; do
     if [ "$first" = 1 ]; then
       first=0
@@ -148,8 +151,16 @@ if [ -z "$FACTS_SRC" ] || [ -z "$PANEL_SRC" ]; then
 fi
 # 首行报版本：已安装副本的；判据若取自仓库源文件（没装 / 旧版答不出）就是仓库的。两者不同
 # 时都给出来——「装的是哪一版」是排查的第一个问题。
+# COPY_OLD：装着一份答不出这一版 --facts 的副本（多半是旧版）。此时判据取自仓库源文件，
+# 而磁盘上的缓存是那份副本写的——与格式版本有关的检查不适用（见 cache.sh）。
+COPY_OLD=0
 if [ "$FACTS_SRC" = "$REPO/src/statusline-command.sh" ]; then
-  printf 'cc-pills %s （取自仓库源文件：已安装副本缺失或答不出 --facts）\n' "${F_version:-未标版本}"
+  if [ -f "$DEST/statusline-command.sh" ]; then
+    COPY_OLD=1
+    printf 'cc-pills %s （取自仓库源文件：已安装副本答不出 --facts，多半是旧版——先重装再诊断：bash %s/install.sh）\n' "${F_version:-未标版本}" "$REPO"
+  else
+    printf 'cc-pills %s （取自仓库源文件：尚未安装）\n' "${F_version:-未标版本}"
+  fi
 else
   R_version=""; load_facts "$REPO/src/statusline-command.sh" R_ || true
   if [ -n "$R_version" ] && [ "$R_version" != "${F_version:-}" ]; then
