@@ -140,17 +140,20 @@ class ContentSafety(CacheBase):
         self.assertIn('hit 97.4%', out, '合法内容不应被整段丢弃')
 
     def test_token_cache_values_must_have_the_expected_shape(self):
-        """缓存里的值只按生产者会写的形状收（宁缺勿假）：等级只有四种，其余是字母数字加 . $ /
-        或「用尽」。形状不对的那一项按没有处理，别的项照常显示。"""
+        """缓存里的值只按生产者会写的形状收（宁缺勿假）：字母数字加 . $ / 或「用尽」，形状不对
+        的那一项按没有处理，别的项照常显示。等级读入时不单独认，由使用处只认四个已知值：未知
+        等级不能让低用量的 5h 亮出重置时间、让 7d 现身。"""
         with Sandbox() as sb:
             sb.write_tok('shape', **{'in': '30M', 'out': '290k', 'rate': '$4.9/h', 'hit': '97.4',
                                      'msgs': 'a[$(id)]', 'comp': '1 2', 'q5lv': 'zzz', 'q5out': '$(id)',
-                                     'q7lv': 'bad', 'q7out': '用尽'})
-            out = strip(sb.render(sb.stdin('shape', q5=40, q7=100), cols=240))
-        for bad in ('id)', 'zzz', 'a[', '1 2'):
+                                     'q7lv': 'zzz'})
+            out = strip(sb.render(sb.stdin('shape', q5=40, q7=30), cols=240))
+        for bad in ('id)', 'a[', '1 2'):
             self.assertNotIn(bad, out, '形状不对的缓存值上了屏')
-        for good in ('↑30M', '↓290k', '$4.9/h', 'hit 97.4%', '5h 40%', '用尽'):
+        for good in ('↑30M', '↓290k', '$4.9/h', 'hit 97.4%', '5h 40%'):
             self.assertIn(good, out, '形状正确的值不应受牵连')
+        self.assertNotIn('↺', out, '未知等级被当成了风险态')
+        self.assertNotIn('7d', out, '未知等级被当成了风险态')
 
     def test_cache_owned_by_other_user_is_ignored(self):
         """用 root 拥有的 /etc/passwd 做符号链接目标，验证 -O 跨用户拒读。"""
