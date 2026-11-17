@@ -449,14 +449,14 @@ if [ "${1:-}" = "--refresh" ]; then
   # 色板：缺失 / THEME、PILL_CHROMA 或 PILL_STYLE 改过 / 超过 THEME_TTL 时重算
   tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
   tm=$(mtime "$THEME_CACHE"); tage=$(( now - ${tm:-0} ))
-  want=$THEME_WANT                       # 首行不符（含格式版本）立即重算，不等 THEME_TTL
   failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
-  if { [ "$tline" != "$want" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
-     && ! { [ "$tline" != "$want" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
+  # 首行不符（含格式版本）立即重算，不等 THEME_TTL；但失败后 THEME_TTL 内不再重跑
+  if { [ "$tline" != "$THEME_WANT" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
+     && ! { [ "$tline" != "$THEME_WANT" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
     python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
     tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
-    if [ "$tline" = "$want" ]; then rm -f "$failf" 2>/dev/null
+    if [ "$tline" = "$THEME_WANT" ]; then rm -f "$failf" 2>/dev/null
     else put "$failf" theme-fail "$now"          # 失败退避：THEME_TTL 内不再每轮重跑
     fi
   fi
@@ -700,15 +700,15 @@ fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
   # 首行是格式版本：不符（升级后磁盘上的旧文件、别的版本写的）整份不读，等下一轮刷新重写。
   # 其后每行「键=值」，按 TOK_MAP 落到变量；不认识的键忽略。缓存内容同样不可信（约束 16）：
-  # 键只收小写字母与数字（它要进模式匹配）；值只收生产者会写的形状——等级四种，其余是
-  # 字母数字加 . $ / 或「用尽」——形状不对的那一项按没有处理（宁缺勿假）。
+  # 键只收小写字母与数字（目标变量名只取自 TOK_MAP）；值只收生产者会写的形状——字母数字加
+  # . $ / 或「用尽」，不符的那一项按没有处理（宁缺勿假）。等级不在这里认：pl / al / risky
+  # 只认四个已知值，其余等同于没有。
   {
     read -r k
     [ "$k" = "TOK=$TOK_V" ] && while IFS='=' read -r k v; do
       case "$k" in
         ''|*[!a-z0-9]*) continue ;;
-        *lv) case "$v" in ok|warn|high|bad) ;; *) continue ;; esac ;;
-        *)   case "$v" in 用尽) ;; *[!A-Za-z0-9.\$/]*) continue ;; esac ;;
+        *) case "$v" in 用尽) ;; *[!A-Za-z0-9.\$/]*) continue ;; esac ;;
       esac
       case "$TOK_MAP" in *" $k:"*) m=${TOK_MAP#*" $k:"}; printf -v "${m%% *}" '%s' "$v" ;; esac
     done
@@ -722,7 +722,7 @@ fi
 [ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
 case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 # 命中率要进算术展开取整，而 $((…)) 会把变量内容当表达式求值：只收「数字.数字」
-case "$t_hit" in *[!0-9.]*|*.*.*|.*|*.) t_hit="" ;; *.*) ;; *) t_hit="" ;; esac
+[[ $t_hit =~ ^[0-9]+\.[0-9]+$ ]] || t_hit=""
 
 # ── claude 状态缓存（过期即隐藏）─────────────────────────────────────────
 st_ind=""

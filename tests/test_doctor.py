@@ -104,6 +104,16 @@ class DoctorSandbox:
                                            'command': f'bash {self.dest}/subagent-statusline.sh'}
             self.write_settings(s)
 
+    def set_installed(self, body, name='statusline-command.sh'):
+        """换掉已安装副本。body 是新内容，或「原文 → 新内容」的函数。"""
+        p = os.path.join(self.dest, name)
+        if callable(body):
+            with open(p) as f:
+                body = body(f.read())
+        os.remove(p)
+        with open(p, 'w') as f:
+            f.write(body)
+
     def write_settings(self, obj):
         p = os.path.join(self.dest, 'settings.json')
         with open(p, 'w') as f:
@@ -661,17 +671,13 @@ class Doctor(unittest.TestCase):
         """诊断回答的是「装着的那一版会怎么做」：已安装副本能自述（--facts）就以它为准，
         答不出（旧版、被换成别的脚本）才问仓库里的源文件。"""
         self.sb.healthy()
-        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
-        with open(inst) as f:
-            src = f.read()
-        self.assertEqual(src.count('\nTHEME=auto '), 1)
-        os.remove(inst)
-        with open(inst, 'w') as f:
-            f.write(src.replace('\nTHEME=auto ', '\nTHEME=nord '))
+
+        def nord(src):
+            self.assertEqual(src.count('\nTHEME=auto '), 1)
+            return src.replace('\nTHEME=auto ', '\nTHEME=nord ')
+        self.sb.set_installed(nord)
         self.assertIn('不能上色', self.sb.detail(self.sb.run(), '缓存/色板'), '没按已安装副本的 theme=nord 判读')
-        os.remove(inst)
-        with open(inst, 'w') as f:
-            f.write('#!/bin/sh\necho hello\n')
+        self.sb.set_installed('#!/bin/sh\necho hello\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '已安装副本答不出时应回落到仓库源文件')
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
@@ -681,10 +687,7 @@ class Doctor(unittest.TestCase):
         所以脚本里没有自述标记就不执行它，直接问仓库源文件，并在首行说明装的是旧版。"""
         self.sb.install()
         for name in ('statusline-command.sh', 'subagent-statusline.sh'):
-            p = os.path.join(self.sb.dest, name)
-            os.remove(p)
-            with open(p, 'w') as f:
-                f.write('#!/usr/bin/env bash\nmkdir -p "${CLAUDE_SL_TMP:-$TMPDIR/claude-sl-$(id -u)}"\necho hello\n')
+            self.sb.set_installed('#!/usr/bin/env bash\nmkdir -p "${CLAUDE_SL_TMP:-$TMPDIR/claude-sl-$(id -u)}"\necho hello\n', name)
         r = self.sb.run()
         self.assertFalse(os.path.exists(self.sb.cache), '诊断执行了答不出 --facts 的旧副本')
         self.assertEqual(self.sb.status(r, '缓存/根'), 'SKIP')
@@ -695,13 +698,11 @@ class Doctor(unittest.TestCase):
     def test_facts_of_another_version_are_not_used(self):
         """自述格式版本不认识（比诊断工具新或旧的副本）：它的键不能按这一版的含义读，问仓库源文件。"""
         self.sb.healthy()
-        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
-        with open(inst) as f:
-            src = f.read()
-        self.assertEqual(src.count('cc-pills-facts=' + FACTS_V), 1)
-        os.remove(inst)
-        with open(inst, 'w') as f:
-            f.write(src.replace('cc-pills-facts=' + FACTS_V, 'cc-pills-facts=999').replace('\nTHEME=auto ', '\nTHEME=nord '))
+
+        def other_version(src):
+            self.assertEqual(src.count('cc-pills-facts=' + FACTS_V), 1)
+            return src.replace('cc-pills-facts=' + FACTS_V, 'cc-pills-facts=999').replace('\nTHEME=auto ', '\nTHEME=nord ')
+        self.sb.set_installed(other_version)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '用了别的自述版本报出的 theme=nord')
         self.assertIn('仓库源文件', r.stdout.splitlines()[0])
@@ -710,15 +711,19 @@ class Doctor(unittest.TestCase):
         """装着旧版时磁盘上的 token 缓存是旧格式、旧渲染脚本照常读它：不能按仓库这一版的格式
         报「渲染侧整份不读」。"""
         env = self.sb.healthy()
-        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
-        os.remove(inst)
-        with open(inst, 'w') as f:
-            f.write('#!/usr/bin/env bash\necho hello\n')
+        self.sb.set_installed('#!/usr/bin/env bash\necho hello\n')
         with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache'), 'w') as f:
             f.write('118M\t736k\t$4.9/h\t1\n')
         r = self.sb.run(env=env)
         self.assertNotIn('格式', self.sb.detail(r, '缓存/token'))
         self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+
+    def test_old_copy_palette_version_is_not_judged(self):
+        """装着旧副本时色板缓存是它按自己的格式版本写的：只比主题 / 彩度 / 风格，不比版本。"""
+        self.sb.install()
+        self.sb.set_installed('#!/usr/bin/env bash\necho hello\n')
+        self.sb.make_cache(theme_line=f'THEME=auto/12/tint/v{int(PALETTE_V) - 1}')
+        self.assertEqual(self.sb.status(self.sb.run(), '缓存/色板'), 'PASS')
 
     def test_leftover_old_format_caches_do_not_hide_a_stale_one(self):
         """升级后已结束会话的旧格式缓存会留到被清理为止；其间活跃会话的陈旧告警不能被它盖住。"""
@@ -738,12 +743,7 @@ class Doctor(unittest.TestCase):
         first = self.sb.run().stdout.splitlines()[0]
         self.assertRegex(first, r'^cc-pills \d+\.\d+\.\d+ ')
         self.assertNotIn('仓库', first)
-        inst = os.path.join(self.sb.dest, 'statusline-command.sh')
-        with open(inst) as f:
-            src = f.read()
-        os.remove(inst)
-        with open(inst, 'w') as f:
-            f.write(re.sub(r'(?m)^VERSION=\S+', 'VERSION=0.0.7', src, count=1))
+        self.sb.set_installed(lambda src: re.sub(r'(?m)^VERSION=\S+', 'VERSION=0.0.7', src, count=1))
         first = self.sb.run().stdout.splitlines()[0]
         self.assertIn('cc-pills 0.0.7 ', first)
         self.assertRegex(first, r'仓库 \d+\.\d+\.\d+')
@@ -909,7 +909,8 @@ class Doctor(unittest.TestCase):
         self.assertIn('日限额', self.sb.detail(r, '数据/CCSwitch库'))
 
     def test_limit_state_matches_tokens_current_provider(self):
-        """doctor 的限额探针是第三份实现：以 TOKENS.current_provider 为 oracle 防漂移。
+        """doctor 经 --provider-state 调用的探针与 TOKENS.current_provider 同源（limit_state）；
+        这里锁的是 doctor 把探针结果映射成状态的那一层，以 current_provider 为 oracle。
 
         唯一必须锁死的语义是「PASS ⇔ 上游认为限额可用」；未设置与非法值都隐藏，
         至于报 SKIP 还是 WARN 是诊断自身的分级，不在这里约束。

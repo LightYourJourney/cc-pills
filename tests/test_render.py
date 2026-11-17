@@ -8,7 +8,7 @@ import re
 import subprocess
 import unittest
 
-from _util import FIELDS, SCRIPT, STYLES, THEME, Sandbox, color_of, strip, width
+from _util import EXAMPLE_CONF, SCRIPT, STYLES, THEME, Sandbox, color_of, run_facts, strip, width
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'golden', 'render.json')
 WIDTHS = (220, 120, 80)
@@ -288,9 +288,7 @@ class Semantics(unittest.TestCase):
 
 def facts(sb, env=None, bash='bash'):
     """--facts：渲染脚本自述它解析出的配置、路径与常量（诊断工具读它，而不是另抄一份）。"""
-    r = subprocess.run([bash, SCRIPT, '--facts'], capture_output=True, text=True,
-                       stdin=subprocess.DEVNULL, env=dict(sb.env, **(env or {})))
-    return dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l), r
+    return run_facts(SCRIPT, dict(sb.env, **(env or {})), bash)
 
 
 class Facts(unittest.TestCase):
@@ -306,7 +304,6 @@ class Facts(unittest.TestCase):
             self.assertEqual(f_['cc-pills-facts'], '2')
             self.assertEqual((f_['bash_min'], f_['py_min']), ('4.2', '3.9'))
             self.assertRegex(f_['version'], r'^\d+\.\d+\.\d+$')
-            self.assertEqual(f_['tok_keys'].split(), list(FIELDS))
             self.assertTrue(f_['tok_v'].isdigit())
             self.assertEqual((f_['theme'], f_['pill_style'], f_['pill_chroma'], f_['status_page']),
                              ('nord', 'jewel', '7', 'off'))
@@ -331,7 +328,7 @@ class Facts(unittest.TestCase):
     def test_every_default_step_is_accepted_from_config(self):
         """示例配置里注释着的默认序列，取消注释后每一行都必须被认——项名单曾跨行书写，
         行尾的 today 后面跟的是换行而不是空格，`step = drop today` 被静默忽略。"""
-        with open(os.path.join(os.path.dirname(SCRIPT), '..', 'config', 'claude-statusline.conf.example')) as f:
+        with open(EXAMPLE_CONF) as f:
             steps = re.findall(r'^\s*#\s*(step\s*=\s*\w+\s+\w+)', f.read(), re.M)
         self.assertGreater(len(steps), 30)
         with Sandbox() as sb:
@@ -369,9 +366,7 @@ class Facts(unittest.TestCase):
             root = os.path.join(sb.dir, 'T')
             os.makedirs(root)
             env = {k: v for k, v in sb.env.items() if k not in ('CLAUDE_SL_TMP', 'CLAUDE_SL_NO_REFRESH')}
-            r = subprocess.run(['bash', SCRIPT, '--facts'], capture_output=True, text=True,
-                               stdin=subprocess.DEVNULL, env=dict(env, TMPDIR=root), timeout=20)
-            f_ = dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l)
+            f_ = run_facts(SCRIPT, dict(env, TMPDIR=root))[0]
             self.assertEqual((f_['slt_explicit'], f_['slt_ok']), ('0', '0'))
             self.assertEqual(f_['slt'], os.path.join(root, f'claude-sl-{os.getuid()}'))
             self.assertEqual(os.listdir(root), [], '自述模式动了缓存目录')

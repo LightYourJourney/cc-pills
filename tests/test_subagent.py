@@ -12,6 +12,8 @@ import tempfile
 import time
 import unittest
 
+from _util import run_facts
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO, 'src', 'subagent-statusline.sh')
 
@@ -301,9 +303,7 @@ class SubagentState(unittest.TestCase):
         self.assertTrue(os.path.isfile(want), '含空格 / 中文的缓存路径不可用')
 
     def panel_facts(self, env):
-        r = subprocess.run(['bash', SCRIPT, '--facts'], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, env=dict(self.env, **env), timeout=20)
-        return dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l)
+        return run_facts(SCRIPT, dict(self.env, **env))[0]
 
     def test_facts_report_state_path_without_touching_disk(self):
         """--facts：面板自述状态文件路径给诊断工具；只读，不建缓存目录。"""

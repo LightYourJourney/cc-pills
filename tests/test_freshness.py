@@ -10,7 +10,7 @@ import subprocess
 import time
 import unittest
 
-from _util import SCRIPT, Sandbox, color_of, strip
+from _util import RENDERER_FACTS, SCRIPT, Sandbox, color_of, strip
 
 
 def write_ts(sb, sid, age=0):
@@ -149,7 +149,7 @@ class Freshness(unittest.TestCase):
         with Sandbox(status='major') as sb:
             self.assertIn('claude major', strip(sb.render(sb.stdin('sp'))))
             with open(os.path.join(sb.tmp, 'claude-sl-status.cache'), 'w') as f:
-                f.write(f'{int(time.time()) - 601}\tmajor\n')
+                f.write(f'{int(time.time()) - int(RENDERER_FACTS["status_stale"]) - 1}\tmajor\n')
             self.assertNotIn('major', strip(sb.render(sb.stdin('sp'))))
 
 

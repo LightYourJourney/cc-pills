@@ -51,6 +51,8 @@ else
   line=""; read -r line < "$tc"
   line=${line//[[:cntrl:]]/}                       # 与渲染侧约束 16 一致：别把控制字符打上屏
   want=$F_theme_want
+  # 装着旧副本（COPY_OLD）时色板是它按自己的格式版本写的：只比主题 / 彩度 / 风格
+  [ "$COPY_OLD" = 1 ] && { line=${line%/v*}; want=${want%/v*}; }
   if [ "$line" != "$want" ]; then
     if [ "$COLOUR_OK" = 1 ]; then
       res WARN 缓存/色板 "首行是「${line}」，与当前配置不符（期望 ${want}）；仍按旧色板上色，后台会重算" \

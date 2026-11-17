@@ -116,8 +116,8 @@ done
 # 配置解析结果、缓存路径、阈值与版本下限都去问渲染脚本，不在这里另抄一份。优先问已安装的
 # 副本——诊断要回答的是「装着的那一版会怎么做」；它答不出（没装、旧版、被换成别的脚本）
 # 再问仓库里的源文件。用跑本工具的同一个 bash 去执行：自述模式在 bash 3.2 上也能工作，
-# 且不读 stdin、不写缓存、不派生后台刷新（旧版脚本不认这个参数，会当成一次普通渲染，
-# 所以仍给它空 stdin 与 CLAUDE_SL_NO_REFRESH=1）。
+# 且不读 stdin、不写缓存、不派生后台刷新。空 stdin 与 CLAUDE_SL_NO_REFRESH=1 是兜底：
+# 万一自述分支失灵、落进普通渲染，也不读终端、不派生刷新。
 load_facts() {  # load_facts <脚本> <变量前缀>：首行必须是 cc-pills-facts=<FACTS_V>，否则返回 1
   local k v first=1
   [ -f "$1" ] || return 1
@@ -141,11 +141,8 @@ FACTS_SRC=""
 for s in "$DEST/statusline-command.sh" "$REPO/src/statusline-command.sh"; do
   if load_facts "$s" F_; then FACTS_SRC=$s; break; fi
 done
-PANEL_SRC=""
-for s in "$DEST/subagent-statusline.sh" "$REPO/src/subagent-statusline.sh"; do
-  if load_facts "$s" P_; then PANEL_SRC=$s; break; fi
-done
-if [ -z "$FACTS_SRC" ] || [ -z "$PANEL_SRC" ]; then
+if [ -z "$FACTS_SRC" ] \
+   || ! { load_facts "$DEST/subagent-statusline.sh" P_ || load_facts "$REPO/src/subagent-statusline.sh" P_; }; then
   echo "渲染脚本答不出自述信息（--facts）：$DEST 与 $REPO/src 里的脚本都不可用" >&2
   exit 1
 fi
@@ -154,21 +151,17 @@ fi
 # COPY_OLD：装着一份答不出这一版 --facts 的副本（多半是旧版）。此时判据取自仓库源文件，
 # 而磁盘上的缓存是那份副本写的——与格式版本有关的检查不适用（见 cache.sh）。
 COPY_OLD=0
-if [ "$FACTS_SRC" = "$REPO/src/statusline-command.sh" ]; then
-  if [ -f "$DEST/statusline-command.sh" ]; then
-    COPY_OLD=1
-    printf 'cc-pills %s （取自仓库源文件：已安装副本答不出 --facts，多半是旧版——先重装再诊断：bash %s/install.sh）\n' "${F_version:-未标版本}" "$REPO"
-  else
-    printf 'cc-pills %s （取自仓库源文件：尚未安装）\n' "${F_version:-未标版本}"
-  fi
-else
+if [ "$FACTS_SRC" != "$REPO/src/statusline-command.sh" ]; then
+  ver_note=已安装副本
   R_version=""; load_facts "$REPO/src/statusline-command.sh" R_ || true
-  if [ -n "$R_version" ] && [ "$R_version" != "${F_version:-}" ]; then
-    printf 'cc-pills %s （已安装副本；仓库 %s）\n' "${F_version:-未标版本}" "$R_version"
-  else
-    printf 'cc-pills %s （已安装副本）\n' "${F_version:-未标版本}"
-  fi
+  [ -n "$R_version" ] && [ "$R_version" != "$F_version" ] && ver_note="${ver_note}；仓库 ${R_version}"
+elif [ -f "$DEST/statusline-command.sh" ]; then
+  COPY_OLD=1
+  ver_note="取自仓库源文件：已安装副本答不出 --facts，多半是旧版——先重装再诊断：bash $REPO/install.sh"
+else
+  ver_note="取自仓库源文件：尚未安装"
 fi
+printf 'cc-pills %s （%s）\n' "$F_version" "$ver_note"
 CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
 BASH_MIN=$F_bash_min; PY_MIN=$F_py_min

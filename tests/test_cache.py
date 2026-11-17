@@ -142,19 +142,11 @@ class ContentSafety(CacheBase):
     def test_token_cache_values_must_have_the_expected_shape(self):
         """缓存里的值只按生产者会写的形状收（宁缺勿假）：等级只有四种，其余是字母数字加 . $ /
         或「用尽」。形状不对的那一项按没有处理，别的项照常显示。"""
-        slt = os.path.join(self.d, 'slt')
-        os.makedirs(slt, mode=0o700)
-        with open(os.path.join(slt, 'claude-sl-tok-shape.cache'), 'w') as f:
-            f.write(tok_line(**{'in': '30M', 'out': '290k', 'rate': '$4.9/h', 'hit': '97.4',
-                                'msgs': 'a[$(id)]', 'comp': '1 2', 'q5lv': 'zzz', 'q5out': '$(id)',
-                                'q7lv': 'bad', 'q7out': '用尽'}))
-        data = json.dumps({
-            'session_id': 'shape', 'cwd': self.d, 'model': {'display_name': 'Opus 5.5'},
-            'context_window': {'used_percentage': 42}, 'cost': {'total_cost_usd': 17.54},
-            'rate_limits': {'five_hour': {'used_percentage': 40, 'resets_at': 9999999999},
-                            'seven_day': {'used_percentage': 100, 'resets_at': 9999999999}}})
-        e = dict(self.env, COLUMNS='240', CLAUDE_SL_NO_REFRESH='1', CLAUDE_SL_TMP=slt)
-        out = strip(subprocess.run(['bash', SCRIPT], input=data, capture_output=True, text=True, env=e).stdout)
+        with Sandbox() as sb:
+            sb.write_tok('shape', **{'in': '30M', 'out': '290k', 'rate': '$4.9/h', 'hit': '97.4',
+                                     'msgs': 'a[$(id)]', 'comp': '1 2', 'q5lv': 'zzz', 'q5out': '$(id)',
+                                     'q7lv': 'bad', 'q7out': '用尽'})
+            out = strip(sb.render(sb.stdin('shape', q5=40, q7=100), cols=240))
         for bad in ('id)', 'zzz', 'a[', '1 2'):
             self.assertNotIn(bad, out, '形状不对的缓存值上了屏')
         for good in ('↑30M', '↓290k', '$4.9/h', 'hit 97.4%', '5h 40%', '用尽'):

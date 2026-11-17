@@ -64,10 +64,15 @@ FIELDS = list(TOKENS.FIELDS)
 IDX = {k: i for i, k in enumerate(FIELDS)}
 
 
-# 渲染脚本自述（--facts）：token 缓存的格式版本等不在测试里另抄一份
-RENDERER_FACTS = dict(l.split('=', 1) for l in subprocess.run(
-    ['bash', SCRIPT, '--facts'], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.splitlines()
-    if '=' in l)
+def run_facts(script=SCRIPT, env=None, bash='bash'):
+    """跑脚本的自述模式（--facts），返回 (键 → 值, 进程结果)。"""
+    r = subprocess.run([bash, script, '--facts'], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, env=env, timeout=20)
+    return dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l), r
+
+
+# 渲染脚本自述：token 缓存的格式版本等不在测试里另抄一份
+RENDERER_FACTS = run_facts()[0]
 
 
 def tok_line(**kw):
