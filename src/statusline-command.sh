@@ -681,7 +681,7 @@ gstatus=${gstatus//[[:cntrl:]]/}
 
 # ── token / 节奏 / 中转站缓存（键=值，见 statusline-tokens.py）───────────
 skey=${sid//\//_}; skey=${skey// /_}
-for m in $TOK_MAP; do printf -v "${m#*:}" '%s' ''; done
+declare -A TK=()                                  # 缓存里读到的「键 → 值」，最后按 TOK_MAP 落到变量
 tokf="${SLT}/claude-sl-tok-${skey}.cache"
 tok_ok=1
 # 新鲜度：生产者写 <cache>.ts。超过 TOK_STALE 秒不读派生值（$/h、out、等级、hit、io、
@@ -700,9 +700,9 @@ fi
 if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; then
   # 首行是格式版本：不符（升级后磁盘上的旧文件、别的版本写的）整份不读，等下一轮刷新重写。
   # 其后每行「键=值」，按 TOK_MAP 落到变量；不认识的键忽略。缓存内容同样不可信（约束 16）：
-  # 键只收小写字母与数字（目标变量名只取自 TOK_MAP）；值只收生产者会写的形状——字母数字加
-  # . $ / 或「用尽」，不符的那一项按没有处理（宁缺勿假）。等级不在这里认：pl / al / risky
-  # 只认四个已知值，其余等同于没有。
+  # 键只收小写字母与数字（它要当数组下标；目标变量名只取自 TOK_MAP）；值只收生产者会写的
+  # 形状——字母数字加 . $ / 或「用尽」，不符的那一项按没有处理（宁缺勿假）。等级不在这里认：
+  # pl / al / risky 只认四个已知值，其余等同于没有。
   {
     read -r k
     [ "$k" = "TOK=$TOK_V" ] && while IFS='=' read -r k v; do
@@ -710,10 +710,11 @@ if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; 
         ''|*[!a-z0-9]*) continue ;;
         *) case "$v" in 用尽) ;; *[!A-Za-z0-9.\$/]*) continue ;; esac ;;
       esac
-      case "$TOK_MAP" in *" $k:"*) m=${TOK_MAP#*" $k:"}; printf -v "${m%% *}" '%s' "$v" ;; esac
+      TK[$k]=$v
     done
   } < "$tokf"
 fi
+for m in $TOK_MAP; do printf -v "${m#*:}" '%s' "${TK[${m%%:*}]-}"; done   # 没读到的项清空
 # 跨窗口一致性：当前 stdin 已用 <100% 时，缓存里的「用尽」不可能属于这个窗口，
 # 直接丢弃等级与 out。bad 但 out 是真实倒计时仍保留——那是「很快用完」的预测。
 [ -n "$q5" ] && [ "$q5" -lt 100 ] && [ "$q5out" = 用尽 ] && { q5out=""; q5lv=""; }

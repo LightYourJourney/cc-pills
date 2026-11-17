@@ -88,8 +88,13 @@ if [ -z "$base" ]; then
   base=${ANTHROPIC_BASE_URL:-}; base_src="shell 环境变量"
 fi
 # 这个地址算不算中转站，由渲染脚本判（它的模式判定里就是这一句）
-D_relay_env=0; ANTHROPIC_BASE_URL=$base load_facts "$FACTS_SRC" D_ || true
-relay=$D_relay_env
+# （地址就是 shell 环境变量时，开头取事实那一次已经判过）
+if [ "$base" = "${ANTHROPIC_BASE_URL:-}" ]; then
+  relay=$F_relay_env
+else
+  D_relay_env=0; ANTHROPIC_BASE_URL=$base load_facts "$FACTS_SRC" D_ || true
+  relay=$D_relay_env
+fi
 if [ "$relay" = 1 ]; then
   host=${base#*://}; host=${host%%/*}
   host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕

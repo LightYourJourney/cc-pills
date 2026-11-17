@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: 安装依赖
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq build-essential bison
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - name: bash 4.2 编译缓存
         id: cache
         uses: actions/cache@v4
@@ -76,6 +76,7 @@ jobs:
       - name: 源码编译 bash 4.2
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          sudo apt-get install -y -qq build-essential bison     # 只有缓存未命中才要编译工具链
           curl -fsSL https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz | tar xz
           cd bash-4.2
           # 2011 年的 K&R 风格 C：新编译器默认 C23，把「void f()」当成无参、隐式声明当错误。
