@@ -160,7 +160,7 @@ fi
 # 后台临时文件另用 mktemp（O_EXCL），防止共享 /tmp 里的符号链接预置。
 umask 077
 
-VERSION=1.0.0            # 发布版本（与 git tag v<版本> 对应）；诊断工具经 --facts 报出，提 issue 时带上
+VERSION=1.0.1            # 发布版本（与 git tag v<版本> 对应）；诊断工具经 --facts 报出，提 issue 时带上
 # ── 可调参数 ────────────────────────────────────────────────────────────
 THEME=auto               # auto | tokyonight | dracula | catppuccin | onedark | nord
 GLYPHS=nerd              # nerd | ascii（终端字体没有 Nerd Font 时用 ascii）
