@@ -219,9 +219,9 @@ install.sh  run_tests.sh
 ## Tests
 
 ```bash
-bash run_tests.sh              # ~1.5–5 min depending on load, fully isolated (no live caches, no network)
+bash run_tests.sh              # parallel shards; ~1 min on an 8-core machine, fully isolated (no live caches, no network)
 bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
-UPDATE_GOLDEN=1 bash run_tests.sh   # after an intentional rendering change
+UPDATE_GOLDEN=1 bash run_tests.sh render   # after an intentional rendering change
 ```
 
 CI runs the full suite on macOS and on `ubuntu-latest`, plus once more with a source-built

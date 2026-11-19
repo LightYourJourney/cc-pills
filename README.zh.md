@@ -203,9 +203,9 @@ install.sh  run_tests.sh
 ## 测试
 
 ```bash
-bash run_tests.sh              # 约 1.5–5 分钟（随负载），全隔离（不读线上缓存、不联网）
+bash run_tests.sh              # 并行分片，8 核机器约 1 分钟；全隔离（不读线上缓存、不联网）
 bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
-UPDATE_GOLDEN=1 bash run_tests.sh   # 有意改变渲染结果后更新金样
+UPDATE_GOLDEN=1 bash run_tests.sh render   # 有意改变渲染结果后更新金样
 ```
 
 CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有一个作业把 PATH 里的 bash 换成源码编译的 4.2.0 再跑一遍。Linux 与 bash 4.2 的实测结论见上面的兼容性矩阵；其中
