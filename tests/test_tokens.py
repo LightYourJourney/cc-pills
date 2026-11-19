@@ -297,6 +297,34 @@ class Pace(Base):
         self.assertEqual([out[IDX['splv']], out[IDX['spout']]], ['-', '-'])
 
 
+class Format(Base):
+    def test_no_four_digit_mantissa(self):
+        """「1000k」「1000M」都该进位到下一档：三位数 M 不留小数时，999.5M 会被格式化成 1000M。"""
+        for n in (999_499, 999_500, 99_950_000, 999_449_999, 999_450_000, 999_499_999, 999_500_000):
+            self.assertNotRegex(self.t.fmt(n), r'^1000', n)
+
+
+class DayBounds(Base):
+    def test_dst_day_is_not_assumed_86400s(self):
+        """日限额的「距重置」= 下一个本地零点 − 现在；夏令时结束那天有 25 小时，不能按 86400 秒算。"""
+        old = os.environ.get('TZ')
+        os.environ['TZ'] = 'America/New_York'
+        time.tzset()
+        try:
+            noon = time.mktime((2026, 11, 1, 12, 0, 0, 0, 0, -1))      # 当天凌晨 2 点回拨一小时
+            midnight, nxt = self.t.day_bounds(noon)
+            self.assertEqual((noon - midnight, nxt - noon), (13 * 3600, 12 * 3600))
+            noon = time.mktime((2026, 11, 2, 12, 0, 0, 0, 0, -1))
+            midnight, nxt = self.t.day_bounds(noon)
+            self.assertEqual((noon - midnight, nxt - noon), (12 * 3600, 12 * 3600))
+        finally:
+            if old is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old
+            time.tzset()
+
+
 class Relay(Base):
     def make_db(self, now):
         db = os.path.join(self.d, 'cc.db')
@@ -371,6 +399,30 @@ class Relay(Base):
         self.assertTrue(r.stdout.strip(), '探针读不出路径带 # ? 的库')
         self.assertEqual(sorted(os.listdir(self.d)), sorted(['a#b?c', 'claude-statusline-ro.json', 'ro.jsonl']),
                          '在截断后的路径上建出了新文件（读写打开）')
+
+    def test_ledger_reads_share_one_snapshot(self):
+        """账本的几条 SELECT 要在同一个读事务里：autocommit 下每条各看各的已提交状态，CC Switch
+        在「是否已入账」与「求和」之间提交一批会话日志时，同一批消息会被账本与自算尾部各算一次。"""
+        import sqlite3 as real
+        now = int(time.time())
+        db = self.make_db(now)
+        seen = []
+
+        class Shim:
+            def __getattr__(self, k):
+                return getattr(real, k)
+
+            def connect(self, *a, **kw):
+                c = real.connect(*a, **kw)
+                c.set_trace_callback(seen.append)
+                return c
+        self.t.sqlite3 = Shim()
+        st = dict(self.t.EMPTY, unl={'m1': ['claude-opus-5-5', 1, 1, 0, 0, 0, now - 60, False]})
+        lt = time.localtime(now)
+        self.t.relay_ledger(db, 'r1', st, now, time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+        selects = [i for i, q in enumerate(seen) if q.lstrip().upper().startswith('SELECT')]
+        self.assertTrue(selects)
+        self.assertTrue(seen[0].strip().upper().startswith('BEGIN'), seen[:2])
 
     def test_today_counts_headless_claude_not_codex(self):
         """今日按 app_type 统计：没渲染过状态栏的 Claude 会话（无头）也计入，Codex 不计。"""

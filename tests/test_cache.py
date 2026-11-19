@@ -535,6 +535,18 @@ class RefreshState(unittest.TestCase):
         self.sb.refresh(self.sb.repo)
         self.assertEqual(self.git_cache()[1], 'feature', '切分支后 TTL 内没有重算')
 
+    def test_repo_fsmonitor_hook_is_not_run(self):
+        """core.fsmonitor 是仓库 .git/config 里可写的命令：拷来的仓库能借它在每轮刷新里执行任意
+        命令。状态栏的 git 调用一律关掉它。"""
+        marker = os.path.join(self.sb.dir, 'fsmonitor-ran')
+        subprocess.run(['git', 'config', 'core.fsmonitor', f'touch {marker}; false'], cwd=self.sb.repo, check=True)
+        with open(os.path.join(self.sb.repo, 'f.txt'), 'w') as f:
+            f.write('x')
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo)
+        self.assertEqual(self.git_cache()[1], 'main')
+        self.assertFalse(os.path.exists(marker), '后台刷新执行了仓库配置的 fsmonitor 钩子')
+
     def test_render_reads_git_cache(self):
         """同步路径读的是缓存，不现算：缓存里写什么分支就显示什么。"""
         self.plant_git_cache('from-cache', age=0)
@@ -580,6 +592,17 @@ class RefreshState(unittest.TestCase):
         env, marker = self.fake_python('exit 1')
         self.sb.refresh(self.sb.repo, env=env)
         self.assertEqual(self.calls(marker), 1, '退避期过后没有重试色板生成')
+
+    def test_theme_failure_backs_off_for_aged_palette_too(self):
+        """首行相符、只是超过 THEME_TTL 的色板：python 失败后同样退避。此前判成功只看首行，旧色板
+        首行本来就相符，于是删掉退避标记，之后每轮刷新都重跑一次 python。"""
+        tc = next(os.path.join(self.sb.tmp, f) for f in os.listdir(self.sb.tmp)
+                  if f.startswith('claude-sl-theme-') and f.endswith('.cache'))
+        os.utime(tc, (self.now - 3600, self.now - 3600))
+        env, marker = self.fake_python('exit 1')
+        for _ in range(3):
+            self.sb.refresh(self.sb.repo, env=env)
+        self.assertEqual(self.calls(marker), 1, '色板生成失败后没有退避，每轮刷新都在重跑')
 
     # ── token 助手节流 ───────────────────────────────────────────────────
     def test_token_helper_skipped_when_inputs_unchanged(self):

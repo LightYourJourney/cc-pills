@@ -141,7 +141,9 @@ FIELDS = ('in', 'out', 'rate', 'comp', 'q5lv', 'q5out', 'q7lv', 'q7out', 'dlv', 
 
 
 def fmt(n):
-    if n >= 999_500_000:                   # 十亿档：1.2GB transcript 实测累计 3.9B
+    # 十亿档（1.2GB transcript 实测累计 3.9B）。三位数 M 不留小数，999.5M 起会被格式化成「1000M」，
+    # 所以按 M 档的取整结果判，而不只是按 999_500_000
+    if n >= 999_500_000 or round(n / 1_000_000, 1) >= 999.5:
         v = round(n / 1_000_000_000, 1)
         return f'{int(v)}B' if v == int(v) else f'{v:.1f}B'
     if n >= 999_500:                       # 999.5k 起按 M 显示，避免 "1000k"
@@ -464,6 +466,9 @@ def relay_ledger(db, sid, st, now, midnight):
     同时把已入账消息移出 st['unl']。"""
     conn = sqlite3.connect(ro_uri(db), uri=True, timeout=1)   # 约束 7
     try:
+        # 下面几条 SELECT 放进同一个读事务：autocommit 下每条各看各的已提交状态，CC Switch 在
+        # 「是否已入账」与「求和」之间提交一批会话日志时，同一批消息会被账本与自算尾部各算一次
+        conn.execute('BEGIN')
         unl = st['unl']
         ids = list(unl)
         for i in range(0, len(ids), 500):      # 会话日志已入账：request_id = 'session:<message.id>'
@@ -599,6 +604,14 @@ def pace(used, cap, left, rates, th, urgent):
     return lvl, dur(eta_s) if eta_s is not None else '-'
 
 
+def day_bounds(now):
+    """→ (本地今天零点, 本地明天零点)。夏令时切换那天不是 86400 秒，明天零点要单独算
+    （mktime 会把 tm_mday + 1 的溢出规整到下个月）。"""
+    lt = time.localtime(now)
+    return (time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)),
+            time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, 0, 0, 0, 0, 0, -1)))
+
+
 def main():
     if len(sys.argv) < 3:
         return
@@ -670,8 +683,7 @@ def main():
         caught_up = caught_up and done
 
     now = time.time()
-    lt = time.localtime(now)
-    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    midnight, next_midnight = day_bounds(now)
     relay = None
     if db and caught_up:
         try:
@@ -728,7 +740,7 @@ def main():
         # 不并本会话 $/h：它可能来自其它供应商或 '_session'，与当前供应商限额不是同一总体
         rates = [x for x in (used / el if el >= 1800 and used > 0 else None,
                              rate(st, 'day', now)) if x is not None]
-        d['dlv'], d['dout'] = pace(used, cap, midnight + 86400 - now, rates, th, URGENT['day'])
+        d['dlv'], d['dout'] = pace(used, cap, next_midnight - now, rates, th, URGENT['day'])
     else:
         d['dlv'] = d['dout'] = '-'
     if relay:

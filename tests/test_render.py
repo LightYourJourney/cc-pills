@@ -181,6 +181,23 @@ class Robustness(unittest.TestCase):
             o = strip(sb.render(sb.stdin(cwd=deep)))
             self.assertNotIn('a/b', o, '末行 truncate_length = 1 没生效')
 
+    def test_c1_controls_stripped_in_c_locale(self):
+        """C locale 下 [[:cntrl:]] 只认单字节，U+009B（UTF-8 终端里等同 CSI）的两个字节会漏过去；
+        stdin 里的文本字段在 jq 里按 Unicode 剔除控制字符。"""
+        with Sandbox() as sb:
+            o = sb.render(sb.stdin(model='Opus\u009b31m5.5', effort='hi\u0085gh'), env={'LC_ALL': 'C'})
+            self.assertNotIn('\u009b', o)
+            self.assertNotIn('\u0085', o)
+            self.assertIn('Opus31m5.5', strip(o))
+
+    def test_config_with_crlf_and_bom(self):
+        """Windows 编辑器存的配置：CRLF 行尾不能让 step 行被判非法，开头的 BOM 不能让首个键变成未知键。"""
+        with Sandbox() as sb:
+            with open(os.path.join(sb.cfg, 'claude-statusline.conf'), 'wb') as f:
+                f.write('\ufefftheme = nord\r\nstep = drop api\r\nstep = drop msgs\r\n'.encode())
+            got = facts(sb)[0]
+        self.assertEqual((got['theme'], got['conf_unknown'], got['conf_bad']), ('nord', '', ''))
+
     def test_ascii_caps_have_background(self):
         with Sandbox(conf_extra='glyphs = ascii') as sb:
             o = sb.render(sb.stdin())
@@ -381,6 +398,10 @@ class OldBash(unittest.TestCase):
             r = subprocess.run(['/bin/bash', copy], input=json.dumps(sb.stdin(ctx=42)), capture_output=True,
                                text=True, env=sb.env, timeout=60)
             self.assertEqual((r.stdout, r.returncode), ('Opus 5.5 · 42%\n', 0))
+            # 最简行同样要剔除控制字符（约束 16）
+            r = subprocess.run(['/bin/bash', copy], input=json.dumps(sb.stdin(ctx=42, model='Opus\x1b[31m\u009b5.5')),
+                               capture_output=True, text=True, env=sb.env, timeout=60)
+            self.assertEqual(r.stdout, 'Opus[31m5.5 · 42%\n')
             r = subprocess.run(['/bin/bash', copy, '--refresh', sb.repo, '-', 'x', 'sub'], capture_output=True,
                                text=True, env=sb.env, timeout=60)
             self.assertEqual((r.stdout, r.stderr, r.returncode), ('', '', 0))

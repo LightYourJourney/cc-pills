@@ -16,7 +16,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 - **单行，按优先级降级。** 每项有从长到短的写法，以及它在「丢弃 / 缩短」序列里的位置；
   十项永不丢弃。某一步一次省出很多列后，被牺牲的项会按逆序恢复。
 - **缓存渲染 + 后台刷新。** 同步路径只调一次 `jq` 再读缓存；git、transcript、色板、状态页
-  都在脱钩的后台进程里算。典型耗时约 20 ms。
+  都在脱钩的后台进程里算。空闲的 Apple Silicon Mac 上典型耗时约 20 ms（大头是 bash 与 jq 的启动）。
 - **七种胶囊风格，对比度验收。** `tint`（默认）/ `cool` / `jewel` / `glass` / `mono` /
   `pastel` / `tokyo-glass`。色板从当前 iTerm profile 生成，每一组「文字 × 胶囊」都过
   WCAG 对比度检查。
@@ -41,10 +41,10 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | macOS + Homebrew bash 5.x | 是 | 主目标 |
 | macOS 自带 `/bin/bash` 3.2 | 换壳 | 找 `/opt/homebrew/bin/bash` 等位置的 ≥4.2 重跑，找不到才退化成最简行 |
 | Linux（GNU coreutils） | 是 | Debian 12（bash 5.2 / Python 3.11）全量测试通过；CI 跑全量（并发写面板状态除外）；无 iTerm profile 时用内置主题 |
-| bash 4.2–4.4 | 是 | CI 每次在源码编译的 bash 4.2.0 上跑全量（并发写面板状态除外）；4.3 / 4.4 未单独跑。历史上修过 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
+| bash 4.2–4.4 | 是 | CI 在每次推送 main 与每个 PR 时，用源码编译的 bash 4.2.0 跑全量（并发写面板状态除外）；4.3 / 4.4 未单独跑。历史上修过 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
-| python3 ≥ 3.9 | 是 | 低于 3.9 安装会拒绝，doctor 报 FAIL |
+| python3 ≥ 3.9 | 是 | CI 在 Python 3.9 上跑全量；低于 3.9 安装会拒绝，doctor 报 FAIL |
 
 ## 缓存
 
@@ -134,7 +134,7 @@ bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   #
 
 | 症状 | 先看哪一项 |
 |---|---|
-| 整行为空 | `环境/jq`、`环境/bash`、`数据/stdin`（会在临时目录里用两份夹具各跑一次，要求输出不同且包含目录与 ctxin） |
+| 整行为空 | `环境/jq`、`环境/bash`、`数据/stdin`（会在临时目录里用两份夹具各跑一次，要求输出不同、不含 stdin 原文，且包含 ctxin 与模型 / ctx% / 费用 / 目录中的任一项） |
 | 只有文字、没有胶囊底色 | `缓存/色板`、`缓存/退避`、`环境/终端` |
 | 少了 `$/h`、`hit`、`io`、`msgs`、`out` | `缓存/token`（超过 `TOK_STALE` 会丢弃派生项） |
 | 少了分支 / 目录 | `环境/git`、`缓存/git` |

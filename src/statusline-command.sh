@@ -152,7 +152,7 @@ if [ "${1:-}" != --facts ] && [ $(( ${BASH_VERSINFO[0]:-0} * 100 + ${BASH_VERSIN
       && exec "$b" "$0" "$@"
   done
   [ "${1:-}" = "--refresh" ] && exit 0
-  jq -r '[.model.display_name, ((.context_window.used_percentage // empty | round | tostring) + "%")] | map(select(. != null)) | join(" · ")' 2>/dev/null
+  jq -r '[.model.display_name, ((.context_window.used_percentage // empty | round | tostring) + "%")] | map(select(. != null) | tostring | gsub("\\p{Cc}"; "")) | join(" · ")' 2>/dev/null
   exit 0
 fi
 
@@ -230,7 +230,8 @@ CONF_READ=0; CONF_UNKNOWN=""; CONF_BAD=""
 if [ -f "$SL_CONF" ] && [ -r "$SL_CONF" ]; then
   CONF_READ=1; CONF_STEPS=()
   while IFS='=' read -r k v || [ -n "$k" ]; do      # || -n：末行没有换行符时 read 返回非零，但变量已赋值
-    k=${k//[[:space:]]/}; v=${v%%#*}; rv=$v; v=${v//[[:space:]]/}
+    # Windows 编辑器存的配置：去掉开头的 BOM 与行尾的 CR（step 行按原文 rv 解析，[[:space:]] 管不到它）
+    k=${k#$'\xef\xbb\xbf'}; k=${k//[[:space:]]/}; v=${v%%#*}; rv=${v//$'\r'/}; v=${v//[[:space:]]/}
     case "$k" in
       ''|\#*) ;;
       theme)  case "$v" in auto|tokyonight|dracula|catppuccin|onedark|nord) THEME=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
@@ -370,16 +371,19 @@ pathkey() {
 
 # git 三件套 → "repo_root \t branch \t 状态旗标"（空字段用 "-" 占位，约束 5）；
 # 写缓存时后台刷新再追加第 4 段「写入时刻」（GIT_TTL 判定用）
+# core.fsmonitor 是仓库 .git/config 里可写的命令（拷来的仓库能借它在每轮刷新里执行任意命令），
+# 一律关掉。仓库配置的 clean filter 仍可能在 status 刷新索引时执行——这是所有带 git 信息的提示符
+# 共有的暴露面，此处不另做处理。
 git_data() {
   local root branch status
-  root=$(git --no-optional-locks rev-parse --show-toplevel 2>/dev/null)
-  branch=$(git --no-optional-locks symbolic-ref --short HEAD 2>/dev/null)
-  [ -z "$branch" ] && branch=$(git --no-optional-locks rev-parse --short HEAD 2>/dev/null)  # detached HEAD 回退短 SHA
+  root=$(git --no-optional-locks -c core.fsmonitor=false rev-parse --show-toplevel 2>/dev/null)
+  branch=$(git --no-optional-locks -c core.fsmonitor=false symbolic-ref --short HEAD 2>/dev/null)
+  [ -z "$branch" ] && branch=$(git --no-optional-locks -c core.fsmonitor=false rev-parse --short HEAD 2>/dev/null)  # detached HEAD 回退短 SHA
   status=""
   if [ -n "$branch" ]; then
     # --porcelain=v1 的分支头在任何 locale 下都输出英文 ahead/behind，
     # 不可换成 `status -sb`（后者会本地化成「领先/落后」导致匹配失效）。
-    status=$(git --no-optional-locks status --porcelain=v1 -b 2>/dev/null | awk '
+    status=$(git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -b 2>/dev/null | awk '
       NR == 1 {
         if (match($0, /ahead [0-9]+/))  a = substr($0, RSTART + 6, RLENGTH - 6)
         if (match($0, /behind [0-9]+/)) h = substr($0, RSTART + 7, RLENGTH - 7)
@@ -451,12 +455,16 @@ if [ "${1:-}" = "--refresh" ]; then
   tm=$(mtime "$THEME_CACHE"); tage=$(( now - ${tm:-0} ))
   failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
-  # 首行不符（含格式版本）立即重算，不等 THEME_TTL；但失败后 THEME_TTL 内不再重跑
-  if { [ "$tline" != "$THEME_WANT" ] || [ "$tage" -ge "$THEME_TTL" ]; } \
-     && ! { [ "$tline" != "$THEME_WANT" ] && [ $((now - ft)) -lt "$THEME_TTL" ]; }; then
-    python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1
-    tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
-    if [ "$tline" = "$THEME_WANT" ]; then rm -f "$failf" 2>/dev/null
+  # 首行不符（含格式版本）立即重算，不等 THEME_TTL；失败后 THEME_TTL 内不再重跑。成功 = python
+  # 正常退出且写出的首行相符——只看首行的话，「首行相符、只是过期」的旧色板失败了也算成功，
+  # 退避标记被删掉，之后每轮刷新都重跑一次 python
+  if { [ "$tline" != "$THEME_WANT" ] || [ "$tage" -ge "$THEME_TTL" ]; } && [ $((now - ft)) -ge "$THEME_TTL" ]; then
+    pal_ok=0
+    if python3 "${HERE}/statusline-theme.py" "$THEME" "$THEME_CACHE" "$PILL_CHROMA" "$PILL_STYLE" "$PALETTE_V" >/dev/null 2>&1; then
+      tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
+      [ "$tline" = "$THEME_WANT" ] && pal_ok=1
+    fi
+    if [ "$pal_ok" = 1 ]; then rm -f "$failf" 2>/dev/null
     else put "$failf" theme-fail "$now"          # 失败退避：THEME_TTL 内不再每轮重跑
     fi
   fi
@@ -616,7 +624,8 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     ($sl.period // "-"),
     (if ($sl.used_usd | num) == null then "-" else ($sl.used_usd | tostring) end),
     (if ($sl.limit_usd | num) == null then "-" else ($sl.limit_usd | tostring) end)
-  ] | map(tostring | gsub("[\t\n]"; " ") | if . == "" then "-" else . end)   # 空串也占位（// 只管 null）
+  ] | map(tostring | gsub("[\t\n]"; " ") | gsub("\\p{Cc}"; "")   # 约束 16：按 Unicode 剔除控制字符（含 C1，
+         | if . == "" then "-" else . end)                         # C locale 下 bash 的 [[:cntrl:]] 认不出）；空串也占位
     | join("\t")' 2>/dev/null <<< "$input")
 
 # 变量名单只写一份，顺序与上面 jq 数组一致；read 与占位符清空共用

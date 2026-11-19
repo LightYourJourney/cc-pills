@@ -1000,7 +1000,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('原文', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_detects_single_field_extractor(self):
-        """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，必须要求目录与 ctxin。"""
+        """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，所以要求 ctxin 加任一可辨识字段的渲染形态。"""
         self.sb.install()
         self.sb.render_stub('#!/usr/bin/env bash\njq -r .model.display_name\n')
         r = self.sb.run()
@@ -1008,7 +1008,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('渲染形态', self.sb.detail(r, '数据/stdin'))
 
     def test_smoke_detects_multi_field_extractor(self):
-        """提取 model+ctx% 两个字段的脚本仍不是渲染器：目录与 ctxin 必须出现。"""
+        """提取 model+ctx% 两个字段的脚本仍不是渲染器：没有 ctxin 的渲染形态（123k）就判 FAIL。"""
         self.sb.install()
         self.sb.render_stub("#!/usr/bin/env bash\n"
                     "jq -r '\"\\(.model.display_name) \\(.context_window.used_percentage)%\"'\n")

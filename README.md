@@ -20,7 +20,7 @@ measured against)
   sacrificed items are restored.
 - **Cached render + background refresh.** The synchronous path does one `jq` call and reads
   caches; git, transcripts, palettes and the status page are refreshed in a detached process.
-  Typical render: ~20 ms.
+  Typical render: ~20 ms on an idle Apple Silicon Mac (most of it is bash and jq startup).
 - **Seven pill styles, contrast-validated.** `tint` (default), `cool`, `jewel`, `glass`,
   `mono`, `pastel`, `tokyo-glass`. Palettes are generated from your terminal's iTerm profile
   and checked against WCAG contrast on every text/pill pair.
@@ -46,10 +46,10 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 | macOS + Homebrew bash 5.x | yes | primary target |
 | macOS stock `/bin/bash` 3.2 | re-exec | jumps to a ≥4.2 build at `/opt/homebrew/bin/bash` etc.; only without one does it fall back to the minimal line |
 | Linux (GNU coreutils) | yes | full suite passes on Debian 12 (bash 5.2 / Python 3.11); CI runs the full suite (except the concurrent panel-write case); built-in themes when there is no iTerm profile |
-| bash 4.2–4.4 | yes | CI runs the full suite on a source-built bash 4.2.0 on every push (except the concurrent panel-write case); 4.3 / 4.4 are not run separately. Two 4.2-only differences were found and fixed earlier: empty-format `printf -v` and second-granularity `-nt` |
+| bash 4.2–4.4 | yes | CI runs the full suite on a source-built bash 4.2.0 on every push to main and every PR (except the concurrent panel-write case); 4.3 / 4.4 are not run separately. Two 4.2-only differences were found and fixed earlier: empty-format `printf -v` and second-granularity `-nt` |
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
-| python3 ≥ 3.9 | yes | below 3.9 the installer refuses and the diagnostic reports FAIL |
+| python3 ≥ 3.9 | yes | CI runs the full suite on Python 3.9; below 3.9 the installer refuses and the diagnostic reports FAIL |
 
 ## Cache
 
@@ -150,7 +150,7 @@ diagnostic modules cannot load, 2 = bad arguments.
 
 | Symptom | Look at |
 |---|---|
-| Empty line | `环境/jq`, `环境/bash`, `数据/stdin` (runs the installed script on two fixtures in a temp dir; outputs must differ and include the directory and ctxin) |
+| Empty line | `环境/jq`, `环境/bash`, `数据/stdin` (runs the installed script on two fixtures in a temp dir; outputs must differ, must not echo stdin, and must include ctxin plus at least one of model / ctx% / cost / directory) |
 | Text but no pill colours | `缓存/色板`, `缓存/退避`, `环境/终端` |
 | No `$/h`, `hit`, `io`, `msgs`, `out` | `缓存/token` (older than `TOK_STALE` drops derived items) |
 | No branch / directory | `环境/git`, `缓存/git` |
