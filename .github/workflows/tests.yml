@@ -9,6 +9,7 @@ on:
 jobs:
   macos:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: 安装依赖（runner 自带 bash 3.2，脚本需要 ≥ 4.2）
@@ -31,6 +32,7 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: 安装依赖
@@ -59,10 +61,32 @@ jobs:
           CCPILLS_SKIP_CONCURRENCY: '1'
         run: bash run_tests.sh
 
+  # python 3.9 是支持的下限（PY_MIN，str.removesuffix）。runner 自带的 python 更新，下限
+  # 此前只在 README 里声明；这里用 3.9 跑全量——测试本身与两个助手都在这个版本上跑。
+  python39:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: 安装依赖
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: 版本
+        run: |
+          python3 --version
+          [ "$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = 3.9 ]
+      - name: 跑测试（python 3.9；并发用例除外）
+        env:
+          CCPILLS_SKIP_CONCURRENCY: '1'
+        run: bash run_tests.sh
+
   # bash 4.2 是支持的下限（关联数组、printf %(…)T）。发行版早已不带这么旧的 bash，只能源码编译；
   # 编译产物按版本缓存。此前只在 2026-10-31 手工验证过一次，之后改动同步路径都没有复跑。
   bash42:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: 安装依赖

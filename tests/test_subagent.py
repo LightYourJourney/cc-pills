@@ -250,6 +250,34 @@ class SubagentState(unittest.TestCase):
                                  env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st)).stdout
         self.assertIn('ctx 剩75%', out)
 
+    def test_panel_line_fields(self):
+        """面板行：名字、按宽度截断的描述、模型 / effort / tok 与增速 / ctx 剩余 / 时长，非运行态
+        带 [状态] 且不计时长，剩余 < 20% 带 ⚠。"""
+        now = time.time()
+        st = os.path.join(self.d, 'f.json')
+        with open(st, 'w') as f:
+            json.dump({'p': {'t': now - 10, 'k': 200000}}, f)
+        tasks = {'columns': 120, 'tasks': [
+            {'id': 'p', 'name': 'reviewer', 'status': 'running', 'description': '审查' * 100,
+             'model': 'claude-opus-5-5[1m]', 'effort': 'high', 'startTime': (now - 125) * 1000,
+             'tokenCount': 250000, 'contextWindowSize': 1000000},
+            {'id': 'q', 'name': 'agent', 'status': 'completed', 'description': 'done',
+             'model': 'm', 'startTime': (now - 125) * 1000, 'tokenCount': 900000,
+             'contextWindowSize': 1000000}]}
+        out = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
+                             env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60).stdout
+        rows = {r['id']: r['content'] for r in map(json.loads, out.splitlines())}
+        p = rows['p']
+        self.assertTrue(p.startswith('reviewer 审查'), p)
+        self.assertIn('…', p, '超宽描述没有截断')
+        self.assertLessEqual(len(p), 120)
+        self.assertRegex(p, r'— opus-5-5 · high · tok 250k ↑[45]\.\dk/s · ctx 剩75% · 2m0[5-9]s$')
+        q = rows['q']
+        self.assertTrue(q.startswith('done  — '), q)
+        self.assertIn('ctx 剩10%⚠', q)
+        self.assertTrue(q.endswith(' [completed]'), q)
+        self.assertNotRegex(q, r'\dm\d\ds', '非运行态不应显示时长')
+
     def test_default_state_path_is_per_user(self):
         tmp = os.path.join(self.d, 'T')
         os.makedirs(tmp, mode=0o700)

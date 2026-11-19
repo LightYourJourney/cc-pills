@@ -15,6 +15,19 @@ WIDTHS = (220, 120, 80)
 SAFE = 4            # SAFE_MARGIN：可用宽度 = COLUMNS − 4（docs/DECISIONS.md）
 
 
+def x256(r, g, b):
+    """xterm 256 色里离 (r, g, b) 最近的索引：色块六档 0/95/135/175/215/255，灰阶 8 + 10k。"""
+    def c6(v):
+        c = 0 if v < 48 else 1 if v < 115 else min((v - 35) // 40, 5)
+        return c, (55 + 40 * c if c else 0)
+    (ri, rl), (gi, gl6), (bi, bl) = c6(r), c6(g), c6(b)
+    cd = (r - rl) ** 2 + (g - gl6) ** 2 + (b - bl) ** 2
+    k = min(max(int(((r + g + b) // 3 - 3) / 10), 0), 23)
+    gv = 8 + 10 * k
+    gd = (r - gv) ** 2 + (g - gv) ** 2 + (b - gv) ** 2
+    return 232 + k if gd < cd else 16 + 36 * ri + 6 * gi + bi
+
+
 def scenarios(sb):
     """(名称, stdin, token 缓存字段, 额外环境变量, Claude 状态)。"""
     cjk = os.path.join(sb.repo, '课程资料', '量子力学作业')
@@ -182,6 +195,12 @@ class Robustness(unittest.TestCase):
             self.assertTrue(re.search(r'[34]8;5;\d+m', o))
             self.assertNotIn('8;2;', o)
             self.assertNotRegex(o, r'\x1b\[[0-9;]*;m', '出现了缺颜色值的非法 SGR')
+            # 每个 256 色索引都得是色板里某个颜色按 xterm 色块（六档 0/95/135/175/215/255，
+            # 不等距）与 24 级灰阶取最近的结果
+            want = {x256(*map(int, v.split(';'))) for v in sb.theme().values()
+                    if re.fullmatch(r'\d+;\d+;\d+', v)}
+            got = {int(n) for n in re.findall(r'[34]8;5;(\d+)', o)}
+            self.assertLessEqual(got, want, '256 色换算不是按 xterm 色块与灰阶取最近')
 
     def test_long_paths_and_key_collisions(self):
         with Sandbox() as sb:
@@ -284,6 +303,78 @@ class Semantics(unittest.TestCase):
             sb.refresh(sb.repo)
             self.assertFalse(os.path.exists(os.path.join(sb.tmp, 'claude-sl-status.try')),
                              'status_page = off 时不应发起状态页请求')
+
+    def test_ctx_turns_yellow_at_ctx_warn(self):
+        """ctx 已用 ≥ CTX_WARN（70）黄、≥ CTX_BAD（90）红；金样里没有 70–89 这一档。"""
+        with Sandbox() as sb:
+            th = sb.theme()
+            self.assertEqual(color_of(sb.render(sb.stdin(ctx=75)), '75%'), th['T_WARN'])
+            self.assertEqual(color_of(sb.render(sb.stdin(ctx=69)), '69%'), th['T_NEU'])
+
+    def test_hit_ratio_falls_back_to_stdin(self):
+        """token 缓存没有会话级命中率时，回落 stdin 的 prompt_cache.hit_ratio。"""
+        with Sandbox() as sb:
+            d = sb.stdin('hr', cache=3000)
+            d['prompt_cache']['hit_ratio'] = 0.873
+            self.assertIn('hit 87.3%', strip(sb.render(d)))
+            sb.write_tok('hr', hit='97.4')
+            self.assertIn('hit 97.4%', strip(sb.render(d)), '会话级累计应优先于 stdin')
+
+    def test_reset_countdown_pads_minutes(self):
+        with Sandbox() as sb:
+            d = sb.stdin(q5=60)
+            d['rate_limits']['five_hour']['resets_at'] = sb.now + 3 * 3600 + 5 * 60 + 30
+            self.assertIn('↺3h05m', strip(sb.render(d)))
+
+    def test_cache_countdown_tiers(self):
+        """TTL 1h：剩余 ≥ 30m 隐藏；10–30m 在尾段弱化显示；< 10m 升为黄色胶囊。"""
+        with Sandbox() as sb:
+            th = sb.theme()
+            self.assertNotIn('cache', strip(sb.render(sb.stdin(cache=2400))))
+            o = sb.render(sb.stdin(cache=1200))
+            self.assertIn('cache 20m', strip(o))
+            self.assertNotEqual(color_of(o, '20m'), th['T_WARN'], '过半未到 1/6 只弱化，不告警')
+            o = sb.render(sb.stdin(cache=300))
+            self.assertIn('cache 5m', strip(o))
+            self.assertEqual(color_of(o, 'cache 5m'), th['T_WARN'])
+
+
+class OldBash(unittest.TestCase):
+    """bash < 4.2（macOS 自带 3.2）走开头的版本守卫：换用新版 bash 重跑，找不到才出最简行。"""
+
+    def setUp(self):
+        v = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True,
+                           text=True).stdout.strip()
+        if v != '3':
+            self.skipTest(f'/bin/bash 不是 3.x（{v or "不存在"}）')
+
+    def test_reexecs_into_newer_bash(self):
+        with Sandbox() as sb:
+            d = sb.stdin(q5=60)
+            new = sb.render(d)
+            r = subprocess.run(['/bin/bash', SCRIPT], input=json.dumps(d), capture_output=True, text=True,
+                               env=dict(sb.env, COLUMNS='220'), timeout=60)
+        if not any(os.access(b, os.X_OK) for b in ('/opt/homebrew/bin/bash', '/usr/local/bin/bash')):
+            self.skipTest('守卫的候选位置没有新版 bash')
+        self.assertEqual(r.stdout, new, '3.2 换壳后的渲染与直接用新版 bash 不同')
+
+    def test_minimal_line_when_no_newer_bash(self):
+        """候选位置都没有新版 bash：只出「模型 · ctx%」，--refresh 直接退出。候选路径写死在脚本里，
+        所以在一份把候选换成不存在路径的副本上跑。"""
+        with Sandbox() as sb:
+            with open(SCRIPT) as f:
+                src = f.read()
+            cand = 'for b in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do'
+            self.assertEqual(src.count(cand), 1)
+            copy = os.path.join(sb.dir, 'statusline-command.sh')
+            with open(copy, 'w') as f:
+                f.write(src.replace(cand, 'for b in /nonexistent/bash; do'))
+            r = subprocess.run(['/bin/bash', copy], input=json.dumps(sb.stdin(ctx=42)), capture_output=True,
+                               text=True, env=sb.env, timeout=60)
+            self.assertEqual((r.stdout, r.returncode), ('Opus 5.5 · 42%\n', 0))
+            r = subprocess.run(['/bin/bash', copy, '--refresh', sb.repo, '-', 'x', 'sub'], capture_output=True,
+                               text=True, env=sb.env, timeout=60)
+            self.assertEqual((r.stdout, r.stderr, r.returncode), ('', '', 0))
 
 
 def facts(sb, env=None, bash='bash'):

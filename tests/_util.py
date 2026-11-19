@@ -60,6 +60,10 @@ def width(s):
     return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in strip(s))
 
 
+# 单次渲染 / 刷新的上限：挂住时让用例失败，而不是让整套测试（和 CI）一直等下去。
+# 留得很宽——高负载的机器上一次渲染也只要几百毫秒。
+TIMEOUT = 60
+
 FIELDS = list(TOKENS.FIELDS)
 IDX = {k: i for i, k in enumerate(FIELDS)}
 
@@ -124,7 +128,7 @@ class Sandbox:
 
     def refresh(self, cwd, sid='test-init', mode='sub', env=None):
         subprocess.run(['bash', SCRIPT, '--refresh', cwd, '-', sid, mode],
-                       env=dict(self.env, **(env or {})), capture_output=True)
+                       env=dict(self.env, **(env or {})), capture_output=True, timeout=TIMEOUT)
 
     def write_tok(self, sid, **kw):
         with open(os.path.join(self.tmp, f'claude-sl-tok-{sid}.cache'), 'w') as f:
@@ -158,7 +162,7 @@ class Sandbox:
     def render(self, stdin, cols=220, env=None, raw=False):
         data = stdin if isinstance(stdin, str) else json.dumps(stdin)
         r = subprocess.run(['bash', SCRIPT], input=data, capture_output=True, text=True,
-                           env=dict(self.env, COLUMNS=str(cols), **(env or {})))
+                           env=dict(self.env, COLUMNS=str(cols), **(env or {})), timeout=TIMEOUT)
         return r if raw else r.stdout
 
     def theme(self):
