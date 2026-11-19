@@ -68,9 +68,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
+      # actions/setup-python 在新版 ubuntu runner 上已没有 3.9 的构建；用 uv 装 python-build-standalone
+      # 的 3.9，把它的 bin（含 python3）放到 PATH 最前
+      - uses: astral-sh/setup-uv@v6
+      - name: 安装 python 3.9
+        run: |
+          uv python install 3.9
+          dirname "$(uv python find 3.9)" >> "$GITHUB_PATH"
       - name: 安装依赖
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - name: 版本
