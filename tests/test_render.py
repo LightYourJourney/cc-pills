@@ -228,6 +228,15 @@ class Robustness(unittest.TestCase):
             self.assertTrue(br.endswith('…'))
             self.assertLessEqual(width(br), 21)
 
+    def test_long_ascii_branch_truncated_to_20_columns(self):
+        """超长分支名缩到 20 列 + …（与「从全名逐字去尾」结果相同，但不按全名长度逐字量宽）。"""
+        with Sandbox() as sb:
+            name = 'feature/' + 'x' * 101
+            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/' + name], cwd=sb.repo, check=True)
+            sb.refresh(sb.repo)
+            o = strip(sb.render(sb.stdin(), 80))
+            self.assertIn(' ' + name[:20] + '…', o)
+            self.assertIn(name, strip(sb.render(sb.stdin(), 400)), '宽屏应显示全名')
 
 class Semantics(unittest.TestCase):
     def test_quota_colored_by_current_value(self):

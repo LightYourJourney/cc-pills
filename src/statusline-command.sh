@@ -950,7 +950,9 @@ g=""; gs=""                                            # 长分支名（显示�
 if [ -n "$branch" ]; then
   g="${GLYPH_BRANCH}${branch}"; dw "$branch"
   if [ "$DW" -gt 24 ]; then                            # 按显示宽度截（中文分支名每字两列）
-    b=$branch; while dw "$b"; [ "$DW" -gt 20 ]; do b=${b%?}; done
+    # 从前 20 个字符起截：dw ≥ 字符数，更长的前缀不可能放进 20 列，结果与从全名逐字去尾相同，
+    # 但不再按全名长度逐字量宽（109 字符的分支名此前每次渲染多约 5 ms）
+    b=${branch:0:20}; while dw "$b"; [ "$DW" -gt 20 ]; do b=${b%?}; done
     gs="${GLYPH_BRANCH}${b}…"
   fi
 fi
