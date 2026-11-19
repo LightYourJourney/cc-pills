@@ -141,19 +141,28 @@ class ContentSafety(CacheBase):
 
     def test_token_cache_values_must_have_the_expected_shape(self):
         """缓存里的值只按生产者会写的形状收（宁缺勿假）：字母数字加 . $ / 或「用尽」，形状不对
-        的那一项按没有处理，别的项照常显示。等级读入时不单独认，由使用处只认四个已知值：未知
-        等级不能让低用量的 5h 亮出重置时间、让 7d 现身。"""
+        的那一项按没有处理，别的项照常显示。"""
         with Sandbox() as sb:
             sb.write_tok('shape', **{'in': '30M', 'out': '290k', 'rate': '$4.9/h', 'hit': '97.4',
-                                     'msgs': 'a[$(id)]', 'comp': '1 2', 'q5lv': 'zzz', 'q5out': '$(id)',
-                                     'q7lv': 'zzz'})
-            out = strip(sb.render(sb.stdin('shape', q5=40, q7=30), cols=240))
+                                     'msgs': 'a[$(id)]', 'comp': '1 2', 'q5out': '$(id)'})
+            out = strip(sb.render(sb.stdin('shape', q5=40), cols=240))
         for bad in ('id)', 'a[', '1 2'):
             self.assertNotIn(bad, out, '形状不对的缓存值上了屏')
         for good in ('↑30M', '↓290k', '$4.9/h', 'hit 97.4%', '5h 40%'):
             self.assertIn(good, out, '形状正确的值不应受牵连')
-        self.assertNotIn('↺', out, '未知等级被当成了风险态')
-        self.assertNotIn('7d', out, '未知等级被当成了风险态')
+
+    def test_unknown_level_renders_like_no_level(self):
+        """等级读入时不单独认（见 DECISIONS），由 pl / al / risky 只认四个已知值：缓存里写未知
+        等级，渲染结果与不写等级逐字节相同。另用 warn 对照，证明这三项等级确实进了渲染。"""
+        lv = ('q5lv', 'q7lv', 'splv')
+        with Sandbox() as sb:
+            st = sb.stdin('lv', q5=40, q7=30, spend={'used_percentage': 30, 'period': 'daily'})
+            outs = {}
+            for name, val in (('none', None), ('zzz', 'zzz'), ('warn', 'warn')):
+                sb.write_tok('lv', **({k: val for k in lv} if val else {}))
+                outs[name] = sb.render(st, cols=240)
+        self.assertEqual(outs['zzz'], outs['none'], '未知等级被当成了某个已知等级')
+        self.assertNotEqual(outs['warn'], outs['none'], '对照失效：已知等级没有改变渲染')
 
     def test_cache_owned_by_other_user_is_ignored(self):
         """用 root 拥有的 /etc/passwd 做符号链接目标，验证 -O 跨用户拒读。"""
