@@ -74,6 +74,22 @@ class Counting(Base):
         out = self.fields(self.run_tok(tp, 'c1').stdout)
         self.assertEqual([out[IDX['in']], out[IDX['out']]], ['30', '340'])
 
+    def test_malformed_lines_do_not_stall_counting(self):
+        """形状不对的行只当没有：不能让异常在游标落盘前抛出——那样每轮都从同一片重读、
+        再死一次，该会话的统计永久停更（外层兜底把异常吞掉，表面看不出）。"""
+        bad_tok = json.dumps({'type': 'assistant', 'message': {
+            'id': 'mbad', 'usage': {'input_tokens': '7', 'output_tokens': 1}}})
+        tp = self.write('mal.jsonl', [
+            '"compact_boundary"',                                   # 合法 JSON，但不是对象
+            bad_tok,                                                # token 数是字符串
+            line('minf', 1, 1, 'end_turn').replace('"input_tokens": 1', '"input_tokens": 1e400'),
+            json.dumps({'type': 'assistant', 'message': {'id': ['x'], 'usage': {'input_tokens': 3}}}),
+            line('m2', 20, 40, 'end_turn')])
+        for _ in range(2):
+            out = self.fields(self.run_tok(tp, 'mal').stdout)
+            self.assertTrue(out, '一行形状不对就让整个会话不出数')
+        self.assertEqual([out[IDX['in']], out[IDX['out']]], ['23', '42'])   # 3 + 20；形状不对的值按 0
+
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
             line('m1', 10, 300, 'tool_use', extra={'type': 'tool_use', 'name': 'Grep',
@@ -317,6 +333,44 @@ class Relay(Base):
         st = self.state('r1')
         self.assertEqual(st['trk']['cost']['ep'], 'ledger')
         self.assertLess(st['trk']['cost']['lv'], 100)
+
+    def test_unreadable_db_hides_rate_instead_of_freezing_it(self):
+        """库读不了时追踪器停在上一次账本读数：不能把那个旧速率当现值输出（bash 侧每轮都
+        刷新 .ts，陈旧判据拦不住它）。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        tp = self.write('fz.jsonl', [line('m1', 1, 1, 'end_turn')])
+        self.run_tok(tp, 'fz', f'relay={db}', 'cost=10')
+        p = os.path.join(self.d, 'claude-statusline-fz.json')
+        st = self.state('fz')
+        st['trk']['cost'] = {'ew': 0.001, 'lt': now - 60, 'lv': 0.0, 't0': now - 10800, 'ep': 'ledger'}
+        with open(p, 'w') as f:
+            json.dump(st, f)
+        out = self.fields(self.run_tok(tp, 'fz', f'relay={db}', 'cost=10').stdout)
+        self.assertNotEqual(out[IDX['rate']], '-', '前提：库可读时这个追踪器给得出速率')
+        with open(p, 'w') as f:
+            json.dump(st, f)
+        os.rename(db, db + '.bak')
+        with open(db, 'w') as f:
+            f.write('not a db')
+        out = self.fields(self.run_tok(tp, 'fz', f'relay={db}', 'cost=10').stdout)
+        self.assertEqual(out[IDX['rate']], '-', '读库失败时输出了冻结的旧速率')
+
+    def test_db_path_with_url_metacharacters_stays_read_only(self):
+        """库路径拼进 URI：# / ? 会截断 mode=ro，SQLite 改以读写方式打开截断后的路径（约束 7）。"""
+        now = int(time.time())
+        sub = os.path.join(self.d, 'a#b?c')
+        os.makedirs(sub)
+        db = os.path.join(sub, 'cc.db')
+        os.rename(self.make_db(now), db)
+        tp = self.write('ro.jsonl', [line('m1', 1000, 100, 'end_turn')])
+        out = self.fields(self.run_tok(tp, 'ro', f'relay={db}').stdout)
+        self.assertNotEqual(out[IDX['rcost']], '-', '路径带 # ? 的库读不出账本')
+        r = subprocess.run([sys.executable, PATH, '--provider-state', db], capture_output=True, text=True,
+                           env=self.env)
+        self.assertTrue(r.stdout.strip(), '探针读不出路径带 # ? 的库')
+        self.assertEqual(sorted(os.listdir(self.d)), sorted(['a#b?c', 'claude-statusline-ro.json', 'ro.jsonl']),
+                         '在截断后的路径上建出了新文件（读写打开）')
 
     def test_today_counts_headless_claude_not_codex(self):
         """今日按 app_type 统计：没渲染过状态栏的 Claude 会话（无头）也计入，Codex 不计。"""

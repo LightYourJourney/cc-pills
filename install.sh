@@ -36,8 +36,8 @@ for a in "$@"; do
     *) echo "未知参数：${a}（--help 看用法）" >&2; exit 2 ;;
   esac
 done
-# install 只装 --with-subagent 指定的；check / uninstall 覆盖实际装过的副本
-if [ "$WITH_SUB" = 1 ] || { [ "$MODE" != install ] && [ -e "$DEST/subagent-statusline.sh" ]; }; then
+# 面板脚本：--with-subagent 指定、或已经装过（重装时一起更新，否则它悄悄停在旧版）
+if [ "$WITH_SUB" = 1 ] || [ -e "$DEST/subagent-statusline.sh" ]; then
   FILES+=(subagent-statusline.sh)
 fi
 
@@ -71,6 +71,10 @@ settings_cmd() {  # settings_cmd <settings.json 路径> <键> → 打印该键�
   [ -r "$1" ] || return 1
   jq -r --arg k "$2" '.[$k].command // empty' "$1" 2>/dev/null || return 1
 }
+# settings.json 存在却解析失败：两个键都无从判断，要说它坏了，而不是报「尚未配置」
+SJ="$DEST/settings.json"; SJ_BAD=0
+[ -r "$SJ" ] && ! jq empty "$SJ" >/dev/null 2>&1 && SJ_BAD=1
+SJ_BAD_MSG="settings.json 不是合法 JSON（jq 解析失败）：先修好它，statusLine / subagentStatusLine 无法检查：$SJ"
 has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
 }
@@ -86,7 +90,8 @@ install)
     src=$REPO/src/$f; dst=$DEST/$f
     if [ -f "$dst" ] && ! cmp -s "$src" "$dst"; then
       bak=$dst.bak.$(date +%Y%m%d%H%M%S)
-      cp -p "$dst" "$bak" && echo "  备份旧副本 → $bak"
+      if cp -p "$dst" "$bak"; then echo "  备份旧副本 → $bak"
+      else echo "  备份失败，未覆盖 ${f}（线上副本有改动，先处理再重装）" >&2; rc=1; continue; fi
     fi
     if install -m 0755 "$src" "$dst"; then echo "  已安装 $f → $dst"
     else echo "  安装失败：${f} → $dst" >&2; rc=1; fi
@@ -99,9 +104,10 @@ install)
         && echo "  已写入示例配置 → $CONF"
     fi
   fi
-  cmd=$(settings_cmd "$DEST/settings.json" statusLine)
-  points_to "$cmd" statusline-command.sh "$DEST"; st=$?
   echo
+  [ "$SJ_BAD" = 1 ] && { echo "⚠ $SJ_BAD_MSG"; exit "$rc"; }
+  cmd=$(settings_cmd "$SJ" statusLine)
+  points_to "$cmd" statusline-command.sh "$DEST"; st=$?
   case $st in
     0) echo "settings.json 的 statusLine 已指向它：$cmd" ;;
     2) echo "⚠ statusLine 含脚本名，但路径不是已安装副本：$cmd"
@@ -130,6 +136,7 @@ check)
     elif cmp -s "$REPO/src/$f" "$dst"; then echo "  一致：$f"
     else echo "  不一致：${f}（仓库改过但没重新安装）"; rc=1; fi
   done
+  [ "$SJ_BAD" = 1 ] && { echo "  $SJ_BAD_MSG"; exit 1; }
   cmd=$(settings_cmd "$DEST/settings.json" statusLine)
   points_to "$cmd" statusline-command.sh "$DEST"; st=$?
   case $st in

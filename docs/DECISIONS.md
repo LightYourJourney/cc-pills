@@ -235,6 +235,8 @@
   - **源码里没有自述标记的副本不执行**：旧版不认识 `--facts`，会把它当普通参数照常跑一遍
     （建缓存目录、写面板状态），既破坏只读承诺又改变诊断结论。此时首行提示先重装，与格式
     版本有关的检查（token 缓存首行、色板首行的 `/vN`）不做——磁盘上的缓存是那份旧副本写的、它照常读。
+    冒烟同样不跑它（报 SKIP、提示先重装）：这个文件名不专属于 cc-pills，也不能指望它认
+    `CLAUDE_SL_TMP` / `CLAUDE_SL_NO_REFRESH`——此前只有自述这一步守着，冒烟照跑。
   - 缓存根可不可用以自述的 `slt_ok` 为准，doctor 自己的几步判断只用来解释为什么不可用。
   - `subagent-statusline.sh --facts` 自述面板状态文件路径；`statusline-tokens.py
     --provider-state <db>` 是限额探针，替掉 doctor 里内嵌的那份 Python（`limit_state` 现在只有

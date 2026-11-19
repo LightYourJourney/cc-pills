@@ -21,7 +21,11 @@ runfx() {  # runfx <夹具> → 全局 RUNOUT（固定在同一目录执行）
             CLAUDE_SL_TMP="$scratch/slt" CLAUDE_SL_NO_REFRESH=1 COLUMNS=200 \
             TERM_PROGRAM='' LC_TERMINAL='' bash "$smoke" 2>/dev/null )
 }
-if [ ! -f "$smoke" ]; then
+if [ "$COPY_OLD" = 1 ]; then
+  # 与 load_facts 同一条守卫：答不出 --facts 的副本不执行。这个文件名不专属于 cc-pills，
+  # 也不能指望它认 CLAUDE_SL_TMP / CLAUDE_SL_NO_REFRESH，跑它就破坏只读承诺。
+  res SKIP 数据/stdin "已安装副本答不出 --facts（多半是旧版），不执行它；先重装再诊断" "bash $REPO/install.sh"
+elif [ ! -f "$smoke" ]; then
   res SKIP 数据/stdin "找不到可执行的 statusline-command.sh"
 elif [ -z "$scratch" ]; then
   res SKIP 数据/stdin "无法创建临时目录，跳过冒烟"

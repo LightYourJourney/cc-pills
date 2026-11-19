@@ -206,7 +206,7 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
                 obj = json.loads(line)
             except Exception:
                 continue
-            if obj.get('type') == 'system' and obj.get('subtype') == 'compact_boundary':
+            if isinstance(obj, dict) and obj.get('type') == 'system' and obj.get('subtype') == 'compact_boundary':
                 if main and not obj.get('isSidechain'):   # 每行只扫一次（游标推进），无需去重
                     st['comp'] += 1
                 continue
@@ -223,11 +223,14 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
         if not isinstance(msg, dict) or not isinstance(msg.get('usage'), dict):
             continue
         u = msg['usage']
-        vals = (u.get('input_tokens') or 0, u.get('output_tokens') or 0,
-                u.get('cache_creation_input_tokens') or 0,
-                u.get('cache_read_input_tokens') or 0)
+        # 形状不对的值按 0、非字符串 id 按没有：异常一旦在游标落盘前抛出，每轮都从同一片
+        # 重读、再死一次，该会话永久不出数
+        vals = tuple(v if type(v) is int and v >= 0 else 0 for v in
+                     (u.get('input_tokens'), u.get('output_tokens'),
+                      u.get('cache_creation_input_tokens'), u.get('cache_read_input_tokens')))
         stop = msg.get('stop_reason') is not None
         mid = msg.get('id')
+        mid = mid if isinstance(mid, str) else None
         # 消息数：同一个 message.id 的行在 transcript 里连续出现（本机实测非连续复现 0 次），
         # 按 id 变化计数即精确值——不必存 id 表，状态只多两个标量
         if mid and mid != fs.get('last_id'):
@@ -414,10 +417,16 @@ def current_provider(conn):
     return pid, limit_state(col, meta)[1]
 
 
+def ro_uri(db):
+    """只读 URI：路径里的 % # ? 要百分号编码，否则 # / ? 会截断 mode=ro，SQLite 改以读写方式
+    打开截断后的路径。不用 pathlib.as_uri：每轮刷新都起这个进程，少一次 import。"""
+    return 'file:' + db.replace('%', '%25').replace('#', '%23').replace('?', '%3F') + '?mode=ro'
+
+
 def provider_probe(db):
     """诊断探针（--provider-state <db>）：打印「代理日志行数 \t 当前供应商个数 \t 限额状态」，
     后两段在 providers 表不完整 / 供应商不唯一时为 "-"。账本表读不到则无输出。只读打开。"""
-    conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=2)   # 约束 7
+    conn = sqlite3.connect(ro_uri(db), uri=True, timeout=2)   # 约束 7
     try:
         n = conn.execute('SELECT COUNT(*) FROM proxy_request_logs').fetchone()[0]
         rows = current_rows(conn)
@@ -453,7 +462,7 @@ def provider_today(conn, pid, midnight, day):
 def relay_ledger(db, sid, st, now, midnight):
     """→ dict（会话花费 / 未计价数 / 全局今日 / 当前供应商今日 / 日限额 / 供应商 id），
     同时把已入账消息移出 st['unl']。"""
-    conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=1)   # 约束 7
+    conn = sqlite3.connect(ro_uri(db), uri=True, timeout=1)   # 约束 7
     try:
         unl = st['unl']
         ids = list(unl)
@@ -697,7 +706,8 @@ def main():
 
     if not caught_up:
         return                                 # 未追平不出数（约束 2）
-    r = rate(st, 'cost', now) if (relay or cost is not None) else None
+    # 中转站读库失败时追踪器停在上一次账本读数，不能当现值输出（与上面喂追踪器同一条件）
+    r = rate(st, 'cost', now) if (relay or (cost is not None and not db)) else None
     rate_s = fmt_usd(r * 3600) if r is not None else '-'
     d = {'in': fmt(st['in'] + st['cw'] + st['cr']), 'out': fmt(st['out']),
          'rate': rate_s, 'comp': str(st['comp'])}

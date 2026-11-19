@@ -153,5 +153,65 @@ class Install(unittest.TestCase):
                          '依赖不满足时不应安装任何副本')
 
 
+    def test_plain_reinstall_updates_installed_panel(self):
+        """README：拉取后重跑 bash install.sh。已经装过的面板脚本必须一起更新，否则它悄悄
+        停在旧版，直到 --check 才报不一致。"""
+        self.assertEqual(self.run_sh('--with-subagent').returncode, 0)
+        panel = os.path.join(self.dest, 'subagent-statusline.sh')
+        with open(panel, 'a') as f:
+            f.write('# 旧版\n')
+        r = self.run_sh()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(panel) as f, open(os.path.join(REPO, 'src', 'subagent-statusline.sh')) as g:
+            self.assertEqual(f.read(), g.read(), '重装没有更新已安装的面板脚本')
+        self.assertEqual(self.run_sh('--check', settings=self.cmds()).returncode, 0)
+
+    def test_fresh_install_without_flag_does_not_add_panel(self):
+        self.assertEqual(self.run_sh().returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'subagent-statusline.sh')))
+
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
+    def test_backup_failure_keeps_the_local_copy(self):
+        """备份失败还照样覆盖，用户对已安装副本的改动就没了。"""
+        self.assertEqual(self.run_sh().returncode, 0)
+        dst = os.path.join(self.dest, 'statusline-command.sh')
+        with open(dst, 'a') as f:
+            f.write('# 本地改动\n')
+        os.chmod(dst, 0o000)                    # 读不了 → 备份失败
+        r = self.run_sh()
+        os.chmod(dst, 0o644)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(dst) as f:
+            self.assertIn('# 本地改动', f.read(), '备份失败后仍覆盖了本地改动')
+
+    def test_invalid_settings_json_is_not_reported_as_unconfigured(self):
+        """settings.json 解析失败时说它坏了，而不是引导用户再粘贴一个已经有的键。"""
+        with open(os.path.join(self.dest, 'settings.json'), 'w') as f:
+            f.write('{"statusLine": {"type": "command", "command": "bash x"},}\n')
+        for args, rc in (((), 0), (('--check',), 1)):
+            r = self.run_sh(*args)
+            self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
+            self.assertIn('不是合法 JSON', r.stdout, args)
+            self.assertNotIn('尚未配置', r.stdout, args)
+            self.assertNotIn('未指向', r.stdout, args)
+
+    def test_check_rejects_config_dir_default_pointing_elsewhere(self):
+        """${CLAUDE_CONFIG_DIR:-/别处} 在变量未设时跑的是别处的脚本，不能当成指向已安装副本。"""
+        self.assertEqual(self.run_sh().returncode, 0)
+        s = {'statusLine': {'type': 'command',
+                            'command': 'bash "${CLAUDE_CONFIG_DIR:-/opt/stale}/statusline-command.sh"'}}
+        r = self.run_sh('--check', settings=s)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('路径不是已安装副本', r.stdout)
+        s['statusLine']['command'] = 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"'
+        self.assertEqual(self.run_sh('--check', settings=s).returncode, 0, '建议写法被误判')
+
+    def test_check_accepts_config_dir_with_trailing_slash(self):
+        env = dict(self.env, CLAUDE_CONFIG_DIR=self.dest + '/')
+        self.assertEqual(self.run_sh(env=env).returncode, 0)
+        r = self.run_sh('--check', settings=self.cmds(sub=False), env=env)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

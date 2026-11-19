@@ -87,7 +87,7 @@ bash install.sh --with-subagent --with-conf
 ```
 
 `install.sh` copies the scripts into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` (the panel
-script only with `--with-subagent`) and prints whether `statusLine` and
+script with `--with-subagent`, or when it is already installed) and prints whether `statusLine` and
 `subagentStatusLine` already point at them. If they do not, add:
 
 ```json

@@ -151,6 +151,17 @@ class ContentSafety(CacheBase):
         for good in ('↑30M', '↓290k', '$4.9/h', 'hit 97.4%', '5h 40%'):
             self.assertIn(good, out, '形状正确的值不应受牵连')
 
+    def test_malformed_money_does_not_take_down_the_cost_group(self):
+        """1.2.3 能过取值形状检查，进算术就报错，整个费用组（会话费用、$/h、今日）一起消失。"""
+        with Sandbox() as sb:
+            sb.write_tok('money', **{'rcost': '1.2.3', 'rate': '$1.8/h', 'rtoday': '23.4000'})
+            r = sb.render(sb.stdin('money'), cols=240, raw=True,
+                          env={'ANTHROPIC_BASE_URL': 'https://relay.example'})
+        out = strip(r.stdout)
+        for good in ('$1.8/h', '$23.40'):
+            self.assertIn(good, out, '一个金额坏了，同组的其他项也跟着消失')
+        self.assertEqual(r.stderr, '', '金额形状不对时报了错')
+
     def test_unknown_level_renders_like_no_level(self):
         """等级读入时不单独认（见 DECISIONS），由 pl / al / risky 只认四个已知值：缓存里写未知
         等级，渲染结果与不写等级逐字节相同。另用 warn 对照，证明这三项等级确实进了渲染。"""

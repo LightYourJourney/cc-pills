@@ -114,6 +114,15 @@ class DoctorSandbox:
         with open(p, 'w') as f:
             f.write(body)
 
+    def render_stub(self, body):
+        """已安装副本换成「能正常自述（--facts），渲染却是 body」的脚本：冒烟只跑答得出自述的
+        副本（答不出的不执行），所以占位 / 透传这类坏渲染要挂在真实的自述分支后面才测得到。"""
+        def stub(src):
+            i = src.index('if [ "${1:-}" = --facts ]')
+            end = src.index('\nfi\n', i) + 4
+            return src[:end] + re.sub(r'\A#!.*\n', '', body)
+        self.set_installed(stub)
+
     def write_settings(self, obj):
         p = os.path.join(self.dest, 'settings.json')
         with open(p, 'w') as f:
@@ -680,17 +689,23 @@ class Doctor(unittest.TestCase):
         self.sb.set_installed('#!/bin/sh\necho hello\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'PASS', '已安装副本答不出时应回落到仓库源文件')
-        self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'SKIP', '答不出自述的副本不执行，冒烟也不跑')
 
     def test_old_installed_copy_is_not_executed(self):
         """只读承诺：不认识 --facts 的旧副本会把它当普通参数、照常跑一遍（建缓存目录）。
-        所以脚本里没有自述标记就不执行它，直接问仓库源文件，并在首行说明装的是旧版。"""
+        所以脚本里没有自述标记就不执行它，直接问仓库源文件，并在首行说明装的是旧版。冒烟也
+        不跑它：这个文件名不专属于 cc-pills，也不能指望它认 CLAUDE_SL_TMP 这类隔离变量。"""
         self.sb.install()
+        ran = os.path.join(self.sb.dest, 'ran')
         for name in ('statusline-command.sh', 'subagent-statusline.sh'):
-            self.sb.set_installed('#!/usr/bin/env bash\nmkdir -p "${CLAUDE_SL_TMP:-$TMPDIR/claude-sl-$(id -u)}"\necho hello\n', name)
+            self.sb.set_installed('#!/usr/bin/env bash\nmkdir -p "$TMPDIR/claude-sl-$(id -u)"\n'
+                                  f'touch "{ran}"\necho hello\n', name)
         r = self.sb.run()
         self.assertFalse(os.path.exists(self.sb.cache), '诊断执行了答不出 --facts 的旧副本')
+        self.assertFalse(os.path.exists(ran), '诊断执行了答不出 --facts 的旧副本')
         self.assertEqual(self.sb.status(r, '缓存/根'), 'SKIP')
+        self.assertEqual(self.sb.status(r, '数据/stdin'), 'SKIP')
+        self.assertIn('重装', self.sb.detail(r, '数据/stdin'))
         first = r.stdout.splitlines()[0]
         self.assertIn('旧版', first)
         self.assertIn('install.sh', first)
@@ -963,8 +978,7 @@ class Doctor(unittest.TestCase):
     def test_smoke_detects_stub_that_only_echoes_pwd(self):
         """两份夹具必须在同目录里跑：否则只 printf "$PWD" 的脚本也会因 cwd 不同而「通过」。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\nprintf "%s" "$PWD"\n')
+        self.sb.render_stub('#!/usr/bin/env bash\nprintf "%s" "$PWD"\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('相同', self.sb.detail(r, '数据/stdin'))
@@ -972,8 +986,7 @@ class Doctor(unittest.TestCase):
     def test_smoke_detects_stub_that_ignores_stdin(self):
         """只会 echo 的脚本也能「非空」，必须靠两份夹具结果不同才判通过。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\necho hello\n')
+        self.sb.render_stub('#!/usr/bin/env bash\necho hello\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('相同', self.sb.detail(r, '数据/stdin'))
@@ -981,8 +994,7 @@ class Doctor(unittest.TestCase):
     def test_smoke_detects_passthrough_stub(self):
         """cat 会把两份不同夹具原样输出，差分成立但主渲染没执行——必须拒绝 stdin 原文。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\ncat\n')
+        self.sb.render_stub('#!/usr/bin/env bash\ncat\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('原文', self.sb.detail(r, '数据/stdin'))
@@ -990,8 +1002,7 @@ class Doctor(unittest.TestCase):
     def test_smoke_detects_single_field_extractor(self):
         """只提取一个字段的占位脚本也会因两份夹具不同而通过差分，必须要求目录与 ctxin。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\njq -r .model.display_name\n')
+        self.sb.render_stub('#!/usr/bin/env bash\njq -r .model.display_name\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('渲染形态', self.sb.detail(r, '数据/stdin'))
@@ -999,8 +1010,7 @@ class Doctor(unittest.TestCase):
     def test_smoke_detects_multi_field_extractor(self):
         """提取 model+ctx% 两个字段的脚本仍不是渲染器：目录与 ctxin 必须出现。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write("#!/usr/bin/env bash\n"
+        self.sb.render_stub("#!/usr/bin/env bash\n"
                     "jq -r '\"\\(.model.display_name) \\(.context_window.used_percentage)%\"'\n")
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
@@ -1024,16 +1034,14 @@ class Doctor(unittest.TestCase):
 
     def test_smoke_render_fails_on_silent_script(self):
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\nexit 0\n')
+        self.sb.render_stub('#!/usr/bin/env bash\nexit 0\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
 
     def test_smoke_render_detects_guard_fallback(self):
         """bash 版本守卫的最简行「Opus 5.5 · 37%」不能算冒烟通过——那说明主渲染没跑起来。"""
         self.sb.install()
-        with open(os.path.join(self.sb.dest, 'statusline-command.sh'), 'w') as f:
-            f.write('#!/usr/bin/env bash\nprintf "Opus 5.5 · 37%%"\n')
+        self.sb.render_stub('#!/usr/bin/env bash\nprintf "Opus 5.5 · 37%%"\n')
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'FAIL')
         self.assertIn('最简行', self.sb.detail(r, '数据/stdin'))

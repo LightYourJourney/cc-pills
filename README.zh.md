@@ -75,8 +75,8 @@ cd cc-pills
 bash install.sh --with-subagent --with-conf
 ```
 
-`install.sh` 把脚本复制到 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`（面板脚本仅在
-`--with-subagent` 时），并告诉你 `settings.json` 的 `statusLine` 与
+`install.sh` 把脚本复制到 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`（面板脚本在
+`--with-subagent` 或之前装过时），并告诉你 `settings.json` 的 `statusLine` 与
 `subagentStatusLine` 是否已指向它们。没有的话加上：
 
 ```json

@@ -18,12 +18,16 @@ strip_dirty() {
 }
 
 points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 只含名字 / 1 未指向
+  local d=${3%/}                                     # CLAUDE_CONFIG_DIR 可能带尾斜杠
   strip_dirty "$1" "$2"
   case "$CLEAN" in
-    *"$3/$2"*)                    return 0 ;;        # 指向已安装副本
-    *'${CLAUDE_CONFIG_DIR'*"$2"*) return 0 ;;        # 建议写法：运行时展开到同一目录
+    *"$d/$2"*) return 0 ;;                           # 指向已安装副本
+    # 建议写法：运行时展开到同一目录。默认值只认默认目录——${CLAUDE_CONFIG_DIR:-/别处}
+    # 在变量未设时跑的是别处的脚本
+    *'${CLAUDE_CONFIG_DIR}/'"$2"*|*'${CLAUDE_CONFIG_DIR:-$HOME/.claude}/'"$2"*|\
+    *'${CLAUDE_CONFIG_DIR:-~/.claude}/'"$2"*|*'${CLAUDE_CONFIG_DIR:-'"$HOME/.claude}/$2"*) return 0 ;;
   esac
-  if [ "$3" = "$HOME/.claude" ]; then
+  if [ "$d" = "$HOME/.claude" ]; then
     case "$CLEAN" in
       *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;;   # 默认目录的等价写法
     esac
