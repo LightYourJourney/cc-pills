@@ -309,8 +309,7 @@ def glass_tokens(bgs, put):
     put('T_CRIT', crit)
     put('T_MUTED', legible(rgb(TG['slate']), ref, TG_C3))
     put('T_DIM', legible(rgb(TG['slate']), ref, DIM_CONTRAST))
-    lines_extra = ['W_ACC=22']
-    return lines_extra
+    return ['W_ACC=22']
 
 
 def main():
@@ -335,8 +334,8 @@ def main():
     style = STYLES[ps]
     light = style.get('light', False)
     lines = [f'THEME={want}/{pc}/{ps}/v{ver}', f'NAME={name}']
+    put = lambda k, c: lines.append(f'{k}=' + ';'.join(map(str, c)))
     if style.get('tokens'):
-        put = lambda k, c: lines.append(f'{k}=' + ';'.join(map(str, c)))
         lines += glass_tokens([bg, rgb(t['bg'])], put)
         return write(out, lines)
     neu = term[2] if term else rgb(t['model'])        # 常态字 = 终端前景色
@@ -346,7 +345,6 @@ def main():
             and lift < 40:
         lift += 3
         pill = mix(neu, base, lift)
-    put = lambda k, c: lines.append(f'{k}=' + ';'.join(map(str, c)))
     surf_L = lab(pill)[0]
 
     def hue_src(h):

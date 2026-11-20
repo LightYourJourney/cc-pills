@@ -604,6 +604,14 @@ def pace(used, cap, left, rates, th, urgent):
     return lvl, dur(eta_s) if eta_s is not None else '-'
 
 
+def window_pace(st, key, used, cap, left, el, minel, recent, now, th):
+    """额度窗口的节奏 → (等级, 用完倒计时)。速率取「窗口均速」（已用 ÷ 窗口已过 el 秒，el 不足
+    minel 不算——刚开窗时一笔就能外推成很快用完）与 key 追踪器的近期速率（recent 时）两者，交给 pace。"""
+    rates = [x for x in (used / el if el >= minel and used > 0 else None,
+                         rate(st, key, now) if recent else None) if x is not None]
+    return pace(used, cap, left, rates, th, URGENT[key])
+
+
 def day_bounds(now):
     """→ (本地今天零点, 本地明天零点)。夏令时切换那天不是 86400 秒，明天零点要单独算
     （mktime 会把 tm_mday + 1 的溢出规整到下个月）。"""
@@ -730,17 +738,13 @@ def main():
         used, resets = quota[k]
         win, minel, recent = WINDOW[k]
         left = min(resets - now, win)
-        el = win - left
-        rates = [x for x in (used / el if el >= minel and used > 0 else None,
-                             rate(st, k, now) if recent else None) if x is not None]
-        d[k + 'lv'], d[k + 'out'] = pace(used, 100, left, rates, th, URGENT[k])
+        d[k + 'lv'], d[k + 'out'] = window_pace(st, k, used, 100, left, win - left, minel, recent, now, th)
     if relay and relay['limit'] is not None and relay['today_cur'] is not None:
         used, cap = relay['today_cur'], relay['limit']
-        el = now - midnight                    # 窗口均速 = 供应商今日已用 ÷ 自零点以来时长（文档 5）
-        # 不并本会话 $/h：它可能来自其它供应商或 '_session'，与当前供应商限额不是同一总体
-        rates = [x for x in (used / el if el >= 1800 and used > 0 else None,
-                             rate(st, 'day', now)) if x is not None]
-        d['dlv'], d['dout'] = pace(used, cap, next_midnight - now, rates, th, URGENT['day'])
+        # 窗口均速 = 供应商今日已用 ÷ 自零点以来时长（文档 5）。近期速率用 day 追踪器，不并本会话
+        # $/h：它可能来自其它供应商或 '_session'，与当前供应商限额不是同一总体
+        d['dlv'], d['dout'] = window_pace(st, 'day', used, cap, next_midnight - now, now - midnight,
+                                          1800, True, now, th)
     else:
         d['dlv'] = d['dout'] = '-'
     if relay:
@@ -756,10 +760,7 @@ def main():
     if sp and sp[1] > now:                     # 网关花费限额（百分比口径，cap = 100）
         win, minel, recent = SP_WINDOW[sp[2]]
         left = min(sp[1] - now, win)
-        el = win - left
-        rates = [x for x in (sp[0] / el if el >= minel and sp[0] > 0 else None,
-                             rate(st, 'sp', now) if recent else None) if x is not None]
-        d['splv'], d['spout'] = pace(sp[0], 100, left, rates, th, URGENT['sp'])
+        d['splv'], d['spout'] = window_pace(st, 'sp', sp[0], 100, left, win - left, minel, recent, now, th)
     else:
         d['splv'] = d['spout'] = '-'
     d['msgs'] = str(sum(fs.get('msgs', 0) for fs in st['files'].values()))   # 消息数（见 1 的计数）
