@@ -256,9 +256,10 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
             if track_unl and any(vals):        # 中转站：记入未入账集合（零用量的合成消息不记）
                 cc = u.get('cache_creation')
                 cw1 = cc.get('ephemeral_1h_input_tokens') if isinstance(cc, dict) else 0
+                cw1 = cw1 if type(cw1) is int and cw1 >= 0 else 0
                 model = msg.get('model')
                 st['unl'][mid] = [model if isinstance(model, str) else '', vals[0], vals[1], vals[3], vals[2],
-                                  cw1 if type(cw1) is int and cw1 >= 0 else 0, parse_ts(obj.get('timestamp') or '') or time.time(), 0]
+                                  cw1, parse_ts(obj.get('timestamp') or '') or time.time(), 0]
     return caught_up
 
 

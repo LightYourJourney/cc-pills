@@ -1119,11 +1119,17 @@ class Doctor(unittest.TestCase):
         """运行时展开到已安装目录的几种写法都算指向（默认值只认默认目录）。"""
         self.sb.install(subagent=False, settings=False)
         home = self.sb.env['HOME']
-        for cmd in ('bash "${CLAUDE_CONFIG_DIR}/statusline-command.sh"',
-                    'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"',
-                    'bash "${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-command.sh"',
-                    'bash "${CLAUDE_CONFIG_DIR:-' + home + '/.claude}/statusline-command.sh"'):
-            self.assertEqual(self._points_to_verdict(cmd), 'PASS', cmd)
+        forms = ['bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"',
+                 'bash "${CLAUDE_CONFIG_DIR}/statusline-command.sh"',
+                 'bash "${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-command.sh"',
+                 'bash "${CLAUDE_CONFIG_DIR:-' + home + '/.claude}/statusline-command.sh"']
+        # 一种走 doctor 与 install --check 全程；其余直接调两者共用的 points_to，省掉 6 个子进程
+        self.assertEqual(self._points_to_verdict(forms[0]), 'PASS', forms[0])
+        r = subprocess.run([BASE_BASH, '-c', '. "$1"; shift; d=$1; shift; for c; do '
+                            'points_to "$c" statusline-command.sh "$d" || echo "$?: $c"; done',
+                            '_', os.path.join(REPO, 'tools', 'lib', 'points_to.sh'), self.sb.dest, *forms[1:]],
+                           capture_output=True, text=True, env=self.sb.env, timeout=30)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, '', ''))
 
     def test_panel_fail_codes_match_doctor(self):
         """面板写出的原因码与 doctor 解码的集合必须相等（也等于测试用的文案表）。"""

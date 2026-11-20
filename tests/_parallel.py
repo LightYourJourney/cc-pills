@@ -47,27 +47,25 @@ def main():
     if missing:                                # 新加的模块必须归到某一段，不能被静默漏跑
         print(f'未归段的测试模块：{" ".join(sorted(missing))}（加进 _parallel.py 的 PARALLEL 或 SERIAL）')
         return 1
-    if os.environ.get('CCPILLS_SERIAL') == '1':   # 全部串行：名单同样从这里取，不另抄一份
-        os.execv(sys.executable, [sys.executable, '-m', 'unittest', *PARALLEL, *SERIAL])
-    jobs = int(os.environ.get('CCPILLS_JOBS') or min(os.cpu_count() or 2, 8))
+    if os.environ.get('CCPILLS_SERIAL') == '1':   # 全部串行 = 一片，走同一套汇总
+        jobs = 1
+    else:
+        jobs = int(os.environ.get('CCPILLS_JOBS') or min(os.cpu_count() or 2, 8))
     ids = test_ids(PARALLEL)
     shards = [ids[i::jobs] for i in range(jobs) if ids[i::jobs]]
     print(f'并行段：{len(ids)} 项，{len(shards)} 片', flush=True)
+    with concurrent.futures.ThreadPoolExecutor(len(shards)) as ex:
+        results = list(ex.map(run, shards))
+    print(f'串行段：{", ".join(SERIAL)}', flush=True)
+    results.append(run(SERIAL))
     rc = total = skipped = 0
-
-    def collect(code, text):
-        nonlocal rc, total, skipped
+    for code, text in results:
         n, k = tally(text)
         total += n
         skipped += k
         if code:
             rc = 1
             print(text, flush=True)
-    with concurrent.futures.ThreadPoolExecutor(len(shards)) as ex:
-        for code, text in ex.map(run, shards):
-            collect(code, text)
-    print(f'串行段：{", ".join(SERIAL)}', flush=True)
-    collect(*run(SERIAL))
     # 跳过数要打出来：成功时不打印 unittest 原文，CI 日志里只能靠这一行看出有没有用例被跳过
     print(f'共 {total} 项，跳过 {skipped} 项：{"OK" if rc == 0 else "FAILED"}', flush=True)
     return rc
