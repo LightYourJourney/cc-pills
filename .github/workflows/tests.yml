@@ -100,7 +100,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/bash42
-          key: bash-4.2-${{ runner.os }}-${{ runner.arch }}-v1
+          key: bash-4.2-${{ runner.os }}-${{ runner.arch }}-v2   # v2：让一次编译真正走过 sha256 校验
       - name: 源码编译 bash 4.2
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
