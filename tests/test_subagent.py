@@ -250,6 +250,20 @@ class SubagentState(unittest.TestCase):
                                  env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st)).stdout
         self.assertIn('ctx 剩75%', out)
 
+    def test_non_string_task_id_does_not_break_the_tick(self):
+        """契约里 id 是字符串；混进一个数字 id 时只让那一行回到默认渲染，别的行照常输出、状态照常写回
+        （此前 $prev[数字] 让整个 jq 中止：只输出了第一行，写回记成 merge 失败）。"""
+        st = os.path.join(self.d, 'ids.json')
+        tasks = {'columns': 120, 'tasks': [
+            {'id': i, 'status': 'running', 'description': f'd{i}', 'model': 'm', 'tokenCount': 1000,
+             'contextWindowSize': 1000000} for i in ('a', 7, 'b')]}
+        r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
+                           env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60)
+        self.assertEqual([json.loads(l)['id'] for l in r.stdout.splitlines()], ['a', 'b'])
+        with open(st) as f:
+            self.assertEqual(sorted(json.load(f)), ['a', 'b'])
+        self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
+
     def test_panel_line_fields(self):
         """面板行：名字、按宽度截断的描述、模型 / effort / tok 与增速 / ctx 剩余 / 时长，非运行态
         带 [状态] 且不计时长，剩余 < 20% 带 ⚠。"""

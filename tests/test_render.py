@@ -235,6 +235,21 @@ class Robustness(unittest.TestCase):
             sb.refresh(os.path.join(sb.dir, 'x_y/z'))
             self.assertNotIn('feat-collide', strip(sb.render(sb.stdin(cwd=os.path.join(sb.dir, 'x_y/z')))))
 
+    def test_two_byte_scripts_are_one_column(self):
+        """西里尔 / 希腊 / 带重音的拉丁字母是 UTF-8 双字节、显示占 1 列：宽度模型不能按字节多算，
+        否则刚好放得下的一行会被白白降级。"""
+        with Sandbox() as sb:
+            outs = []
+            for name in ('Dokumenty_proekta', 'Документы_проекта'):
+                d = os.path.join(sb.repo, name)
+                os.makedirs(d)
+                sb.refresh(d)
+                st = sb.stdin(cwd=d, q5=60)
+                full = width(sb.render(st, 400))
+                outs.append((full, width(sb.render(st, full + SAFE))))
+        self.assertEqual(outs[0], outs[1], '同长度的西里尔目录名被按更宽处理')
+        self.assertEqual(outs[1][0], outs[1][1], '刚好放得下时不应降级')
+
     def test_cjk_branch_truncated_by_display_width(self):
         with Sandbox() as sb:
             subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/功能/超长中文分支名称测试显示宽度截断'],

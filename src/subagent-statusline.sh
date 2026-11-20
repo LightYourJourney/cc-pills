@@ -103,7 +103,7 @@ initprev=$prev                              # 锁内重读后与它比较：未�
 printf '%s' "$input" | jq -c --argjson prev "$prev" '
   (.columns // 120) as $cols
   | (.tasks // [])[]
-  | select(.id != null)
+  | select(.id | type == "string")             # 契约里 id 是字符串；别的类型拿去索引 $prev 会让整个 jq 中止
   | (.status // "" | tostring) as $st
   | ($st == "" or $st == "running" or $st == "pending") as $live
 
@@ -228,7 +228,7 @@ if [ "$got" = 1 ]; then
     now as $n
     | ($prev | with_entries(select(
         (.value | type == "object") and ((.value.t // 0) > ($n - 600))))) as $base
-    | reduce ((.tasks // [])[] | select(.id != null)
+    | reduce ((.tasks // [])[] | select(.id | type == "string")
               | select((.status // "running" | tostring) as $s
                        | $s == "running" or $s == "" or $s == "pending")) as $t
         ($base;
