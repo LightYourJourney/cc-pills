@@ -114,12 +114,23 @@ class Counting(Base):
                 st = json.loads(json.dumps(self.t.EMPTY))
                 fs = {'off': 0, 'fp': 0}
                 self.t.scan_chunk(tp, fs, st, {}, [], True, track_unl)
-                self.assertGreater(fs['off'], 0)
-                want = (25, 45) if not track_unl else (20, 40)   # 中转站模式下 m3 的时间戳也要取
-                self.assertEqual((st['in'], st['out']), want, track_unl)
+                self.assertEqual(fs['off'], os.path.getsize(tp), '被丢的行也要推进游标')
+                # 中转站模式下 m3 的时间戳也要取，所以只有它被丢；普通模式只丢 m1
+                self.assertEqual((fs['last_id'], fs['msgs']), ('m2', 1) if track_unl else ('m3', 2),
+                                 '被丢的行不能留在状态里')
+                self.assertEqual((st['in'], st['out']), (20, 40) if track_unl else (25, 45), track_unl)
                 self.assertEqual(sorted(st['unl']), ['m2'] if track_unl else [])
         finally:
             self.t.nonneg, self.t.parse_ts = orig_nn, orig_ts
+
+    def test_zero_usage_message_is_not_queued_for_ledger(self):
+        """零用量的合成消息（usage 全 0）不进未入账集合：它没有任何花费可算，进去也只是占位。"""
+        ts = '2026-10-28T06:00:00Z'
+        tp = self.write('z0.jsonl', [line('m0', 0, 0, 'end_turn', ts=ts), line('m1', 10, 1, 'end_turn', ts=ts)])
+        st = json.loads(json.dumps(self.t.EMPTY))
+        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, {}, [], True, True)
+        self.assertEqual(sorted(st['unl']), ['m1'])
+        self.assertEqual((st['in'], st['out']), (10, 1), '零用量的行仍要计入消息数等统计')
 
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
