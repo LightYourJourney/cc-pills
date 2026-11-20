@@ -105,7 +105,10 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install -y -qq build-essential bison     # 只有缓存未命中才要编译工具链
-          curl -fsSL https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz | tar xz
+          # sha256 与 Homebrew 历史 bash 公式里记的 bash-4.2.tar.gz 一致（11-20 本机下载核对）
+          curl -fsSL -o bash-4.2.tar.gz https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz
+          echo 'a27a1179ec9c0830c65c6aa5d7dab60f7ce1a2a608618570f96bfa72e95ab3d8  bash-4.2.tar.gz' | sha256sum -c -
+          tar xzf bash-4.2.tar.gz
           cd bash-4.2
           # 2011 年的 K&R 风格 C：新编译器默认 C23，把「void f()」当成无参、隐式声明当错误。
           # -std 写进 CC 而不是 CFLAGS：builtins/ 里给构建机用的工具（mkbuiltins）不吃 CFLAGS。
