@@ -196,7 +196,7 @@ tools/doctor.sh               只读诊断（入口）
 tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
 tools/lib/points_to.sh        install 与 doctor 共用的 settings 命令判定
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
-.github/workflows/tests.yml   CI：macOS、Linux、bash 4.2 三个作业各跑全量，另有 shellcheck
+.github/workflows/tests.yml   CI：macOS、Linux、bash 4.2、Python 3.9 四个作业各跑全量，另有 shellcheck
 install.sh  run_tests.sh
 ```
 

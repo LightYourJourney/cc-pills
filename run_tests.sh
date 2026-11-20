@@ -14,7 +14,4 @@ if [ $# -gt 0 ]; then
   mods=(); for m in "$@"; do mods+=("test_$m"); done
   exec python3 -m unittest "${mods[@]}"
 fi
-if [ "${CCPILLS_SERIAL:-}" = 1 ]; then
-  exec python3 -m unittest test_render test_tokens test_theme test_cache test_subagent test_freshness test_install test_doctor
-fi
 exec python3 _parallel.py

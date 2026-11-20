@@ -212,7 +212,7 @@ tools/doctor.sh               read-only diagnostics (entry point)
 tools/doctor/*.sh             check groups: env / install / cache / data
 tools/lib/points_to.sh        settings-command matching shared by install and doctor
 tests/                        unit + golden + property + contrast-matrix tests
-.github/workflows/tests.yml   CI: full suite on macOS, Linux and bash 4.2, plus shellcheck
+.github/workflows/tests.yml   CI: full suite on macOS, Linux, bash 4.2 and Python 3.9, plus shellcheck
 install.sh  run_tests.sh
 ```
 

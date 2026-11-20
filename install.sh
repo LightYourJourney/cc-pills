@@ -116,7 +116,7 @@ install)
        echo '  "statusLine": {"type": "command", "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\""}' ;;
   esac
   if has_file subagent-statusline.sh; then
-    cmd=$(settings_cmd "$DEST/settings.json" subagentStatusLine)
+    cmd=$(settings_cmd "$SJ" subagentStatusLine)
     points_to "$cmd" subagent-statusline.sh "$DEST"; st=$?
     case $st in
       0) echo "settings.json 的 subagentStatusLine 已指向它：$cmd" ;;
@@ -137,14 +137,14 @@ check)
     else echo "  不一致：${f}（仓库改过但没重新安装）"; rc=1; fi
   done
   [ "$SJ_BAD" = 1 ] && { echo "  $SJ_BAD_MSG"; exit 1; }
-  cmd=$(settings_cmd "$DEST/settings.json" statusLine)
+  cmd=$(settings_cmd "$SJ" statusLine)
   points_to "$cmd" statusline-command.sh "$DEST"; st=$?
   case $st in
     0) echo "  settings.json 的 statusLine 指向：$cmd" ;;
     2) echo "  settings.json 的 statusLine 路径不是已安装副本：$cmd"; rc=1 ;;
     *) echo "  settings.json 的 statusLine 未指向 statusline-command.sh"; rc=1 ;;
   esac
-  cmd=$(settings_cmd "$DEST/settings.json" subagentStatusLine)
+  cmd=$(settings_cmd "$SJ" subagentStatusLine)
   if has_file subagent-statusline.sh; then
     points_to "$cmd" subagent-statusline.sh "$DEST"; st=$?
     case $st in
@@ -175,7 +175,7 @@ uninstall)
   # 不自动改用户 settings：只指出仍指向已删除脚本的键，避免每次渲染都执行失败。
   if [ ${#removed[@]} -gt 0 ]; then
     for key in statusLine subagentStatusLine; do
-      c=$(settings_cmd "$DEST/settings.json" "$key")
+      c=$(settings_cmd "$SJ" "$key")
       [ -n "$c" ] || continue
       for dst in "${removed[@]}"; do
         points_to "$c" "${dst##*/}" "$DEST"; st=$?

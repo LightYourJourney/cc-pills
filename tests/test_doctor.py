@@ -1115,6 +1115,16 @@ class Doctor(unittest.TestCase):
                            f'bash {d}/statusline-command.sh', 'PASS')):
             self.assertEqual(self._points_to_verdict(cmd), want, cmd)
 
+    def test_config_dir_forms_count_as_pointing(self):
+        """运行时展开到已安装目录的几种写法都算指向（默认值只认默认目录）。"""
+        self.sb.install(subagent=False, settings=False)
+        home = self.sb.env['HOME']
+        for cmd in ('bash "${CLAUDE_CONFIG_DIR}/statusline-command.sh"',
+                    'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"',
+                    'bash "${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-command.sh"',
+                    'bash "${CLAUDE_CONFIG_DIR:-' + home + '/.claude}/statusline-command.sh"'):
+            self.assertEqual(self._points_to_verdict(cmd), 'PASS', cmd)
+
     def test_panel_fail_codes_match_doctor(self):
         """面板写出的原因码与 doctor 解码的集合必须相等（也等于测试用的文案表）。"""
         with open(os.path.join(SRC, 'subagent-statusline.sh'), encoding='utf-8') as f:

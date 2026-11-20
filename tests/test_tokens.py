@@ -362,6 +362,30 @@ class Relay(Base):
         self.assertEqual(st['trk']['cost']['ep'], 'ledger')
         self.assertLess(st['trk']['cost']['lv'], 100)
 
+    def test_malformed_relay_fields_do_not_stall_counting(self):
+        """中转站模式多读 model 与 cache_creation 两个字段，形状不对同样只当没有：
+        异常在游标落盘前抛出，就每轮从同一片重读、再死一次，该会话永久停更。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))
+
+        def bad(mid, **kw):
+            o = json.loads(line(mid, 10, 1, 'end_turn', ts=ts))
+            for k, v in kw.items():
+                if k == 'cache_creation':
+                    o['message']['usage'][k] = v
+                else:
+                    o['message'][k] = v
+            return json.dumps(o)
+        tp = self.write('rm.jsonl', [bad('m1', cache_creation='x'), bad('m2', cache_creation=[1]),
+                                     bad('m3', cache_creation={'ephemeral_1h_input_tokens': '5'}),
+                                     bad('m4', model={'id': 'x'}), line('m5', 10, 1, 'end_turn', ts=ts)])
+        for _ in range(2):
+            out = self.fields(self.run_tok(tp, 'rm', f'relay={db}').stdout)
+            self.assertTrue(out, '一行形状不对就让整个会话不出数')
+        self.assertEqual([out[IDX['in']], out[IDX['out']]], ['50', '5'])
+        self.assertNotEqual(out[IDX['rcost']], '-')
+
     def test_unreadable_db_hides_rate_instead_of_freezing_it(self):
         """库读不了时追踪器停在上一次账本读数：不能把那个旧速率当现值输出（bash 侧每轮都
         刷新 .ts，陈旧判据拦不住它）。"""

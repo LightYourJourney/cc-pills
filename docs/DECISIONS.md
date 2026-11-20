@@ -267,7 +267,7 @@
 - `TMPDIR` 尾斜杠归一（`${TMPDIR%/}`），含空格 / 中文的路径有回归测试；`stat` 用「macOS 用
   `/usr/bin/stat -f`，其余先 GNU 后 BSD」。
 - **不为未验证的环境牺牲已验证行为**：先验证，发现差异再按「macOS 不减功能、Linux 尽力兼容」裁定。
-- **CI 五个作业**（`.github/workflows/tests.yml`）：
+- **CI 四个作业**（`.github/workflows/tests.yml`）：
   - macOS：全量。
   - Linux：全量 + shellcheck（11-17 起全量，取代 10-31 的子集）。shellcheck 为 warning 级，
     SC2034 / SC2154 整类关掉（变量靠 read 名单、`printf -v` 与跨文件 source 赋值）。
