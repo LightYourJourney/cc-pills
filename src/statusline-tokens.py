@@ -180,6 +180,11 @@ def tail_fp(path, off):
         return zlib.crc32(f.read(min(FP_BYTES, off)))
 
 
+def nonneg(v):
+    """transcript 里的 token 数：非负整数原样，其余（字符串、浮点、负数、缺失）按 0。"""
+    return v if type(v) is int and v >= 0 else 0
+
+
 def parse_ts(s):
     """transcript 时间戳是 UTC ISO8601（…Z）。"""
     try:
@@ -227,9 +232,8 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
         u = msg['usage']
         # 形状不对的值按 0、非字符串 id 按没有：异常一旦在游标落盘前抛出，每轮都从同一片
         # 重读、再死一次，该会话永久不出数
-        vals = tuple(v if type(v) is int and v >= 0 else 0 for v in
-                     (u.get('input_tokens'), u.get('output_tokens'),
-                      u.get('cache_creation_input_tokens'), u.get('cache_read_input_tokens')))
+        vals = (nonneg(u.get('input_tokens')), nonneg(u.get('output_tokens')),
+                nonneg(u.get('cache_creation_input_tokens')), nonneg(u.get('cache_read_input_tokens')))
         stop = msg.get('stop_reason') is not None
         mid = msg.get('id')
         mid = mid if isinstance(mid, str) else None
@@ -255,8 +259,7 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
             pend[mid] = (vals, stop)
             if track_unl and any(vals):        # 中转站：记入未入账集合（零用量的合成消息不记）
                 cc = u.get('cache_creation')
-                cw1 = cc.get('ephemeral_1h_input_tokens') if isinstance(cc, dict) else 0
-                cw1 = cw1 if type(cw1) is int and cw1 >= 0 else 0
+                cw1 = nonneg(cc.get('ephemeral_1h_input_tokens')) if isinstance(cc, dict) else 0
                 model = msg.get('model')
                 st['unl'][mid] = [model if isinstance(model, str) else '', vals[0], vals[1], vals[3], vals[2],
                                   cw1, parse_ts(obj.get('timestamp') or '') or time.time(), 0]

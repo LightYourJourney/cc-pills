@@ -51,6 +51,11 @@ def utf8_locale():
 LOCALE = utf8_locale()
 
 
+def iso_utc(t):
+    """unix 秒 → transcript 的时间戳写法（UTC ISO8601，…Z）。"""
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
+
+
 def strip(s):
     return ANSI.sub('', s)
 

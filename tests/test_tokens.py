@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from _util import FIELDS, IDX, RENDERER_FACTS, REPO, SRC
+from _util import FIELDS, IDX, RENDERER_FACTS, REPO, SRC, iso_utc
 
 PATH = os.path.join(SRC, 'statusline-tokens.py')
 
@@ -84,11 +84,12 @@ class Counting(Base):
             bad_tok,                                                # token 数是字符串
             line('minf', 1, 1, 'end_turn').replace('"input_tokens": 1', '"input_tokens": 1e400'),
             json.dumps({'type': 'assistant', 'message': {'id': ['x'], 'usage': {'input_tokens': 3}}}),
+            line('mneg', -4, 2, 'end_turn'),                        # 负数
             line('m2', 20, 40, 'end_turn')])
         for _ in range(2):
             out = self.fields(self.run_tok(tp, 'mal').stdout)
             self.assertTrue(out, '一行形状不对就让整个会话不出数')
-        self.assertEqual([out[IDX['in']], out[IDX['out']]], ['23', '42'])   # 3 + 20；形状不对的值按 0
+        self.assertEqual([out[IDX['in']], out[IDX['out']]], ['23', '44'])   # 3 + 20；形状不对的值按 0
 
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
@@ -345,9 +346,8 @@ class Relay(Base):
     def test_ledger_plus_tail_and_retention(self):
         now = int(time.time())
         db = self.make_db(now)
-        ts = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
-        tp = self.write('g.jsonl', [line('mold', 1000000, 0, 'end_turn', ts=ts(now - 86400 * 40)),
-                                    line('mnew', 1000, 100, 'end_turn', ts=ts(now - 60))])
+        tp = self.write('g.jsonl', [line('mold', 1000000, 0, 'end_turn', ts=iso_utc(now - 86400 * 40)),
+                                    line('mnew', 1000, 100, 'end_turn', ts=iso_utc(now - 60))])
         out = self.fields(self.run_tok(tp, 'r1', f'relay={db}', 'cost=10').stdout)
         self.assertAlmostEqual(float(out[IDX['rcost']]), 30 + (1000 * 5 + 100 * 25) / 1e6, places=6,
                                msg='早于库内最早记录的消息不应再自算')
@@ -367,7 +367,7 @@ class Relay(Base):
         异常在游标落盘前抛出，就每轮从同一片重读、再死一次，该会话永久停更。"""
         now = int(time.time())
         db = self.make_db(now)
-        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))
+        ts = iso_utc(now - 60)
 
         def bad(mid, usage=None, msg=None):
             o = json.loads(line(mid, 10, 1, 'end_turn', ts=ts))
@@ -473,7 +473,7 @@ class Relay(Base):
                   (now - 60,))
         c.commit()
         c.close()
-        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))
+        ts = iso_utc(now - 60)
         tp = self.write('h.jsonl', [line('mprox', 2000, 200, 'end_turn', ts=ts),
                                     line('mcodex', 3000, 300, 'end_turn', ts=ts)])
         out = self.fields(self.run_tok(tp, 'r2', f'relay={db}').stdout)
@@ -589,7 +589,7 @@ class DailyLimit(Base):
         """日限额分子含 usage_daily_rollups；不含尚未入账的尾部（尾部将记为 _session）。"""
         now = int(time.time())
         db = self.provider_db(now, rollup=2.0)
-        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+        ts = iso_utc(now)
         tp = self.write('lim5.jsonl', [line('mt', 1000, 100, 'end_turn', ts=ts)])
         out = self.fields(self.run_tok(tp, 'l6', f'relay={db}').stdout)
         self.assertEqual(out[IDX['rtoday']], '7.0000', 'B 的 $5 + rollup $2；尾部不计入限额分子')

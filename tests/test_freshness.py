@@ -10,7 +10,7 @@ import subprocess
 import time
 import unittest
 
-from _util import RENDERER_FACTS, SCRIPT, Sandbox, color_of, strip
+from _util import RENDERER_FACTS, SCRIPT, Sandbox, color_of, iso_utc, strip
 
 
 def write_ts(sb, sid, age=0):
@@ -85,7 +85,7 @@ class Freshness(unittest.TestCase):
             tp = os.path.join(sb.dir, 'rt.jsonl')
             now = int(time.time())
             line = json.dumps({'type': 'assistant',
-                               'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
+                               'timestamp': iso_utc(now),
                                'message': {'id': 'm1', 'model': 'claude-opus-5-5',
                                            'stop_reason': 'end_turn',
                                            'usage': {'input_tokens': 10, 'output_tokens': 1,
