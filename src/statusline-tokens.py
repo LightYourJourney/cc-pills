@@ -229,14 +229,25 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
         msg = obj.get('message')
         if not isinstance(msg, dict) or not isinstance(msg.get('usage'), dict):
             continue
-        u = msg['usage']
         # 形状不对的值按 0、非字符串 id 按没有：异常一旦在游标落盘前抛出，每轮都从同一片
-        # 重读、再死一次，该会话永久不出数
-        vals = (nonneg(u.get('input_tokens')), nonneg(u.get('output_tokens')),
-                nonneg(u.get('cache_creation_input_tokens')), nonneg(u.get('cache_read_input_tokens')))
-        stop = msg.get('stop_reason') is not None
-        mid = msg.get('id')
-        mid = mid if isinstance(mid, str) else None
+        # 重读、再死一次，该会话永久不出数。取值全部放在改状态之前，外面再兜一层：
+        # 守卫之外的意外（将来加字段漏了守卫）只丢这一行，不会留下改了一半的状态
+        try:
+            u = msg['usage']
+            vals = (nonneg(u.get('input_tokens')), nonneg(u.get('output_tokens')),
+                    nonneg(u.get('cache_creation_input_tokens')), nonneg(u.get('cache_read_input_tokens')))
+            stop = msg.get('stop_reason') is not None
+            mid = msg.get('id')
+            mid = mid if isinstance(mid, str) else None
+            row = None
+            if track_unl and mid and any(vals):    # 中转站：未入账集合的一行（零用量的合成消息不记）
+                cc = u.get('cache_creation')
+                cw1 = nonneg(cc.get('ephemeral_1h_input_tokens')) if isinstance(cc, dict) else 0
+                model = msg.get('model')
+                row = [model if isinstance(model, str) else '', vals[0], vals[1], vals[3], vals[2],
+                       cw1, parse_ts(obj.get('timestamp') or '') or time.time(), 0]
+        except Exception:
+            continue
         # 消息数：同一个 message.id 的行在 transcript 里连续出现（本机实测非连续复现 0 次），
         # 按 id 变化计数即精确值——不必存 id 表，状态只多两个标量
         if mid and mid != fs.get('last_id'):
@@ -257,12 +268,8 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
                     pend.pop(order.pop(0), None)
         if mid:
             pend[mid] = (vals, stop)
-            if track_unl and any(vals):        # 中转站：记入未入账集合（零用量的合成消息不记）
-                cc = u.get('cache_creation')
-                cw1 = nonneg(cc.get('ephemeral_1h_input_tokens')) if isinstance(cc, dict) else 0
-                model = msg.get('model')
-                st['unl'][mid] = [model if isinstance(model, str) else '', vals[0], vals[1], vals[3], vals[2],
-                                  cw1, parse_ts(obj.get('timestamp') or '') or time.time(), 0]
+            if row:
+                st['unl'][mid] = row
     return caught_up
 
 

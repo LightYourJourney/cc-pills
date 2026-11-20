@@ -91,6 +91,36 @@ class Counting(Base):
             self.assertTrue(out, '一行形状不对就让整个会话不出数')
         self.assertEqual([out[IDX['in']], out[IDX['out']]], ['23', '44'])   # 3 + 20；形状不对的值按 0
 
+    def test_unforeseen_extraction_error_drops_only_that_line(self):
+        """字段守卫之外的意外（将来新加字段漏了守卫）只丢那一行：不能让异常逃出 scan_chunk，
+        也不能留下改了一半的状态。用会抛异常的 nonneg / parse_ts 模拟漏掉的守卫。"""
+        ts = '2026-10-28T06:00:00Z'
+        tp = self.write('ux.jsonl', [line('m1', 7777, 1, 'end_turn', ts=ts), line('m2', 20, 40, 'end_turn', ts=ts),
+                                     line('m3', 5, 5, 'end_turn', ts='boom')])
+        orig_nn, orig_ts = self.t.nonneg, self.t.parse_ts
+
+        def nn(v):
+            if v == 7777:
+                raise ValueError(v)
+            return orig_nn(v)
+
+        def pts(s):
+            if s == 'boom':
+                raise ValueError(s)
+            return orig_ts(s)
+        self.t.nonneg, self.t.parse_ts = nn, pts
+        try:
+            for track_unl in (False, True):
+                st = json.loads(json.dumps(self.t.EMPTY))
+                fs = {'off': 0, 'fp': 0}
+                self.t.scan_chunk(tp, fs, st, {}, [], True, track_unl)
+                self.assertGreater(fs['off'], 0)
+                want = (25, 45) if not track_unl else (20, 40)   # 中转站模式下 m3 的时间戳也要取
+                self.assertEqual((st['in'], st['out']), want, track_unl)
+                self.assertEqual(sorted(st['unl']), ['m2'] if track_unl else [])
+        finally:
+            self.t.nonneg, self.t.parse_ts = orig_nn, orig_ts
+
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
             line('m1', 10, 300, 'tool_use', extra={'type': 'tool_use', 'name': 'Grep',
