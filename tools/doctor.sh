@@ -164,6 +164,7 @@ fi
 printf 'cc-pills %s （%s）\n' "$F_version" "$ver_note"
 CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
+CACHE_MAX_AGE=${F_cache_max_age:-}      # 1.0.6 及更早的副本不报这一项：文案就不写天数
 BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
 C_THEME=$F_theme; C_CHROMA=$F_pill_chroma; C_STYLE=$F_pill_style; C_PAGE=$F_status_page
 CFG_READABLE=$F_conf_readable

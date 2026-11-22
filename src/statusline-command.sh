@@ -181,7 +181,7 @@ THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
 TOK_STALE=900            # token 缓存超过此秒数判陈旧：派生项隐藏（宁缺勿假）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
-CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存与残留临时文件的保留天数
+CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存、残留临时文件与空刷新锁目录的保留天数
                          # （会话状态另外要求记录里的 transcript 已不存在；后台每天清一次）
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
@@ -345,6 +345,7 @@ if [ "${1:-}" = --facts ]; then
     "theme_cache=$THEME_CACHE" "theme_want=$THEME_WANT" \
     "palette_usable=$PAL_OK" "color_depth=$CDEPTH" \
     "theme_ttl=$THEME_TTL" "tok_stale=$TOK_STALE" "status_stale=$STATUS_STALE" "lock_stale=$LOCK_STALE" \
+    "cache_max_age=$CACHE_MAX_AGE" \
     "tok_v=$TOK_V" "tok_keys=${tok_keys# }" "relay_env=$relay" "ccswitch_db=$CCSWITCH_DB"
   exit 0
 fi
@@ -542,7 +543,8 @@ if [ "${1:-}" = "--refresh" ]; then
            -o -name '.claude-sl-*' \) \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
       # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后 rmdir。只认空目录（-type d 不跟随
-      # 链接，rmdir 删不了非空目录），活跃刷新的锁只有几秒大，碰不到
+      # 链接，rmdir 删不了非空目录）。find 判完年龄到批量 rmdir 之间若恰有那个会话恢复、刚接管
+      # 残锁，新锁会被删掉、该会话可能并发跑两次刷新——窗口只有毫秒，且刷新幂等（见头部架构）
       find "$SLT" -mindepth 1 -maxdepth 1 -type d -empty -name 'claude-sl-lock-*' \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rmdir {} + 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript

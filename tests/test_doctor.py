@@ -46,6 +46,7 @@ THEME_TTL = int(read_const('THEME_TTL'))
 TOK_STALE = int(read_const('TOK_STALE'))
 STATUS_STALE = int(read_const('STATUS_STALE'))
 LOCK_STALE = int(read_const('LOCK_STALE'))
+CACHE_MAX_AGE = int(read_const('CACHE_MAX_AGE'))
 PANEL_FAIL_STALE = int(read_const('PANEL_FAIL_STALE', DOCTOR))
 FACTS_V = read_const('FACTS_V', DOCTOR)
 # 面板写回失败的原因码 → doctor 文案里的关键词（集合由契约测试与两边源码对齐）
@@ -567,6 +568,18 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
         self.assertIn('TOK_STALE', self.sb.detail(r, '缓存/token'))
 
+    def test_stale_cache_with_unreadable_session_state_warns(self):
+        """会话状态读不出（损坏）、files 不是对象或一条路径都没记：判断不了是否闲置，照报 WARN，
+        文案不能断言「transcript 有写入」。"""
+        for body in ('not json\n', '{"v": 9, "files": {}}', '{"v": 9, "files": ["/x.jsonl"]}'):
+            with self.subTest(body=body):
+                env = self.sb.healthy(tok_age=TOK_STALE + 60)
+                with open(os.path.join(self.sb.cache, 'claude-statusline-doctor.json'), 'w') as f:
+                    f.write(body)
+                r = self.sb.run(env=env)
+                self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+                self.assertIn('无法判断', self.sb.detail(r, '缓存/token'))
+
     def test_idle_session_without_ts_passes(self):
         """无 .ts 的旧缓存同理：会话已闲置时回填后隐藏派生项也无所谓，不报 WARN。"""
         self.sb.install()
@@ -840,10 +853,17 @@ class Doctor(unittest.TestCase):
         d = self.sb.detail(r, '缓存/锁')
         self.assertIn('残锁', d)
         self.assertIn('下次刷新时会清除', d)
-        self.assertIn('30 天', d)
+        self.assertIn(f'{CACHE_MAX_AGE} 天', d)
         d = self.sb.detail(self.sb.run(env={'CLAUDE_SL_TMP': self.sb.cache}), '缓存/锁')
-        self.assertNotIn('30 天', d, '显式 CLAUDE_SL_TMP 不清理，不能说 30 天后会删')
+        self.assertNotIn(f'{CACHE_MAX_AGE} 天', d, '显式 CLAUDE_SL_TMP 不清理，不能说多少天后会删')
         self.assertIn('CLAUDE_SL_TMP', d)
+        # 天数取自已安装副本的自述，不在诊断侧另抄；不报这一项的旧副本就不写天数
+        self.sb.set_installed(lambda src: src.replace('CACHE_MAX_AGE=30 ', 'CACHE_MAX_AGE=7 ', 1))
+        self.assertIn('7 天', self.sb.detail(self.sb.run(), '缓存/锁'))
+        self.sb.set_installed(lambda src: src.replace('"cache_max_age=$CACHE_MAX_AGE" ', '', 1))
+        d = self.sb.detail(self.sb.run(), '缓存/锁')
+        self.assertNotIn(' 天后', d)
+        self.assertIn('定期', d)
 
     def test_backoff_does_not_claim_no_colour_when_theme_still_matches(self):
         """渲染侧只要求缓存的主题部分与当前 THEME 相同、且有 P_CTX 就上色；chroma / 风格 /

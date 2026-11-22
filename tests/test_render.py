@@ -441,6 +441,7 @@ class Facts(unittest.TestCase):
             self.assertEqual((f_['bash_min'], f_['py_min']), ('4.2', '3.9'))
             self.assertRegex(f_['version'], r'^\d+\.\d+\.\d+$')
             self.assertTrue(f_['tok_v'].isdigit())
+            self.assertTrue(f_['cache_max_age'].isdigit())
             self.assertEqual((f_['theme'], f_['pill_style'], f_['pill_chroma'], f_['status_page']),
                              ('nord', 'jewel', '7', 'off'))
             self.assertEqual(f_['conf_readable'], '1')

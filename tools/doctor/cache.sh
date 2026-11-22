@@ -78,14 +78,15 @@ fi
 # （tok_ok=0，派生项隐藏）。没有 .ts 的旧缓存本轮按「新鲜」处理，但后台刷新会按缓存 mtime
 # 补写 .ts，下一轮就判陈旧并隐藏派生项（3a8679e）；这里报的是刷新前这段静默陈旧。
 # 会话是否仍活跃：会话状态里记的任一 transcript 在 TOK_STALE 内写过 → 真。已结束的会话缓存陈旧是
-# 常态（不再刷新），不该报 WARN；读不出状态（没有状态文件 / 没有 jq / 解析失败）按活跃处理——
-# 宁可多报一条，不漏掉后台停更
+# 常态（不再刷新），不该报 WARN；判断不了（没有状态文件 / 没有 jq / 解析失败 / files 不是对象或
+# 一条路径都没记）按活跃处理——宁可多报一条，不漏掉后台停更
 sess_active() {  # sess_active <token 缓存路径>
   local sid st paths p m
   sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
   st="$SLT/claude-statusline-$sid.json"
   [ -n "$jq" ] && [ -f "$st" ] && [ ! -L "$st" ] || return 0
-  paths=$(jq -r '.files | keys[]' "$st" 2>/dev/null) || return 0
+  paths=$(jq -r '.files | if type == "object" then keys[] else error end' "$st" 2>/dev/null) || return 0
+  [ -n "$paths" ] || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     m=$(mtime "$p")
@@ -140,7 +141,7 @@ else
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
   elif [ "$tok_old_ts" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_old_ts 个活跃会话（transcript 近 ${TOK_STALE}s 内有写入）的缓存超过 TOK_STALE=${TOK_STALE}：\$/h、out、hit、io、msgs 会被隐藏" \
+    res WARN 缓存/token "有 $tok_old_ts 个缓存超过 TOK_STALE=${TOK_STALE}，其会话仍在活跃（transcript 近 ${TOK_STALE}s 内有写入）或无法判断：\$/h、out、hit、io、msgs 会被隐藏" \
       "回到那个会话让它刷新；若持续不更新，看 数据/stdin 与 缓存/后台刷新"
   elif [ "$tok_no_ts_old" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：本轮仍沿用旧值，后台刷新按 mtime 回填 .ts 后派生项会被隐藏" \
@@ -210,7 +211,7 @@ else
   esac
 fi
 
-# 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件 / 符号链接占住时，渲染侧会先
+# 刷新锁：活跃会话的残锁下一轮就被抢掉，已结束会话的由每日清理删；锁路径被普通文件 / 符号链接占住时，渲染侧会先
 # rm -f 再重试、下一轮自愈，但私有目录里出现这种占位不正常，报 WARN 提醒
 lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
@@ -236,7 +237,8 @@ elif [ -n "$lock_bad" ]; then
 elif [ -n "$lock_old" ]; then
   # 超龄的空锁不需要处理：活跃会话下一轮刷新就抢掉，已结束会话的由每日清理在 CACHE_MAX_AGE 后删掉
   # （显式 CLAUDE_SL_TMP 不清理，生命周期归调用方）
-  gone="会话已结束的由每日清理在 30 天后删掉"
+  gone="会话已结束的由每日清理定期删掉"
+  [ -n "$CACHE_MAX_AGE" ] && gone="会话已结束的由每日清理在 ${CACHE_MAX_AGE} 天后删掉"
   [ "$F_slt_explicit" = 1 ] && gone="会话已结束的留着（显式 CLAUDE_SL_TMP 不清理，归调用方）"
   res PASS 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：该会话下次刷新时会清除，${gone}；留着无害"
 elif [ "$lock_n" -gt 0 ]; then
