@@ -167,6 +167,7 @@ def fmt_usd(r):
 def transcript_files(path):
     """主 transcript + 同会话 subagent / workflow transcript（CC Switch 同口径）。"""
     base = path[:-6] if path.endswith('.jsonl') else path
+    base = glob.escape(base)                   # 路径里的 [ ] * ? 不能当通配符（如 CLAUDE_CONFIG_DIR=~/claude[1]）
     subs = glob.glob(os.path.join(base, 'subagents', '*.jsonl'))
     subs += glob.glob(os.path.join(base, 'subagents', 'workflows', '*', '*.jsonl'))
     return [path] + sorted(subs)

@@ -101,9 +101,12 @@ initprev=$prev                              # 锁内重读后与它比较：未�
 
 # ── 渲染各行 ────────────────────────────────────────────────────────────
 printf '%s' "$input" | jq -c --argjson prev "$prev" '
-  (.columns // 120) as $cols
+  (.columns | if type == "number" then . else 120 end) as $cols
   | (.tasks // [])[]
-  | select(.id | type == "string")             # 契约里 id 是字符串；别的类型拿去索引 $prev 会让整个 jq 中止
+  # 逐行兜底：某个 task 的字段类型不对（tokenCount 是字符串、description 是数字……）只让那一行
+  # 回到默认渲染；不兜的话整个 jq 中止，坏行之后的行全部丢失
+  | try (
+    select(.id | type == "string")             # 契约里 id 是字符串；别的类型拿去索引 $prev 会出错
   | (.status // "" | tostring) as $st
   | ($st == "" or $st == "running" or $st == "pending") as $live
 
@@ -169,6 +172,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
                 + $desc2
                 + (if $tail != "" then "  — " + $tail else "" end)
                 + $stTag) }
+  ) catch empty
 ' 2>/dev/null
 
 # ── 状态写回（共享合并、600s 剪枝、entry 更新间隔 ≥2s、原子替换）────────
@@ -228,7 +232,7 @@ if [ "$got" = 1 ]; then
     now as $n
     | ($prev | with_entries(select(
         (.value | type == "object") and ((.value.t // 0) > ($n - 600))))) as $base
-    | reduce ((.tasks // [])[] | select(.id | type == "string")
+    | reduce ((.tasks // [])[] | objects | select(.id | type == "string")
               | select((.status // "running" | tostring) as $s
                        | $s == "running" or $s == "" or $s == "pending")) as $t
         ($base;

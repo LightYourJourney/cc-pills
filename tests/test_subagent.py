@@ -264,6 +264,34 @@ class SubagentState(unittest.TestCase):
             self.assertEqual(sorted(json.load(f)), ['a', 'b'])
         self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
 
+    def test_malformed_task_fields_only_drop_that_row(self):
+        """一个 task 的字段类型不对（tokenCount 是字符串、description / model 是数字、task 本身不是对象）
+        只让那一行回到默认渲染，前后的行照常输出、状态照常写回（此前整个 jq 中止，坏行之后全部丢失）。"""
+        st = os.path.join(self.d, 'bad.json')
+        ok = lambda i: {'id': i, 'status': 'running', 'description': f'd{i}', 'model': 'm',
+                        'tokenCount': 1000, 'contextWindowSize': 1000000}
+        tasks = {'columns': 120, 'tasks': [
+            ok('a'),
+            dict(ok('b'), tokenCount='2000'),
+            dict(ok('c'), description=42),
+            dict(ok('d'), model=5),
+            5,
+            ok('e')]}
+        r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
+                           env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60)
+        self.assertEqual([json.loads(l)['id'] for l in r.stdout.splitlines()], ['a', 'e'])
+        with open(st) as f:
+            self.assertEqual(sorted(json.load(f)), ['a', 'b', 'c', 'd', 'e'])
+        self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
+
+    def test_non_numeric_columns_falls_back_to_default_width(self):
+        """columns 不是数字时按默认宽度 120 渲染，而不是一行都不出。"""
+        tasks = {'columns': '100', 'tasks': [{'id': 'a', 'status': 'running', 'description': 'work'}]}
+        r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
+                           env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=os.path.join(self.d, 'c.json')),
+                           timeout=60)
+        self.assertEqual([json.loads(l)['content'] for l in r.stdout.splitlines()], ['work'])
+
     def test_panel_line_fields(self):
         """面板行：名字、按宽度截断的描述、模型 / effort / tok 与增速 / ctx 剩余 / 时长，非运行态
         带 [状态] 且不计时长，剩余 < 20% 带 ⚠。"""

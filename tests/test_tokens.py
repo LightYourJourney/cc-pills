@@ -151,6 +151,15 @@ class Counting(Base):
         self.assertEqual([o[IDX['in']], o[IDX['out']]], ['10', '5'])
         self.assertEqual(r.stderr, '')
 
+    def test_subagents_found_under_glob_metacharacters(self):
+        """transcript 路径里有 [ ] * ?（如 CLAUDE_CONFIG_DIR=~/claude[1]）时 subagent 照样计入：
+        路径要先转义再拼 glob 模式，否则 [1] 被当成字符类，只匹配到别处。"""
+        tp = self.write('cfg[1]*?/g.jsonl', [line('m1', 10, 5, 'end_turn')])
+        self.write('cfg[1]*?/g/subagents/agent-x.jsonl', [line('s1', 7, 3, 'end_turn')])
+        self.write('cfg[1]*?/g/subagents/workflows/w1/agent-y.jsonl', [line('s2', 1, 1, 'end_turn')])
+        o = self.fields(self.run_tok(tp, 'cg').stdout)
+        self.assertEqual([o[IDX['in']], o[IDX['out']], o[IDX['msgs']]], ['18', '9', '3'])
+
     def test_output_is_versioned_key_value_lines(self):
         """首行是调用方传入的格式版本（版本号只在 bash 一处维护），其后每行「键=值」；
         拿不到的指标整行不写，不用占位符。"""
