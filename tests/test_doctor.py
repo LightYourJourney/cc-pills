@@ -540,16 +540,27 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
 
-    def session_state(self, transcript_age):
-        """给 doctor 会话写一份会话状态，里面记的 transcript 在 transcript_age 秒前写过。"""
-        tp = os.path.join(self.sb.home, 'proj', 'doctor.jsonl')
-        os.makedirs(os.path.dirname(tp), exist_ok=True)
-        with open(tp, 'w') as f:
-            f.write('{}\n')
-        t = time.time() - transcript_age
-        os.utime(tp, (t, t))
+    def session_state(self, transcript_age=None, body=None):
+        """给 doctor 会话写一份会话状态：记一个 transcript_age 秒前写过的 transcript，或原样写 body。"""
+        if body is None:
+            tp = os.path.join(self.sb.home, 'proj', 'doctor.jsonl')
+            os.makedirs(os.path.dirname(tp), exist_ok=True)
+            with open(tp, 'w') as f:
+                f.write('{}\n')
+            t = time.time() - transcript_age
+            os.utime(tp, (t, t))
+            body = json.dumps({'v': 9, 'files': {tp: {'off': 3, 'fp': 0}}})
         with open(os.path.join(self.sb.cache, 'claude-statusline-doctor.json'), 'w') as f:
-            json.dump({'v': 9, 'files': {tp: {'off': 3, 'fp': 0}}}, f)
+            f.write(body)
+
+    def old_cache_without_ts(self):
+        """从旧版本迁移来、还没回填时间戳的 token 缓存（mtime 已超过 TOK_STALE）。"""
+        self.sb.install()
+        self.sb.make_cache(tok_age=0)
+        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
+        os.unlink(tok + '.ts')
+        old = time.time() - TOK_STALE - 600
+        os.utime(tok, (old, old))
 
     def test_stale_cache_of_idle_session_passes(self):
         """会话已结束（transcript 也超过 TOK_STALE 没写过）时缓存陈旧是常态，不是故障：不报 WARN，
@@ -574,20 +585,14 @@ class Doctor(unittest.TestCase):
         for body in ('not json\n', '{"v": 9, "files": {}}', '{"v": 9, "files": ["/x.jsonl"]}'):
             with self.subTest(body=body):
                 env = self.sb.healthy(tok_age=TOK_STALE + 60)
-                with open(os.path.join(self.sb.cache, 'claude-statusline-doctor.json'), 'w') as f:
-                    f.write(body)
+                self.session_state(body=body)
                 r = self.sb.run(env=env)
                 self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
                 self.assertIn('无法判断', self.sb.detail(r, '缓存/token'))
 
     def test_idle_session_without_ts_passes(self):
         """无 .ts 的旧缓存同理：会话已闲置时回填后隐藏派生项也无所谓，不报 WARN。"""
-        self.sb.install()
-        self.sb.make_cache(tok_age=0)
-        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
-        os.unlink(tok + '.ts')
-        old = time.time() - TOK_STALE - 600
-        os.utime(tok, (old, old))
+        self.old_cache_without_ts()
         self.session_state(transcript_age=TOK_STALE + 600)
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
@@ -608,12 +613,7 @@ class Doctor(unittest.TestCase):
 
     def test_old_cache_without_ts_reports_round_then_refresh(self):
         """无 .ts 的旧缓存本轮仍沿用，但刷新按 mtime 回填 .ts 后下一轮会隐藏派生项。"""
-        self.sb.install()
-        self.sb.make_cache(tok_age=0)
-        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
-        os.unlink(tok + '.ts')                      # 模拟从旧版本迁移来、还没回填时间戳的缓存
-        old = time.time() - TOK_STALE - 600
-        os.utime(tok, (old, old))
+        self.old_cache_without_ts()
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
         d = self.sb.detail(r, '缓存/token')
@@ -857,13 +857,13 @@ class Doctor(unittest.TestCase):
         d = self.sb.detail(self.sb.run(env={'CLAUDE_SL_TMP': self.sb.cache}), '缓存/锁')
         self.assertNotIn(f'{CACHE_MAX_AGE} 天', d, '显式 CLAUDE_SL_TMP 不清理，不能说多少天后会删')
         self.assertIn('CLAUDE_SL_TMP', d)
-        # 天数取自已安装副本的自述，不在诊断侧另抄；不报这一项的旧副本就不写天数
+        # 天数取自已安装副本的自述，不在诊断侧另抄；不报这一项的是不清理锁的旧版：不能说会删
         self.sb.set_installed(lambda src: src.replace('CACHE_MAX_AGE=30 ', 'CACHE_MAX_AGE=7 ', 1))
         self.assertIn('7 天', self.sb.detail(self.sb.run(), '缓存/锁'))
         self.sb.set_installed(lambda src: src.replace('"cache_max_age=$CACHE_MAX_AGE" ', '', 1))
         d = self.sb.detail(self.sb.run(), '缓存/锁')
         self.assertNotIn(' 天后', d)
-        self.assertIn('定期', d)
+        self.assertIn('rmdir', d)
 
     def test_backoff_does_not_claim_no_colour_when_theme_still_matches(self):
         """渲染侧只要求缓存的主题部分与当前 THEME 相同、且有 P_CTX 就上色；chroma / 风格 /

@@ -84,11 +84,9 @@ sess_active() {  # sess_active <token 缓存路径>
   local sid st paths p m
   sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
   st="$SLT/claude-statusline-$sid.json"
-  [ -n "$jq" ] && [ -f "$st" ] && [ ! -L "$st" ] || return 0
-  paths=$(jq -r '.files | if type == "object" then keys[] else error end' "$st" 2>/dev/null) || return 0
-  [ -n "$paths" ] || return 0
+  [ -L "$st" ] && return 0                        # 没有 jq / 文件不在时下面的 jq 自己失败
+  paths=$(jq -r '.files | if type == "object" and length > 0 then keys[] else error end' "$st" 2>/dev/null) || return 0
   while IFS= read -r p; do
-    [ -n "$p" ] || continue
     m=$(mtime "$p")
     [ -n "$m" ] && [ $(( NOW - m )) -le "$TOK_STALE" ] && return 0
   done <<< "$paths"
@@ -97,6 +95,7 @@ sess_active() {  # sess_active <token 缓存路径>
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
 tok_old_ts=0; tok_no_ts_old=0; tok_idle=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
+  stale=""                                        # 陈旧时是哪一种：old_ts（有 .ts）/ no_ts（按 mtime）
   if [ -L "$f" ]; then tok_link=$((tok_link + 1)); continue; fi
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
@@ -112,18 +111,18 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
-      *) t=$((10#$tv))
-         if [ $(( NOW - t )) -gt "$TOK_STALE" ]; then
-           if sess_active "$f"; then tok_old_ts=$((tok_old_ts + 1)); else tok_idle=$((tok_idle + 1)); fi
-         fi ;;
+      *) t=$((10#$tv)); [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=old_ts ;;
     esac
   elif [ -e "$ts" ] || [ -L "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
   else
     t=$(( $(mtime "$f") ))
-    if [ $(( NOW - t )) -gt "$TOK_STALE" ]; then
-      if sess_active "$f"; then tok_no_ts_old=$((tok_no_ts_old + 1)); else tok_idle=$((tok_idle + 1)); fi
-    fi
+    [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=no_ts
+  fi
+  if [ -n "$stale" ]; then
+    if ! sess_active "$f"; then tok_idle=$((tok_idle + 1))
+    elif [ "$stale" = old_ts ]; then tok_old_ts=$((tok_old_ts + 1))
+    else tok_no_ts_old=$((tok_no_ts_old + 1)); fi
   fi
   [ "$t" -gt "$tok_newest" ] && tok_newest=$t
 done
@@ -235,10 +234,9 @@ elif [ -n "$lock_bad" ]; then
   res WARN 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
     "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
-  # 超龄的空锁不需要处理：活跃会话下一轮刷新就抢掉，已结束会话的由每日清理在 CACHE_MAX_AGE 后删掉
-  # （显式 CLAUDE_SL_TMP 不清理，生命周期归调用方）
-  gone="会话已结束的由每日清理定期删掉"
-  [ -n "$CACHE_MAX_AGE" ] && gone="会话已结束的由每日清理在 ${CACHE_MAX_AGE} 天后删掉"
+  # 自述不报 cache_max_age 的副本（1.0.6 之前）根本不清理锁：不能说「会被删」，给出手工命令
+  gone="会话已结束的由每日清理在 ${CACHE_MAX_AGE} 天后删掉"
+  [ -n "$CACHE_MAX_AGE" ] || gone="会话已结束的留着（已安装副本没报清理天数，多半是不清理锁的旧版；重装即可，或手工 rmdir \"$SLT\"/claude-sl-lock-*）"
   [ "$F_slt_explicit" = 1 ] && gone="会话已结束的留着（显式 CLAUDE_SL_TMP 不清理，归调用方）"
   res PASS 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：该会话下次刷新时会清除，${gone}；留着无害"
 elif [ "$lock_n" -gt 0 ]; then

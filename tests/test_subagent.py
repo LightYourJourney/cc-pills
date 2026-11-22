@@ -250,36 +250,29 @@ class SubagentState(unittest.TestCase):
                                  env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st)).stdout
         self.assertIn('ctx 剩75%', out)
 
-    def test_non_string_task_id_does_not_break_the_tick(self):
-        """契约里 id 是字符串；混进一个数字 id 时只让那一行回到默认渲染，别的行照常输出、状态照常写回
-        （此前 $prev[数字] 让整个 jq 中止：只输出了第一行，写回记成 merge 失败）。"""
-        st = os.path.join(self.d, 'ids.json')
-        tasks = {'columns': 120, 'tasks': [
-            {'id': i, 'status': 'running', 'description': f'd{i}', 'model': 'm', 'tokenCount': 1000,
-             'contextWindowSize': 1000000} for i in ('a', 7, 'b')]}
+    def panel(self, tasks, st):
+        """跑一次面板脚本（状态文件 st），返回输出的各行（已解析）。"""
         r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
                            env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60)
-        self.assertEqual([json.loads(l)['id'] for l in r.stdout.splitlines()], ['a', 'b'])
-        with open(st) as f:
-            self.assertEqual(sorted(json.load(f)), ['a', 'b'])
-        self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
+        return [json.loads(l) for l in r.stdout.splitlines()]
 
-    def test_malformed_task_fields_only_drop_that_row(self):
-        """一个 task 的字段类型不对（tokenCount 是字符串、description / model 是数字、task 本身不是对象）
-        只让那一行回到默认渲染，前后的行照常输出、状态照常写回（此前整个 jq 中止，坏行之后全部丢失）。"""
+    def test_malformed_task_only_drops_that_row(self):
+        """一个 task 形状不对（id 不是字符串、tokenCount 是字符串、description / model 是数字、task
+        本身不是对象）只让那一行回到默认渲染，前后的行照常输出、状态照常写回。此前 $prev[数字]
+        或任何一处类型错误都让整个 jq 中止：坏行之后全部丢失，写回记成 merge 失败。id 不是字符串
+        的那行不写状态。"""
         st = os.path.join(self.d, 'bad.json')
         ok = lambda i: {'id': i, 'status': 'running', 'description': f'd{i}', 'model': 'm',
                         'tokenCount': 1000, 'contextWindowSize': 1000000}
         tasks = {'columns': 120, 'tasks': [
             ok('a'),
+            ok(7),
             dict(ok('b'), tokenCount='2000'),
             dict(ok('c'), description=42),
             dict(ok('d'), model=5),
             5,
             ok('e')]}
-        r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
-                           env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60)
-        self.assertEqual([json.loads(l)['id'] for l in r.stdout.splitlines()], ['a', 'e'])
+        self.assertEqual([row['id'] for row in self.panel(tasks, st)], ['a', 'e'])
         with open(st) as f:
             self.assertEqual(sorted(json.load(f)), ['a', 'b', 'c', 'd', 'e'])
         self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
@@ -287,10 +280,8 @@ class SubagentState(unittest.TestCase):
     def test_non_numeric_columns_falls_back_to_default_width(self):
         """columns 不是数字时按默认宽度 120 渲染，而不是一行都不出。"""
         tasks = {'columns': '100', 'tasks': [{'id': 'a', 'status': 'running', 'description': 'work'}]}
-        r = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True, text=True,
-                           env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=os.path.join(self.d, 'c.json')),
-                           timeout=60)
-        self.assertEqual([json.loads(l)['content'] for l in r.stdout.splitlines()], ['work'])
+        rows = self.panel(tasks, os.path.join(self.d, 'c.json'))
+        self.assertEqual([row['content'] for row in rows], ['work'])
 
     def test_panel_line_fields(self):
         """面板行：名字、按宽度截断的描述、模型 / effort / tok 与增速 / ctx 剩余 / 时长，非运行态

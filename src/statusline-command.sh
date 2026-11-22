@@ -542,11 +542,11 @@ if [ "${1:-}" = "--refresh" ]; then
            -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
            -o -name '.claude-sl-*' \) \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
-      # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后 rmdir。只认空目录（-type d 不跟随
-      # 链接，rmdir 删不了非空目录）。find 判完年龄到批量 rmdir 之间若恰有那个会话恢复、刚接管
-      # 残锁，新锁会被删掉、该会话可能并发跑两次刷新——窗口只有毫秒，且刷新幂等（见头部架构）
+      # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后删掉（只删空目录）。find 判完年龄到删除
+      # 之间若恰有那个会话恢复、刚接管残锁，新锁会被删、该会话可能并发跑两次刷新——窗口只有毫秒，
+      # 且刷新幂等（见头部架构）
       find "$SLT" -mindepth 1 -maxdepth 1 -type d -empty -name 'claude-sl-lock-*' \
-        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rmdir {} + 2>/dev/null
+        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -delete 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
       # 都不在了才删。读不出（损坏 / 无 jq）就保留——宁可留一个死文件，也不误删断点。
       cutoff=$((now - CACHE_MAX_AGE * 86400))
