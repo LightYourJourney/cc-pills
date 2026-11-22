@@ -590,6 +590,65 @@ class Doctor(unittest.TestCase):
                 self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
                 self.assertIn('无法判断', self.sb.detail(r, '缓存/token'))
 
+    def stale_cache(self, sid, transcript_age):
+        """一份超过 TOK_STALE 的 token 缓存，带 tp= 行（1.0.7 起生产者写），指向 transcript_age 秒前写过的
+        主 transcript；返回该 transcript 路径。"""
+        tp = os.path.join(self.sb.home, 'proj', f'{sid}.jsonl')
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, 'w') as f:
+            f.write('{}\n')
+        t = time.time() - transcript_age
+        os.utime(tp, (t, t))
+        p = os.path.join(self.sb.cache, f'claude-sl-tok-{sid}.cache')
+        with open(p, 'w') as f:
+            f.write(tok_line(hit='98.0', msgs='12', tp=tp))
+        with open(p + '.ts', 'w') as f:
+            f.write(f'{int(time.time() - TOK_STALE - 60)}\n')
+        return tp
+
+    def test_tp_line_decides_activity(self):
+        """缓存里有 tp= 时按它判活跃，不再去读会话状态（状态里说活跃也以 tp= 为准）。"""
+        env = self.sb.healthy(tok_age=None)
+        self.session_state(transcript_age=30)                    # 会话状态里的 transcript 刚写过……
+        os.rename(os.path.join(self.sb.home, 'proj', 'doctor.jsonl'),
+                  os.path.join(self.sb.home, 'proj', 'sub.jsonl'))
+        self.session_state(body=json.dumps({'v': 9, 'files': {
+            os.path.join(self.sb.home, 'proj', 'sub.jsonl'): {'off': 3}}}))
+        self.stale_cache('doctor', transcript_age=TOK_STALE + 50)  # ……tp= 指的主 transcript 早已不写
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+        self.assertIn('闲置', self.sb.detail(r, '缓存/token'))
+        self.stale_cache('doctor', transcript_age=30)
+        self.assertEqual(self.sb.status(self.sb.run(env=env), '缓存/token'), 'WARN')
+
+    def test_several_stale_sessions_are_judged_separately(self):
+        """多个陈旧缓存的 transcript 一次 stat 取完，结论仍逐会话对应：会话 a 无 tp=、回落会话状态里的两个
+        旧文件（闲置），会话 b 的 tp= 刚写过（活跃）→ 只报 1 个。两会话路径数不同，取错下标就会报错。"""
+        env = self.sb.healthy(tok_age=None)
+        old = [self.stale_cache(n, transcript_age=TOK_STALE + 50) for n in ('a1', 'a2')]
+        for n in ('a1', 'a2'):
+            os.unlink(os.path.join(self.sb.cache, f'claude-sl-tok-{n}.cache'))
+            os.unlink(os.path.join(self.sb.cache, f'claude-sl-tok-{n}.cache.ts'))
+        p = os.path.join(self.sb.cache, 'claude-sl-tok-a.cache')
+        with open(p, 'w') as f:
+            f.write(tok_line(hit='98.0'))
+        with open(p + '.ts', 'w') as f:
+            f.write(f'{int(time.time() - TOK_STALE - 60)}\n')
+        with open(os.path.join(self.sb.cache, 'claude-statusline-a.json'), 'w') as f:
+            json.dump({'v': 9, 'files': {q: {'off': 3} for q in old}}, f)
+        self.stale_cache('b', transcript_age=30)
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('有 1 个缓存', self.sb.detail(r, '缓存/token'))
+
+    def test_deleted_transcript_means_idle(self):
+        """tp= 指的 transcript 已删：会话已结束，陈旧不报 WARN。"""
+        env = self.sb.healthy(tok_age=None)
+        os.unlink(self.stale_cache('gone', transcript_age=30))
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+        self.assertIn('闲置', self.sb.detail(r, '缓存/token'))
+
     def test_idle_session_without_ts_passes(self):
         """无 .ts 的旧缓存同理：会话已闲置时回填后隐藏派生项也无所谓，不报 WARN。"""
         self.old_cache_without_ts()

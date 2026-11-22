@@ -83,10 +83,12 @@ scrub() {
 
 if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
   mtime() { /usr/bin/stat -f %m "$1" 2>/dev/null; }
+  mtimes() { /usr/bin/stat -f %m "$@" 2>/dev/null; }     # 一次取多个文件，每行一个（文件须都存在）
   stat_mode() { /usr/bin/stat -f %Lp "$1" 2>/dev/null; }
   fsize() { /usr/bin/stat -f %z "$1" 2>/dev/null; }
 else
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+  mtimes() { stat -c %Y "$@" 2>/dev/null || stat -f %m "$@" 2>/dev/null; }
   stat_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
   fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 fi

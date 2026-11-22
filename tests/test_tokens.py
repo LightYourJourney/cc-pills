@@ -52,7 +52,7 @@ class Base(unittest.TestCase):
         if not stdout.strip():
             return []
         kv = dict(l.split('=', 1) for l in stdout.splitlines())
-        self.assertEqual(set(kv) - set(FIELDS), {'TOK'}, '输出了 FIELDS 之外的键，或缺格式版本行')
+        self.assertEqual(set(kv) - set(FIELDS), {'TOK', 'tp'}, '输出了 FIELDS 之外的键，或缺格式版本行 / tp 行')
         return [kv.get(k, '-') for k in FIELDS]
 
     def state(self, sid):
@@ -168,6 +168,8 @@ class Counting(Base):
         self.assertEqual(out[0], 'TOK=7')
         kv = dict(l.split('=', 1) for l in out[1:])
         self.assertEqual((kv['in'], kv['out'], kv['msgs']), ('1', '1', '1'))
+        # tp 只给诊断：主 transcript 路径，用来判断已陈旧的缓存属于活跃会话还是已结束的会话
+        self.assertEqual(kv.pop('tp'), tp)
         self.assertLessEqual(set(kv), set(FIELDS))
         self.assertNotIn('-', kv.values())
         self.assertNotIn('q5lv', kv, '没给 5h 额度却输出了等级')

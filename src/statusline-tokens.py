@@ -67,6 +67,7 @@ bash 侧按键名取值、不认识的键忽略，所以新增指标只是多一
   in / out 总输入、输出    rate $/h    comp compact 次数    hit 命中率%（一位小数）    msgs 消息数
   q5lv q5out / q7lv q7out / dlv dout / splv spout   5h、7d、中转站日限额、网关花费限额的等级与用完倒计时
   rcost 中转站会话花费    runpriced 未计价消息数    rtoday 中转站今日    rlimit 日限额
+末行另有 tp=<主 transcript 路径>：只给诊断工具判断陈旧缓存的会话是否还活跃，不在 FIELDS 里，渲染侧不认。
 （等级 ∈ ok / warn / high / bad，见 5）。transcript 未追平或任何异常时输出空——bash 侧
 保留旧缓存（其约束 10），表现为数字停在上一次的值；超过 TOK_STALE 秒后由 bash 侧丢弃
 派生项、只保留 stdin 的额度百分比。
@@ -782,6 +783,7 @@ def main():
     for f in FIELDS:
         if d[f] != '-':
             print(f'{f}={d[f]}')
+    print(f'tp={path}')
 
 
 if __name__ == '__main__':

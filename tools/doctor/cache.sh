@@ -77,23 +77,23 @@ fi
 # 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件（含悬空符号链接）→ 判陈旧
 # （tok_ok=0，派生项隐藏）。没有 .ts 的旧缓存本轮按「新鲜」处理，但后台刷新会按缓存 mtime
 # 补写 .ts，下一轮就判陈旧并隐藏派生项（3a8679e）；这里报的是刷新前这段静默陈旧。
-# 会话是否仍活跃：会话状态里记的任一 transcript 在 TOK_STALE 内写过 → 真。已结束的会话缓存陈旧是
-# 常态（不再刷新），不该报 WARN；判断不了（没有状态文件 / 没有 jq / 解析失败 / files 不是对象或
-# 一条路径都没记）按活跃处理——宁可多报一条，不漏掉后台停更
-sess_active() {  # sess_active <token 缓存路径>
-  local sid st paths p m
+# 陈旧缓存的会话是否仍活跃：它的任一 transcript 在 TOK_STALE 内写过。已结束的会话缓存陈旧是常态
+# （不再刷新），不该报 WARN。transcript 路径先看缓存里的 tp= 行（1.0.7 起生产者写，只记主 transcript），
+# 没有就回落会话状态记的全部文件（含 subagent）。判断不了（没有状态文件 / 没有 jq / 解析失败 / files
+# 不是对象或为空）按活跃处理——宁可多报一条，不漏掉后台停更。
+sess_paths() {  # sess_paths <token 缓存路径> → 全局 SP：transcript 路径（换行分隔）；判断不了返回 1
+  local k v sid st
+  SP=""
+  while IFS='=' read -r k v; do [ "$k" = tp ] && SP=$v; done < "$1"
+  [ -n "$SP" ] && return 0
   sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
   st="$SLT/claude-statusline-$sid.json"
-  [ -L "$st" ] && return 0                        # 没有 jq / 文件不在时下面的 jq 自己失败
-  paths=$(jq -r '.files | if type == "object" and length > 0 then keys[] else error end' "$st" 2>/dev/null) || return 0
-  while IFS= read -r p; do
-    m=$(mtime "$p")
-    [ -n "$m" ] && [ $(( NOW - m )) -le "$TOK_STALE" ] && return 0
-  done <<< "$paths"
-  return 1
+  [ -L "$st" ] && return 1                        # 没有 jq / 文件不在时下面的 jq 自己失败
+  SP=$(jq -r '.files | if type == "object" and length > 0 then keys[] else error end' "$st" 2>/dev/null)
 }
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
 tok_old_ts=0; tok_no_ts_old=0; tok_idle=0
+n_stale=0                                         # 陈旧缓存：种类 / transcript 路径（? = 判断不了）
 for f in "$SLT"/claude-sl-tok-*.cache; do
   stale=""                                        # 陈旧时是哪一种：old_ts（有 .ts）/ no_ts（按 mtime）
   if [ -L "$f" ]; then tok_link=$((tok_link + 1)); continue; fi
@@ -120,11 +120,44 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=no_ts
   fi
   if [ -n "$stale" ]; then
-    if ! sess_active "$f"; then tok_idle=$((tok_idle + 1))
-    elif [ "$stale" = old_ts ]; then tok_old_ts=$((tok_old_ts + 1))
-    else tok_no_ts_old=$((tok_no_ts_old + 1)); fi
+    n_stale=$((n_stale + 1)); stale_kind[n_stale]=$stale
+    if sess_paths "$f"; then stale_paths[n_stale]=$SP; else stale_paths[n_stale]='?'; fi
   fi
   [ "$t" -gt "$tok_newest" ] && tok_newest=$t
+done
+# 全部陈旧会话的 transcript 一次 stat 取完（不逐条 fork）。先用内建 -e 筛掉不存在的（transcript 已删 =
+# 会话已结束）；stat 与 -e 之间文件消失会让行数对不上，此时这些会话一律按活跃处理
+i=1; n_arg=0
+while [ "$i" -le "$n_stale" ]; do
+  stale_live[i]=0
+  if [ "${stale_paths[i]}" = '?' ]; then
+    stale_live[i]=1
+  else
+    while IFS= read -r p; do
+      [ -n "$p" ] && [ -e "$p" ] && { n_arg=$((n_arg + 1)); arg_path[n_arg]=$p; arg_owner[n_arg]=$i; }
+    done <<< "${stale_paths[i]}"
+  fi
+  i=$((i + 1))
+done
+if [ "$n_arg" -gt 0 ]; then
+  j=0; ok=1
+  while IFS= read -r m; do
+    j=$((j + 1))
+    case "$m" in ''|*[!0-9]*) ok=0 ;; *) arg_mtime[j]=$m ;; esac
+  done <<< "$(mtimes "${arg_path[@]}")"
+  [ "$j" = "$n_arg" ] || ok=0
+  j=1
+  while [ "$j" -le "$n_arg" ]; do
+    if [ "$ok" = 0 ] || [ $(( NOW - arg_mtime[j] )) -le "$TOK_STALE" ]; then stale_live[arg_owner[j]]=1; fi
+    j=$((j + 1))
+  done
+fi
+i=1
+while [ "$i" -le "$n_stale" ]; do
+  if [ "${stale_live[i]}" = 0 ]; then tok_idle=$((tok_idle + 1))
+  elif [ "${stale_kind[i]}" = old_ts ]; then tok_old_ts=$((tok_old_ts + 1))
+  else tok_no_ts_old=$((tok_no_ts_old + 1)); fi
+  i=$((i + 1))
 done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/token "缓存根不可用"
