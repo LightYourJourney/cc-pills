@@ -68,8 +68,9 @@ is `mktemp` (O_EXCL) + atomic `mv`; the Python side uses `mkstemp` + `os.replace
 stray temp files untouched for 30 days are removed once a day by the background refresh.
 Session state (`claude-statusline-*.json`, the resume checkpoint that avoids a full
 re-scan) has one extra guard: it is deleted only when every transcript it records is gone.
-The scan uses `find -maxdepth 1 -type f`: no recursion, no symlink following, and it never
-touches the lock directory, palette, status page, or panel state. The 30-day threshold is a
+Empty refresh-lock directories left behind by ended sessions are removed after 30 days too.
+The scan uses `find -maxdepth 1`: no recursion, no symlink following, and it never
+touches the palette, status page, or panel state. The 30-day threshold is a
 constant — there is no config knob.
 
 **Migration**: the legacy `/tmp` token / skip-marker / session-state files for a live session
@@ -181,12 +182,12 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Palette cache missing / header mismatch / invalid `P_CTX` | WARN | `缓存/色板` |
 | Palette generation failing (backing off) | WARN | `缓存/退避` |
 | Status page cache older than 10 min / corrupt / missing indicator / not a regular file | WARN | `缓存/状态页` |
-| Token cache older than 15 min (by `.ts` or file mtime) | WARN | `缓存/token` |
+| Token cache of an active session (transcript written in the last 15 min) older than 15 min (by `.ts` or file mtime); ended sessions are not reported | WARN | `缓存/token` |
 | Token cache in another format version (left by an older install, or truncated) | WARN | `缓存/token` |
 | Token cache is a symlink (ignored) | WARN | `缓存/token` |
-| Refresh lock occupied by a plain file / symlink (cleared and retried in the same pass) | FAIL | `缓存/锁` |
+| Refresh lock occupied by a plain file / symlink (cleared and retried on the next pass; self-heals) | WARN | `缓存/锁` |
 | Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
-| Panel lock path occupied by a plain file / symlink (the panel clears and retries each pass) | FAIL | `缓存/面板锁` |
+| Panel lock path occupied by a plain file / symlink (the panel clears and retries each pass; self-heals) | WARN | `缓存/面板锁` |
 | Panel's last write failed (reason code and age; past 1 day it is treated as possibly stopped) | WARN | `缓存/面板锁` |
 | Panel's write-failure marker is not a regular file (directory or symlink, reason unreadable) | WARN | `缓存/面板锁` |
 | Cache directory not writable | FAIL | `缓存/后台刷新` |

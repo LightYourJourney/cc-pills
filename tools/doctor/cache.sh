@@ -211,7 +211,7 @@ else
 fi
 
 # 刷新锁：残锁目录会被下一轮自动清除；锁路径被普通文件 / 符号链接占住时，渲染侧会先
-# rm -f 再重试，但只要占位还在就会一直失败，所以要报出来
+# rm -f 再重试、下一轮自愈，但私有目录里出现这种占位不正常，报 WARN 提醒
 lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
@@ -231,11 +231,14 @@ elif [ -n "$lock_full" ]; then
   res FAIL 缓存/锁 "锁目录非空${lock_full}：渲染侧只用 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
     "rm -rf \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_bad" ]; then
-  res FAIL 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
+  res WARN 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
     "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
-  res WARN 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：该会话下次刷新时会清除；会话已结束的不会再清（每日清理不碰锁目录），留着无害" \
-    "想清掉：rmdir \"$SLT\"/claude-sl-lock-*（只删空目录，不影响进行中的刷新）"
+  # 超龄的空锁不需要处理：活跃会话下一轮刷新就抢掉，已结束会话的由每日清理在 CACHE_MAX_AGE 后删掉
+  # （显式 CLAUDE_SL_TMP 不清理，生命周期归调用方）
+  gone="会话已结束的由每日清理在 30 天后删掉"
+  [ "$F_slt_explicit" = 1 ] && gone="会话已结束的留着（显式 CLAUDE_SL_TMP 不清理，归调用方）"
+  res PASS 缓存/锁 "残锁${lock_old}（超过 LOCK_STALE=${LOCK_STALE}）：该会话下次刷新时会清除，${gone}；留着无害"
 elif [ "$lock_n" -gt 0 ]; then
   res PASS 缓存/锁 "有刷新正在进行"
 else
@@ -274,7 +277,7 @@ if [ "$P_state_explicit" = 1 ]; then
 elif [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/面板锁 "缓存根不可用"
 elif [ -L "$plock" ] || { [ -e "$plock" ] && [ ! -d "$plock" ]; }; then
-  res FAIL 缓存/面板锁 "面板锁路径被普通文件或符号链接占住（面板每轮会先清掉再抢锁）" \
+  res WARN 缓存/面板锁 "面板锁路径被普通文件或符号链接占住（面板每轮会先清掉再抢锁）" \
     "反复出现时检查缓存目录；手工处理：rm -f \"$plock\""
 elif [ -L "$pmark" ] || { [ -e "$pmark" ] && [ ! -f "$pmark" ]; }; then
   res WARN 缓存/面板锁 "写回失败标记不是普通文件（目录或符号链接）：读不出失败原因；是目录时面板也写不进去" \

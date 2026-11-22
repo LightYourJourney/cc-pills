@@ -131,8 +131,8 @@
 #      唯一例外：某目录首次渲染、还没有 git 缓存时同步跑一次 git_data（约 4 个进程）
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
-#  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件，
-#      不递归、不碰锁 / 色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
+#  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件与超龄的空锁目录，
+#      不递归、不碰色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
 #      （claude-statusline-*.json）另加 transcript 守卫，见 docs/DECISIONS.md
 #  20. --facts（自述模式）分支及其之前的全部代码保持 bash 3.2 可跑、且没有副作用：仓库里的
 #      诊断工具靠它取配置解析结果、路径与阈值，不另抄一份（判据只在本脚本一处）
@@ -527,7 +527,7 @@ if [ "${1:-}" = "--refresh" ]; then
   fi
 
   # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
-  # 链接，-maxdepth 1 不递归；锁目录、色板、状态页与面板状态不在清理范围。缓存都可
+  # 链接，-maxdepth 1 不递归；锁目录只删超龄的空目录，色板、状态页与面板状态不在清理范围。缓存都可
   # 重建，误删最多丢一轮加速；会话状态另由 transcript 是否存在把关（见下）。只读根
   # 连时间戳都写不了，直接跳过，避免每轮重复扫描。
   # 阈值用 -mmin（精确到分钟）而不是 -mtime：后者按整天取整，+30 实际要超过 31 天才
@@ -541,6 +541,10 @@ if [ "${1:-}" = "--refresh" ]; then
            -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
            -o -name '.claude-sl-*' \) \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
+      # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后 rmdir。只认空目录（-type d 不跟随
+      # 链接，rmdir 删不了非空目录），活跃刷新的锁只有几秒大，碰不到
+      find "$SLT" -mindepth 1 -maxdepth 1 -type d -empty -name 'claude-sl-lock-*' \
+        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rmdir {} + 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
       # 都不在了才删。读不出（损坏 / 无 jq）就保留——宁可留一个死文件，也不误删断点。
       cutoff=$((now - CACHE_MAX_AGE * 86400))

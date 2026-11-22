@@ -431,13 +431,14 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/面板状态'), 'SKIP')
         self.assertIn('CLAUDE_SUBAGENT_SL_STATE', self.sb.detail(r, '缓存/面板状态'))
 
-    def test_panel_lock_occupied_by_file_fails(self):
-        """结构问题（锁路径被非目录占住）当场判，与写回是否失败无关。"""
+    def test_panel_lock_occupied_by_file_warns(self):
+        """结构问题（锁路径被非目录占住）当场判，与写回是否失败无关；面板每轮先清掉再抢锁、能自愈，
+        所以是 WARN 而不是 FAIL（与主栏刷新锁同一条，11-22 用户裁定）。"""
         self.sb.healthy()
         with open(self.sb.panel_path('.lock'), 'w') as f:
             f.write('x')
         r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'FAIL')
+        self.assertEqual(self.sb.status(r, '缓存/面板锁'), 'WARN')
         self.assertIn('普通文件或符号链接', self.sb.detail(r, '缓存/面板锁'))
 
     def test_panel_lock_no_marker_passes(self):
@@ -826,17 +827,23 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'WARN')
         self.assertIn('无色', self.sb.detail(r, '缓存/色板'))
 
-    def test_leftover_lock_warns(self):
+    def test_leftover_lock_passes(self):
+        """超过 LOCK_STALE 的空锁不需要处理：活跃会话下一轮刷新就抢掉，已结束会话的由每日清理在 30 天后
+        删掉——报 PASS 并说明，而不是一条永远不必处理的 WARN。"""
         self.sb.healthy()
         lock = os.path.join(self.sb.cache, 'claude-sl-lock-doctor')
         os.makedirs(lock)
         old = time.time() - LOCK_STALE - 60
         os.utime(lock, (old, old))
         r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/锁'), 'WARN')
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'PASS')
         d = self.sb.detail(r, '缓存/锁')
+        self.assertIn('残锁', d)
         self.assertIn('下次刷新时会清除', d)
-        self.assertIn('会话已结束的不会再清', d, '已结束会话的残锁没人清，不能说成一定会自动清除')
+        self.assertIn('30 天', d)
+        d = self.sb.detail(self.sb.run(env={'CLAUDE_SL_TMP': self.sb.cache}), '缓存/锁')
+        self.assertNotIn('30 天', d, '显式 CLAUDE_SL_TMP 不清理，不能说 30 天后会删')
+        self.assertIn('CLAUDE_SL_TMP', d)
 
     def test_backoff_does_not_claim_no_colour_when_theme_still_matches(self):
         """渲染侧只要求缓存的主题部分与当前 THEME 相同、且有 P_CTX 就上色；chroma / 风格 /
@@ -1286,22 +1293,22 @@ class Doctor(unittest.TestCase):
             f.write('step = drop api\nstep = shrink model\n')
         self.assertEqual(self.sb.status(self.sb.run(), '安装/配置文件'), 'PASS')
 
-    def test_lock_path_occupied_by_file_fails(self):
-        """普通文件占住锁路径：刷新会先清掉它再抢锁，不在本轮直接失败。"""
+    def test_lock_path_occupied_by_file_warns(self):
+        """普通文件占住锁路径：刷新会先清掉它再抢锁、下一轮自愈，状态栏照常工作——WARN 而不是 FAIL。"""
         self.sb.healthy()
         with open(os.path.join(self.sb.cache, 'claude-sl-lock-doctor'), 'w') as f:
             f.write('x')
         r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'WARN')
         self.assertIn('刷新会先清掉它再抢锁', self.sb.detail(r, '缓存/锁'))
 
-    def test_lock_path_symlink_fails(self):
+    def test_lock_path_symlink_warns(self):
         """符号链接占住锁路径：同上，刷新先清掉再抢锁。"""
         self.sb.healthy()
         os.symlink('/nonexistent-lock-target',
                    os.path.join(self.sb.cache, 'claude-sl-lock-doctor'))
         r = self.sb.run()
-        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'WARN')
         self.assertIn('刷新会先清掉它再抢锁', self.sb.detail(r, '缓存/锁'))
 
     def test_nonempty_lock_dir_fails(self):

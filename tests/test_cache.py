@@ -356,6 +356,32 @@ class Lifecycle(CacheBase):
         self.assertTrue(os.path.islink(link))
         self.assertTrue(os.path.isfile(inside), '清理递归进了子目录')
 
+    def test_prune_removes_old_empty_refresh_locks(self):
+        """已结束会话被杀时留下的空刷新锁：30 天后由每日清理 rmdir（只删空目录，不递归、不跟随链接）；
+        新的空锁、非空锁目录与指向目录的符号链接都不动。"""
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        old_empty = os.path.join(p, 'claude-sl-lock-ended')
+        new_empty = os.path.join(p, 'claude-sl-lock-recent')
+        full = os.path.join(p, 'claude-sl-lock-full')
+        for d in (old_empty, new_empty, full):
+            os.makedirs(d)
+        inside = os.path.join(full, 'x')
+        with open(inside, 'w') as f:
+            f.write('x')
+        target = os.path.join(self.d, 'target-dir')
+        os.makedirs(target)
+        link = os.path.join(p, 'claude-sl-lock-link')
+        os.symlink(target, link)
+        for d in (old_empty, full, link, target):
+            self.old(d)
+        self.old(new_empty, days=29)
+        self.refresh(self.env)
+        self.assertFalse(os.path.exists(old_empty), '30 天以上的空残锁没有被清理')
+        self.assertTrue(os.path.isdir(new_empty), '不足 30 天的空锁被误删')
+        self.assertTrue(os.path.isfile(inside), '非空锁目录被清理（或被递归）')
+        self.assertTrue(os.path.islink(link) and os.path.isdir(target), '清理碰了符号链接或其目标')
+
     def test_prune_runs_at_most_once_a_day(self):
         p = self.private()
         os.makedirs(p, mode=0o700)
