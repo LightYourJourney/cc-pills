@@ -157,7 +157,8 @@ FAIL）；面板抢锁在输出之后，竞争时进程最多晚 1 s 退出。
 
 | 阶段 | 提交 | 测试（累计） | 性能 | 备注 |
 |---|---|---|---|---|
-| A 面板逐行兜底 / subagent 路径转义 | 见本条提交 | 276→279 | 同步路径未改 | F2：渲染逐 task `try … catch empty`，写回只收对象 task，`columns` 非数字按 120；去掉 `objects` 的变异被新用例杀掉。F3：`glob.escape` |
+| A 面板逐行兜底 / subagent 路径转义 | 7f3ba0d | 276→279 | 同步路径未改 | F2：渲染逐 task `try … catch empty`，写回只收对象 task，`columns` 非数字按 120；去掉 `objects` 的变异被新用例杀掉。F3：`glob.escape` |
+| B doctor 陈旧判据 | 见本条提交 | 279→282 | 无运行时变化；doctor 每个陈旧缓存多一次 jq | F1：陈旧 WARN 只算 transcript 在 `TOK_STALE` 内写过的会话，已闲置的在 PASS 里计数；读不出会话状态按活跃处理（原有用例不变）。三个变异（恒活跃 / 恒闲置 / 阈值改 1 s）逐个被杀；本机 doctor 该项由 WARN 变 PASS，`/bin/bash` 3.2 下同样 |
 
 ## 裁定沿革（11-20 从 DECISIONS.md 移出）
 

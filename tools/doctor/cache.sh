@@ -77,8 +77,24 @@ fi
 # 与渲染侧同判据：.ts 内容不是数字、或 .ts 不是本人的普通文件（含悬空符号链接）→ 判陈旧
 # （tok_ok=0，派生项隐藏）。没有 .ts 的旧缓存本轮按「新鲜」处理，但后台刷新会按缓存 mtime
 # 补写 .ts，下一轮就判陈旧并隐藏派生项（3a8679e）；这里报的是刷新前这段静默陈旧。
+# 会话是否仍活跃：会话状态里记的任一 transcript 在 TOK_STALE 内写过 → 真。已结束的会话缓存陈旧是
+# 常态（不再刷新），不该报 WARN；读不出状态（没有状态文件 / 没有 jq / 解析失败）按活跃处理——
+# 宁可多报一条，不漏掉后台停更
+sess_active() {  # sess_active <token 缓存路径>
+  local sid st paths p m
+  sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
+  st="$SLT/claude-statusline-$sid.json"
+  [ -n "$jq" ] && [ -f "$st" ] && [ ! -L "$st" ] || return 0
+  paths=$(jq -r '.files | keys[]' "$st" 2>/dev/null) || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    m=$(mtime "$p")
+    [ -n "$m" ] && [ $(( NOW - m )) -le "$TOK_STALE" ] && return 0
+  done <<< "$paths"
+  return 1
+}
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
-tok_old_ts=0; tok_no_ts_old=0
+tok_old_ts=0; tok_no_ts_old=0; tok_idle=0
 for f in "$SLT"/claude-sl-tok-*.cache; do
   if [ -L "$f" ]; then tok_link=$((tok_link + 1)); continue; fi
   [ -f "$f" ] || continue
@@ -95,13 +111,18 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
-      *) t=$((10#$tv)); [ $(( NOW - t )) -gt "$TOK_STALE" ] && tok_old_ts=$((tok_old_ts + 1)) ;;
+      *) t=$((10#$tv))
+         if [ $(( NOW - t )) -gt "$TOK_STALE" ]; then
+           if sess_active "$f"; then tok_old_ts=$((tok_old_ts + 1)); else tok_idle=$((tok_idle + 1)); fi
+         fi ;;
     esac
   elif [ -e "$ts" ] || [ -L "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
   else
     t=$(( $(mtime "$f") ))
-    [ $(( NOW - t )) -gt "$TOK_STALE" ] && tok_no_ts_old=$((tok_no_ts_old + 1))
+    if [ $(( NOW - t )) -gt "$TOK_STALE" ]; then
+      if sess_active "$f"; then tok_no_ts_old=$((tok_no_ts_old + 1)); else tok_idle=$((tok_idle + 1)); fi
+    fi
   fi
   [ "$t" -gt "$tok_newest" ] && tok_newest=$t
 done
@@ -119,7 +140,7 @@ else
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
   elif [ "$tok_old_ts" -gt 0 ]; then
-    res WARN 缓存/token "有 $tok_old_ts 个缓存超过 TOK_STALE=${TOK_STALE}：\$/h、out、hit、io、msgs 会被隐藏" \
+    res WARN 缓存/token "有 $tok_old_ts 个活跃会话（transcript 近 ${TOK_STALE}s 内有写入）的缓存超过 TOK_STALE=${TOK_STALE}：\$/h、out、hit、io、msgs 会被隐藏" \
       "回到那个会话让它刷新；若持续不更新，看 数据/stdin 与 缓存/后台刷新"
   elif [ "$tok_no_ts_old" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_no_ts_old 个缓存没有新鲜度时间戳、且已超过 TOK_STALE：本轮仍沿用旧值，后台刷新按 mtime 回填 .ts 后派生项会被隐藏" \
@@ -129,7 +150,8 @@ else
     res WARN 缓存/token "有 $tok_malformed 个缓存不是当前格式（首行应为 TOK=${F_tok_v}；旧版留下的或被截断）：渲染侧整份不读，派生项消失" \
       "回到那个会话让它刷新一次即可重写；已结束的会话留着无害"
   else
-    res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前"
+    idle_note=""; [ "$tok_idle" -gt 0 ] && idle_note="；其中 $tok_idle 个属已闲置的会话（transcript 超过 TOK_STALE 没写过），缓存陈旧是正常的"
+    res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前${idle_note}"
   fi
 fi
 

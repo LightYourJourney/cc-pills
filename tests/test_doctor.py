@@ -538,6 +538,46 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
 
+    def session_state(self, transcript_age):
+        """给 doctor 会话写一份会话状态，里面记的 transcript 在 transcript_age 秒前写过。"""
+        tp = os.path.join(self.sb.home, 'proj', 'doctor.jsonl')
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, 'w') as f:
+            f.write('{}\n')
+        t = time.time() - transcript_age
+        os.utime(tp, (t, t))
+        with open(os.path.join(self.sb.cache, 'claude-statusline-doctor.json'), 'w') as f:
+            json.dump({'v': 9, 'files': {tp: {'off': 3, 'fp': 0}}}, f)
+
+    def test_stale_cache_of_idle_session_passes(self):
+        """会话已结束（transcript 也超过 TOK_STALE 没写过）时缓存陈旧是常态，不是故障：不报 WARN，
+        只在 PASS 里点一句（此前每次 doctor 都因已结束的会话报 WARN）。"""
+        env = self.sb.healthy(tok_age=TOK_STALE + 60)
+        self.session_state(transcript_age=TOK_STALE + 50)
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+        self.assertIn('闲置', self.sb.detail(r, '缓存/token'))
+
+    def test_stale_cache_of_active_session_warns(self):
+        """transcript 近 TOK_STALE 内还在写、缓存却超过 TOK_STALE：后台没跟上，照报 WARN。"""
+        env = self.sb.healthy(tok_age=TOK_STALE + 60)
+        self.session_state(transcript_age=30)
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertIn('TOK_STALE', self.sb.detail(r, '缓存/token'))
+
+    def test_idle_session_without_ts_passes(self):
+        """无 .ts 的旧缓存同理：会话已闲置时回填后隐藏派生项也无所谓，不报 WARN。"""
+        self.sb.install()
+        self.sb.make_cache(tok_age=0)
+        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
+        os.unlink(tok + '.ts')
+        old = time.time() - TOK_STALE - 600
+        os.utime(tok, (old, old))
+        self.session_state(transcript_age=TOK_STALE + 600)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'PASS')
+
     def test_theme_header_mismatch_warns(self):
         self.sb.install()
         self.sb.make_cache(theme_line=f'THEME=auto/12/tint/v{PALETTE_V}old')
