@@ -980,6 +980,16 @@ class Doctor(unittest.TestCase):
         self.assertNotIn('SUPERSECRET123', r.stdout)
         self.assertNotIn('tok_live_should_not_leak', r.stdout)
 
+    def test_relay_host_hides_password_with_slash(self):
+        """密码里有未编码的 /：先截路径再去 user:pass@ 会把「user:pass 的前半」当成 host 显示。"""
+        self.sb.healthy()
+        self.sb.write_settings({'statusLine': {'type': 'command',
+                                               'command': f'bash {self.sb.dest}/statusline-command.sh'},
+                                'env': {'ANTHROPIC_BASE_URL': 'https://usr:pa/ss@relay.example/v1'}})
+        r = self.sb.run()
+        self.assertIn('ANTHROPIC_BASE_URL=relay.example', self.sb.detail(r, '数据/CCSwitch库'))
+        self.assertNotIn('usr:pa', r.stdout)
+
     def test_relay_from_settings_env_beats_shell_official(self):
         """Claude Code 把 settings 的 env 注入状态栏进程；shell 里的旧官方地址不能盖掉它。"""
         self.sb.healthy()

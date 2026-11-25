@@ -37,7 +37,9 @@
   都由 `statusline-command.sh --facts` 按「键=值」报出，不在别处另抄一份。自述分支及其之前
   的代码保持 bash 3.2 可跑、没有副作用（约束 20）。**新增判据时先问「渲染脚本能不能自己报」。**
   有意仍是多份的：缓存根解析在三个分发脚本里各一份（见「不抽共享缓存库」）；token 缓存
-  `.ts` 的新鲜度 doctor 自己判（它要扫全部会话）；stat 包装三处各一份。
+  `.ts` 的新鲜度 doctor 自己判（它要扫全部会话）；stat 包装三处各一份；版本守卫的换壳候选路径
+  在渲染脚本与 `tools/doctor/env.sh` 各一份；自述格式版本字面量在两个分发脚本与 doctor 各一处
+  （三个文件互不 source，是协议版本的固有写法）。
 - **外部输入一律按不可信处理**（约束 16 / 18）：stdin 的文本字段在 jq 里按 Unicode 剔除控制字符
   （含 C1——C locale 下 bash 的 `[[:cntrl:]]` 只认单字节），bash 侧再剔一遍；配置文件只按白名单
   逐行解析、从不 source，容忍 CRLF 行尾与开头的 BOM；git 调用带 `--no-optional-locks` 与
@@ -111,6 +113,10 @@
 - **git 缓存 TTL 5 秒**（`GIT_TTL`）：`.git/HEAD` / `index` 不比缓存旧（`! -ot`，同一秒也算）就立即重算。
   缓存键是路径的可逆转义；转义后超过 180 字节改为整条路径的 FNV-1a 64 位哈希 + 末段可读部分。
   不改成只哈希首尾片段：中段不同、长度与首尾相同的两条路径会撞键、显示别家分支（11-20）。
+- **色板键与 git 缓存键同一种转义**（11-25）：`claude-sl-theme-<键>.cache` 的键是 `iterm-<profile>` /
+  `term-<TERM_PROGRAM>` 经 `pathkey`（只先剔除控制字符），非 ASCII 原样保留。此前把非
+  `[A-Za-z0-9_-]` 一律换成 `_`，字数相同的中文 profile 名、`Dark Mode` 与 `Dark_Mode` 共用一份色板，
+  谁先刷新就用谁的背景。
 - **色板失败退避**：生成失败后 `THEME_TTL` 内不再重跑；成功 = python 正常退出且写出的首行相符
   （只看首行时，「首行相符、只是过期」的旧色板失败了也算成功，每轮刷新都会重跑 python）。
 
@@ -208,7 +214,9 @@
 - **「指向已安装副本」的判定**（`tools/lib/points_to.sh`，安装器与 doctor 共用）：命令里有
   `<DEST>/<脚本>`（DEST 去掉尾斜杠），或 `${CLAUDE_CONFIG_DIR}` / `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
   （及 `~`、展开后的家目录写法）开头的建议写法；`${CLAUDE_CONFIG_DIR:-/别处}` 不算——变量未设时
-  跑的是别处的脚本。只是文件名相同、路径不明按 rc=1 报出。`.bak` 等后缀黏住的文件名不算引用。
+  跑的是别处的脚本。默认目录（`DEST` 是 `$HOME/.claude`）时 `$HOME/.claude/` 与 `~/.claude/` 也算，
+  但目录后必须紧跟脚本名（11-25：此前中间多一个 `*`，子目录里的同名脚本也算指向）。只是文件名相同、
+  路径不明按 rc=2 报出，命令里没有脚本名是 rc=1。`.bak` 等后缀黏住的文件名不算引用。
 - settings.json 存在却解析失败时如实说它坏了，不报「尚未配置」——否则会引导用户再粘贴一个已有的键。
 - **复制安装**：线上是独立副本，改仓库后要重跑 `install.sh`。覆盖前把不同的旧副本存为
   `<文件>.bak.<时间戳>`，**备份失败就不覆盖**该文件。面板脚本在 `--with-subagent` 或已经装过时
@@ -268,14 +276,20 @@
     模型与费用也不会误报；只有连 ctxin 与其余可辨识字段全部 drop 的极端配置才会误报。
 - **中转站判定同时看 shell 与 `settings.json` 的 `env`**：settings 有值时以它为准（CC Switch 的
   标准写法），shell 里的同名变量只作回退。算不算中转站由渲染脚本的自述判。
+- **`安装/subagentStatusLine`**：面板没装、命令里也没有 `subagent-statusline.sh`（配的是别的面板
+  程序）时 SKIP，`install.sh --check` 也不计失败（11-25）——此前报 FAIL，主栏健康时结论却是「很可能
+  不工作」，修复建议还让人把第三方面板换掉。命令提到本项目脚本名而文件没装仍是 FAIL。
 - **面板相关检查**：`缓存/面板锁` 只判锁路径是否被非目录占住（WARN）与 `STATE.fail` 标记（WARN，
   含年龄与原因码；超过 `PANEL_FAIL_STALE` 视为此后没有写回尝试）；不读锁目录 mtime、owner 或
   PID。标记里的时间戳按不可信数据处理：非数字 / 读不出 / 写在未来都按「刚刚」，带前导 0 按十进制
   （`10#`）。`缓存/token` / `缓存/git` / `缓存/色板` / `缓存/状态页` / `缓存/退避` 都有符号链接分支。`缓存/面板状态` 只判归属、类型与 0600 权限，不读内容；
   显式 `CLAUDE_SUBAGENT_SL_STATE` 时两项都 SKIP。
 - **凭据过滤在显示层**：`scrub()` 抹 `sk-…` / `*_KEY=…` / `*_TOKEN=…` / URL 里的 `user:pass@` 与
-  query 参数值 / `x-api-key: …` / `Authorization: …` / `Bearer …`，路径与其余结构保留——不保留就
-  没人能照着修。中转站备注里的 `ANTHROPIC_BASE_URL` 只给 host。
+  query 参数值 / `x-api-key: …` / `Authorization: …`（scheme 可有可无）/ `Bearer …`，路径与其余结构
+  保留——不保留就没人能照着修。`*_KEY=` 的值到空白、`; " ' &` 为止（`&` 在 shell 里结束这个词、
+  在 URL 里是下一个参数），`#` 在词中间是字面字符，不截断（11-25）。中转站备注里的
+  `ANTHROPIC_BASE_URL` 只给 host：先去掉最后一个 `@` 之前的部分再截路径，密码里有未编码的 `/`
+  时也不会把凭据当 host 显示。
 
 ## 兼容性与 CI
 
@@ -295,9 +309,9 @@
     （11-20 用户裁定；值与 Homebrew 历史 bash 公式一致）。4.3 / 4.4 没有单独作业。
   - python 3.9：用 `PY_MIN` 版本跑全量（11-20 起；此前下限只在 README 里声明）。
   - 各作业 `timeout-minutes: 30`；测试里单次渲染 / 刷新另有 60 s 超时，挂住时用例失败而不是空等。
-- **Linux 作业跳过并发写面板状态的用例**（10-31 实测）：`ubuntu-latest` 上两个独立进程能在约 2 µs
-  内**都** `mkdir` 同一条路径成功，本地 Debian / Ubuntu 容器复现不出。Linux 作业设
-  `CCPILLS_SKIP_CONCURRENCY=1` 跳过 `test_concurrent_writes_do_not_lose_entries`，该用例由 macOS 全量
+- **ubuntu 上的三个作业跳过并发写面板状态的用例**（10-31 实测）：`ubuntu-latest` 上两个独立进程能在约 2 µs
+  内**都** `mkdir` 同一条路径成功，本地 Debian / Ubuntu 容器复现不出。Linux、bash 4.2、python 3.9
+  三个作业都设 `CCPILLS_SKIP_CONCURRENCY=1` 跳过 `test_concurrent_writes_do_not_lose_entries`，该用例由 macOS 全量
   覆盖；锁语义没有为这台 runner 改写。证据细节见 HISTORY。
 
 ## 测试

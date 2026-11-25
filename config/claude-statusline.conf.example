@@ -14,7 +14,7 @@
 #                         #   mono   单色深浅（主题紫）      pastel 粉彩亮块 + 深色字
 #                         #   tokyo-glass  B/C/D 融合：Tokyo Night 冷色 + 近背景玻璃胶囊 + 三级层级
 #                         # 并排预览（在 iTerm 里直接运行）：bash tools/preview.sh [风格 ...]
-# pill_chroma = 12        # 仅 tint：淡染彩度，0 = 所有胶囊同一底色；越大越有色（建议 ≤ 20）
+# pill_chroma = 12        # 仅 tint：淡染彩度，取值 0–40，0 = 所有胶囊同一底色；越大越有色（建议 ≤ 20）
 # status_page = on        # on | off：是否每分钟请求 status.claude.com；off = 零网络请求、不显示服务状态
 
 # ── 告警阈值（已用 %）──────────────────────────────────────────────────
@@ -22,7 +22,7 @@
 # bad_at = 80             # 额度已用 ≥ 此值 → 红
 # ctx_warn = 70           # 上下文已用 ≥ 此值 → 黄
 # ctx_bad = 90            # 上下文已用 ≥ 此值 → 红
-# crit_at = 95            # 上下文 / 额度已用 ≥ 此值 → 强红（只有 tokyo-glass 与普通红有别）
+# crit_at = 95            # 额度已用 ≥ 此值 → 强红；上下文还要同时 ≥ ctx_bad（只有 tokyo-glass 与普通红有别）
 
 # ── 降级序列（默认值，全部注释）──────────────────────────────────────────
 # 下面是脚本内置的默认序列，只作参考。默认不写任何 step 行——脚本直接使用内置序列，
@@ -68,10 +68,10 @@
 # step = shrink  dout     # 日限额用完  out 3h10m → !
 # step = shrink  q5       # 5h 已用     5h 36% → 5h36%                    （永不丢弃，只缩短）
 # step = shrink  q7       # 7d 已用     7d 85% → 7d85%
-# step = shrink  spend    # 网关花费限额 本周 $23/$50 → $23/$50          网关设了花费限额（rate_limits.spend_limit）
+# step = shrink  spend    # 网关花费限额 本周 $23.00/$50.00 → $23.00/$50.00  网关设了花费限额（rate_limits.spend_limit）
 # step = shrink  spout    # 花费限额用完 out 3h10m → !
-# step = drop    day      # 中转站今日  $23/$50                           （有风险时不可丢）
-# step = drop    spend    # 网关花费限额 $23/$50                          （有风险时不可丢）
+# step = drop    day      # 中转站今日  $23.00/$50.00                     （有风险时不可丢）
+# step = drop    spend    # 网关花费限额 $23.00/$50.00                    （有风险时不可丢）
 # step = drop    cost     # 会话费用    $27.35 / $3.21+ / $17.69*         一直
 # step = shrink  claude   # 服务故障    claude major → major              状态页 major / critical
 # step = drop    claude   # 服务故障    major

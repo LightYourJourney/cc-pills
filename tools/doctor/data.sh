@@ -100,9 +100,10 @@ else
   relay=$D_relay_env
 fi
 if [ "$relay" = 1 ]; then
-  host=${base#*://}; host=${host%%/*}
-  host=${host##*@}                       # 去掉 user:pass@，凭据不进屏幕
-  host=${host%%[?#]*}                    # query / fragment 也不进屏幕，只给 host
+  # 先去掉最后一个 @ 及之前的部分再截路径：密码里有未编码的 / 时，先截路径会把 user:pass 当成 host
+  # 显示出来。路径里带 @ 的地址因此只显示 @ 之后的一段——宁可 host 不准，凭据不进屏幕
+  host=${base#*://}; host=${host##*@}
+  host=${host%%[/?#]*}                   # 路径 / query / fragment 也不进屏幕，只给 host
   note="ANTHROPIC_BASE_URL=${host}（${base_src}）"
 elif [ "$SJ_OK" = 1 ]; then
   note="未设置自定义 ANTHROPIC_BASE_URL（shell 环境变量与 settings.json 的 env 都查过）"

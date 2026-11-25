@@ -3,7 +3,7 @@
 #
 #   bash install.sh                 复制脚本到 ${CLAUDE_CONFIG_DIR:-~/.claude}
 #   bash install.sh --with-subagent  同时安装 subagent 状态行
-#   bash install.sh --with-conf      示例配置不存在时写入 ~/.config/claude-statusline.conf
+#   bash install.sh --with-conf      用户配置不存在时写入示例配置（${XDG_CONFIG_HOME:-~/.config}/claude-statusline.conf）
 #   bash install.sh --check          核对线上副本与 settings 两个键（不改任何文件）
 #   bash install.sh --doctor [参数]  运行诊断（别名：tools/doctor.sh，纯只读，见其文件头）
 #   bash install.sh --uninstall      删除已安装的副本（线上有改动时拒绝，需 --force），
@@ -61,7 +61,8 @@ check_deps() {
     echo "提示：未找到 curl；status_page = on（默认）时状态页不可用，可设 status_page = off" >&2
   local major=${BASH_VERSINFO[0]} minor=${BASH_VERSINFO[1]}
   if [ $((major * 100 + minor)) -lt $(( ${bash_min%%.*} * 100 + ${bash_min#*.} )) ]; then
-    echo "需要 bash ≥ ${bash_min}（当前 ${major}.${minor}）；macOS 自带 3.2 请装 Homebrew bash" >&2
+    # 判的是运行本安装器的 bash：PATH 前面是自带 3.2 时，装了 Homebrew bash 也要显式用它跑
+    echo "需要 bash ≥ ${bash_min}（当前运行安装器的是 ${major}.${minor}）：用新版 bash 运行，如 /opt/homebrew/bin/bash install.sh；macOS 自带 3.2，没有的话先 brew install bash" >&2
     miss=1
   fi
   return "$miss"
@@ -100,8 +101,11 @@ install)
     if [ -e "$CONF" ]; then
       echo "  配置已存在，未覆盖：$CONF"
     else
-      mkdir -p "$(dirname "$CONF")" && cp "$REPO/config/claude-statusline.conf.example" "$CONF" \
-        && echo "  已写入示例配置 → $CONF"
+      if mkdir -p "$(dirname "$CONF")" && cp "$REPO/config/claude-statusline.conf.example" "$CONF"; then
+        echo "  已写入示例配置 → $CONF"
+      else
+        echo "  写入示例配置失败：$CONF" >&2; rc=1
+      fi
     fi
   fi
   echo

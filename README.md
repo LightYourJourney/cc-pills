@@ -38,7 +38,8 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 
 - macOS (iTerm2 profile detection; other terminals fall back to the built-in themes)
 - bash ≥ 4.2 — macOS ships 3.2, so `brew install bash` (the script re-execs into a ≥4.2
-  build at `/opt/homebrew/bin/bash` and friends when it finds one)
+  build at `/opt/homebrew/bin/bash` and friends when it finds one; the installer does not, so
+  run it with that bash if `bash` on your PATH is still 3.2: `/opt/homebrew/bin/bash install.sh`)
 - `jq`, `python3` ≥ 3.9 (`str.removesuffix`), `git`; `curl` is only used when `status_page = on`
 
 | Environment | Supported | Notes |
@@ -49,7 +50,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 | bash 4.2–4.4 | yes | CI runs the full suite on a source-built bash 4.2.0 on every push to main and every PR (except the concurrent panel-write case); 4.3 / 4.4 are not run separately. Two 4.2-only differences were found and fixed earlier: empty-format `printf -v` and second-granularity `-nt` |
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
-| python3 ≥ 3.9 | yes | CI runs the full suite on Python 3.9; below 3.9 the installer refuses and the diagnostic reports FAIL |
+| python3 ≥ 3.9 | yes | CI runs the full suite on Python 3.9 (except the concurrent panel-write case); below 3.9 the installer refuses and the diagnostic reports FAIL |
 
 ## Cache
 
@@ -99,18 +100,19 @@ script with `--with-subagent`, or when it is already installed) and prints wheth
 ```
 
 Copy-install means the repo is the source of truth and the installed files are snapshots:
-re-run `bash install.sh` after pulling. `bash install.sh --check` reports drift;
-`--uninstall` removes the copies (and refuses if they were edited locally).
+re-run `bash install.sh` after pulling. `--with-conf` writes the example config only when you
+have no config file yet. `bash install.sh --check` reports drift; `--uninstall` removes the
+copies (and refuses if they were edited locally — add `--force` to remove them anyway).
 
 ## Configure
 
-`~/.config/claude-statusline.conf` — one `key = value` per line, never sourced. Start from
+`${XDG_CONFIG_HOME:-~/.config}/claude-statusline.conf` — one `key = value` per line, never sourced. Start from
 [config/claude-statusline.conf.example](config/claude-statusline.conf.example).
 
 | Key | Meaning |
 |---|---|
 | `theme` | `auto` (read the iTerm profile) or `tokyonight` / `dracula` / `catppuccin` / `onedark` / `nord` |
-| `pill_style`, `pill_chroma` | pill style and tint chroma |
+| `pill_style`, `pill_chroma` | pill style and tint chroma (`pill_chroma` 0–40, ≤ 20 recommended) |
 | `glyphs` | `nerd` or `ascii` |
 | `warn_at`, `bad_at`, `ctx_warn`, `ctx_bad`, `crit_at` | thresholds (percent used) |
 | `safe_margin` | columns reserved for Claude Code's own padding (default 4) |
@@ -141,6 +143,7 @@ renderer's own read does.
 ```bash
 bash tools/doctor.sh                                      # alias: bash install.sh --doctor
 bash tools/doctor.sh --transcript ~/.claude/projects/<project>/<session>.jsonl
+bash tools/doctor.sh --dir <project dir>                  # git checks for that directory instead of $PWD
 ```
 
 The first line is the version (the installed copy's; both when it differs from the repo) —
@@ -226,9 +229,9 @@ UPDATE_GOLDEN=1 bash run_tests.sh render   # after an intentional rendering chan
 ```
 
 CI runs the full suite on macOS and on `ubuntu-latest`, plus once more with a source-built
-bash 4.2.0 first in PATH. Linux and bash 4.2 results are in the
-compatibility matrix above; the concurrent panel-write case is skipped on the ubuntu
-runner because that runner's cross-process `mkdir` visibility is not POSIX-consistent
+bash 4.2.0 first in PATH and once on Python 3.9. Linux, bash 4.2 and Python 3.9 results are in the
+compatibility matrix above; the concurrent panel-write case is skipped on the three ubuntu
+jobs because that runner's cross-process `mkdir` visibility is not POSIX-consistent
 (evidence in [docs/DECISIONS.md](docs/DECISIONS.md)).
 
 ## Accuracy caveats

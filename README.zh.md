@@ -33,7 +33,8 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 
 - macOS（用于读取 iTerm2 profile；其他终端回落内置主题）
 - bash ≥ 4.2（macOS 自带 3.2，需 `brew install bash`；脚本会先尝试
-  `/opt/homebrew/bin/bash` 等位置的 ≥4.2 版本重跑）
+  `/opt/homebrew/bin/bash` 等位置的 ≥4.2 版本重跑。安装器不换壳：PATH 里的 `bash` 仍是 3.2 时，
+  用新版 bash 运行它，如 `/opt/homebrew/bin/bash install.sh`）
 - `jq`、`python3` ≥ 3.9（`str.removesuffix`）、`git`；`curl` 仅在 `status_page = on` 时使用
 
 | 环境 | 支持 | 说明 |
@@ -44,7 +45,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | bash 4.2–4.4 | 是 | CI 在每次推送 main 与每个 PR 时，用源码编译的 bash 4.2.0 跑全量（并发写面板状态除外）；4.3 / 4.4 未单独跑。历史上修过 4.2 的空格式 `printf -v` 与秒级 `-nt` 两个差异 |
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
-| python3 ≥ 3.9 | 是 | CI 在 Python 3.9 上跑全量；低于 3.9 安装会拒绝，doctor 报 FAIL |
+| python3 ≥ 3.9 | 是 | CI 在 Python 3.9 上跑全量（并发写面板用例除外）；低于 3.9 安装会拒绝，doctor 报 FAIL |
 
 ## 缓存
 
@@ -87,17 +88,18 @@ bash install.sh --with-subagent --with-conf
 ```
 
 复制安装意味着仓库是源、线上文件是快照：`git pull` 之后要重新跑一次 `bash install.sh`。
-`bash install.sh --check` 检查两边是否一致；`--uninstall` 删除线上副本（本地改过则拒绝）。
+`--with-conf` 只在还没有配置文件时写入示例配置。`bash install.sh --check` 检查两边是否一致；
+`--uninstall` 删除线上副本（本地改过则拒绝，加 `--force` 照删）。
 
 ## 配置
 
-`~/.config/claude-statusline.conf`，每行 `键 = 值`，从不 source。从
+`${XDG_CONFIG_HOME:-~/.config}/claude-statusline.conf`，每行 `键 = 值`，从不 source。从
 [config/claude-statusline.conf.example](config/claude-statusline.conf.example) 抄一份开始。
 
 | 键 | 含义 |
 |---|---|
 | `theme` | `auto`（读 iTerm profile）或 `tokyonight` / `dracula` / `catppuccin` / `onedark` / `nord` |
-| `pill_style`、`pill_chroma` | 胶囊风格与淡染彩度 |
+| `pill_style`、`pill_chroma` | 胶囊风格与淡染彩度（`pill_chroma` 取 0–40，建议 ≤ 20） |
 | `glyphs` | `nerd` 或 `ascii` |
 | `warn_at`、`bad_at`、`ctx_warn`、`ctx_bad`、`crit_at` | 已用百分比阈值 |
 | `safe_margin` | 预留给 Claude Code 自身边距的列数（默认 4） |
@@ -125,6 +127,7 @@ bash tools/preview.sh tint tokyo-glass
 ```bash
 bash tools/doctor.sh                                      # 或 bash install.sh --doctor
 bash tools/doctor.sh --transcript ~/.claude/projects/<项目>/<会话>.jsonl   # 连某个会话一起查
+bash tools/doctor.sh --dir <项目目录>                     # git 相关检查按该目录做，默认 $PWD
 ```
 
 首行是版本（已安装副本的；与仓库不同时两个都给），提 issue 时请带上。之后
@@ -208,8 +211,8 @@ bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / s
 UPDATE_GOLDEN=1 bash run_tests.sh render   # 有意改变渲染结果后更新金样
 ```
 
-CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有一个作业把 PATH 里的 bash 换成源码编译的 4.2.0 再跑一遍。Linux 与 bash 4.2 的实测结论见上面的兼容性矩阵；其中
-「多进程并发写面板状态」用例在 ubuntu runner 上跳过——该 runner 的跨进程 `mkdir`
+CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有两个作业分别把 PATH 里的 bash 换成源码编译的 4.2.0、把 python3 换成 3.9 再跑一遍。Linux、bash 4.2 与 Python 3.9 的实测结论见上面的兼容性矩阵；其中
+「多进程并发写面板状态」用例在三个 ubuntu 作业上跳过——该 runner 的跨进程 `mkdir`
 可见性异常，锁语义无法在那里验证（证据见 [docs/DECISIONS.md](docs/DECISIONS.md)）。
 
 ## 精度声明

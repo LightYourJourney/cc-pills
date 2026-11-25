@@ -10,7 +10,7 @@
   relay=<cc-switch.db>   中转站模式：读 CC Switch 账本（见 4）
   th=<WARN_AT>,<BAD_AT>  告警阈值（与 bash 侧同源）
   fmt=<版本>             输出格式版本，原样写进首行（版本号只在 bash 侧 TOK_V 一处维护）
-环境变量 CLAUDE_SL_TMP：状态 / 会话列表文件的目录（默认 ${TMPDIR:-/tmp}/claude-sl-<uid>；
+环境变量 CLAUDE_SL_TMP：会话状态文件的目录（默认 ${TMPDIR:-/tmp}/claude-sl-<uid>；
 预览与测试用它隔离）
 
 设计原因与沿革见 docs/DECISIONS.md。产出 stdin JSON 直接给不了的指标：
@@ -93,7 +93,8 @@ bash 侧按键名取值、不认识的键忽略，所以新增指标只是多一
   8. 预筛子串只用来跳过不相干的行：含 "compact_boundary" 的行先确认真是 compact 行才跳过，
      否则照常累计 usage（tool_use 的 input 里出现这个词很常见）。
   9. 状态文件按不可信磁盘数据对待：用 O_NOFOLLOW 打开并校验 st_uid 属于本人，不符就当
-     没有旧状态从头算——与 bash 侧 cache_ok（-f / ! -L / -O）同一条。
+     没有旧状态从头算——对应 bash 侧 cache_ok 的 ! -L / -O 两项；不单独校验普通文件（-f），
+     私有 0700 目录里只有本人能在这个路径放目录 / FIFO。
 """
 import calendar
 import glob
@@ -439,8 +440,10 @@ def current_provider(conn):
 
 def ro_uri(db):
     """只读 URI：路径里的 % # ? 要百分号编码，否则 # / ? 会截断 mode=ro，SQLite 改以读写方式
-    打开截断后的路径。不用 pathlib.as_uri：每轮刷新都起这个进程，少一次 import。"""
-    return 'file:' + db.replace('%', '%25').replace('#', '%23').replace('?', '%3F') + '?mode=ro'
+    打开截断后的路径。不用 pathlib.as_uri：每轮刷新都起这个进程，少一次 import。
+    绝对路径写成 file:// + 路径：「file:」直接接 //x（HOME=/ 时）会被当成 URI 的主机名。"""
+    enc = db.replace('%', '%25').replace('#', '%23').replace('?', '%3F')
+    return ('file://' if enc.startswith('/') else 'file:') + enc + '?mode=ro'
 
 
 def provider_probe(db):

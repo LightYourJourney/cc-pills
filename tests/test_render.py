@@ -1,6 +1,6 @@
 """主状态栏渲染测试：回归金样、宽度性质、健壮性、语义。
 
-更新金样（有意改变了渲染结果时）：UPDATE_GOLDEN=1 python3 -m unittest tests.test_render
+更新金样（有意改变了渲染结果时）：UPDATE_GOLDEN=1 bash run_tests.sh render
 """
 import json
 import os
@@ -170,6 +170,19 @@ class Robustness(unittest.TestCase):
             r = sb.render(sb.stdin(), 60, raw=True)
             self.assertEqual(r.stderr, '')
             self.assertLessEqual(width(r.stdout), 52)
+
+    def test_absurd_numbers_do_not_reach_arithmetic(self):
+        """COLUMNS 不是整数、expires_at 大到 jq 输出成 1e+300：进 $(( )) 会报错写 stderr，
+        并丢掉那一整条命令（cache 段 / 整个降级）。"""
+        with Sandbox() as sb:
+            r = sb.render(sb.stdin(), '80x', raw=True)
+            self.assertEqual((r.returncode, r.stderr), (0, ''))
+            self.assertIn('ctx 42%', strip(r.stdout))
+            d = sb.stdin()
+            d['prompt_cache'] = {'warm': True, 'caching_observed': True, 'ttl': '1h', 'expires_at': 1e300}
+            r = sb.render(d, raw=True)
+            self.assertEqual((r.returncode, r.stderr), (0, ''))
+            self.assertNotIn('cache', strip(r.stdout))
 
     def test_config_last_line_without_newline(self):
         """很多编辑器不补文件末尾的换行；最后一行配置不能因此被丢掉。"""

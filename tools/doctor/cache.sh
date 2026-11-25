@@ -88,7 +88,8 @@ sess_paths() {  # sess_paths <token 缓存路径> → 全局 SP：transcript 路
   [ -n "$SP" ] && return 0
   sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
   st="$SLT/claude-statusline-$sid.json"
-  [ -L "$st" ] && return 1                        # 没有 jq / 文件不在时下面的 jq 自己失败
+  [ -L "$st" ] && return 1
+  [ -f "$st" ] || return 1                        # FIFO 之类会让 jq 挂住；不在时同样判断不了
   SP=$(jq -r '.files | if type == "object" and length > 0 then keys[] else error end' "$st" 2>/dev/null)
 }
 tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
@@ -342,7 +343,7 @@ failf=$tc.fail
 if [ -L "$failf" ]; then
   res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
 elif [ -e "$failf" ]; then
-  ft=""; read -r ft < "$failf" 2>/dev/null
+  ft=""; [ -f "$failf" ] && read -r ft < "$failf" 2>/dev/null   # 非普通文件（FIFO 会挂住）不读，按「刚刚」
   case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)) ;; esac
   if [ "$COLOUR_OK" = 1 ]; then
     # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染

@@ -7,7 +7,7 @@
 #   宽  (ccchat  main [+?]) (Opus 5.5 high) (ctx 42% 419k ↻1) (5h 60% ↺2h26m out 1h42m)
 #       (7d 82% ↺2d3h out 1d1h) ($17.54 $4.9/h) (cache 20m hit 97.4% ↑30.1M ↓290k api 52m)
 #   窄  (ccchat  main) (O5.5·H) (ctx42% 419k) (5h60%) (99% ↑30.1M)
-#   中转站：($3.21 $1.8/h) ($23.40/$50 out 3h10m)；估算 $17.54*、下限 $0.42+
+#   中转站：($3.21 $1.8/h) ($23.40/$50.00 out 3h10m)；估算 $17.54*、下限 $0.42+
 #   告警胶囊：(cache 8m +275k) (claude major)
 #
 # 设计原因与沿革见 docs/DECISIONS.md；这里只写改代码必须遵守的契约。
@@ -24,7 +24,7 @@
 #     $SLT/claude-sl-theme-<终端键>.cache  （statusline-theme.py 产出的完整色板，首行
 #                                           THEME=<主题>/<彩度>/<风格>/v<PALETTE_V>；THEME_TTL 节流）
 #     $SLT/claude-sl-git-<路径键>.cache    （repo_root \t branch \t 状态旗标 \t 写入时刻；GIT_TTL 节流，
-#                                           .git/HEAD 或 index 比缓存新则立即重算；路径键见 pathkey）
+#                                           .git/HEAD 或 index 不比缓存旧则立即重算；路径键见 pathkey）
 #     $SLT/claude-sl-tok-<sid>.cache       （statusline-tokens.py 的输出：首行 TOK=<TOK_V>，其后每行「键=值」；
 #                                           旁的 .cache.ts 是写入时刻，超过 TOK_STALE 秒
 #                                           同步路径丢弃派生项，只保留 stdin 的额度百分比）
@@ -118,8 +118,8 @@
 #   9. 后台刷新按会话加 mkdir 锁（原子），超过 LOCK_STALE 秒视为残锁清除
 #  10. token 助手输出为空（未追平 / 异常）时保留旧缓存不覆盖，否则该项闪烁消失
 #  11. 色板缓存缺失或与 THEME 不符时整行无色输出，不在同步路径算颜色
-#  12. 可移植：stat 先试 GNU（-c）再试 BSD（-f）——GNU 的 -f 是查文件系统，
-#      不报错但结果是错的，顺序不能反
+#  12. 可移植：macOS 直接用 /usr/bin/stat -f；其余先试 GNU（-c）再试 BSD（-f）——GNU 的 -f 是
+#      查文件系统，不报错但结果是错的，顺序不能反
 #  13. 显示宽度：CJK / 全角字符占两列而 ${#s} 只算一个，dw() 按 UTF-8 字节数推算
 #      （三字节字符除已知的窄符号外按宽字符计）；每种写法的宽度在 item() 里算一次存入 VW
 #  14. 需要 bash ≥ 4.2（关联数组、${!var} 间接展开）；低于 4.2 时开头的守卫换用 ≥ 4.2 的
@@ -128,7 +128,8 @@
 #  16. 输出用 printf '%s'、转义序列用真实 ESC 字节拼接，外部文本（路径 / 分支 / 模型名）
 #      先剔除控制字符——printf '%b' 会把目录名里的 \c 当「停止输出」、\033[41m 当真转义
 #  17. 同步路径只允许 jq 一次外部进程，其余全用 bash 内建（cd -P / 参数展开 / read）；
-#      唯一例外：某目录首次渲染、还没有 git 缓存时同步跑一次 git_data（约 4 个进程）
+#      唯一例外：某目录还没有 git 缓存时同步跑 git_data（约 4 个进程）——直到后台刷新写出缓存，
+#      期间每次渲染都跑（大仓库 git status 慢时，这几帧都会卡住）
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
 #  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件与超龄的空锁目录，
@@ -138,7 +139,7 @@
 #      诊断工具靠它取配置解析结果、路径与阈值，不另抄一份（判据只在本脚本一处）
 #
 # 开发：bash run_tests.sh（隔离沙箱，不碰线上缓存）；安装：bash install.sh
-# 调试渲染：CLAUDE_SL_NO_REFRESH=1 bash install.sh 后手工喂 stdin（见 tests/_util.py）
+# 调试渲染：bash install.sh 之后，用 CLAUDE_SL_NO_REFRESH=1 手工喂 stdin（见 tests/_util.py）
 #
 
 # ── bash 版本守卫（约束 14）─────────────────────────────────────────────
@@ -170,7 +171,7 @@ WARN_AT=50               # 额度已用 ≥ 此值才显示 5h 重置时间与 7
 BAD_AT=80                # 额度已用 ≥ 此值 → 红
 CTX_WARN=70              # ctx 已用 ≥ 此值 → 黄（与额度阈值分开）
 CTX_BAD=90               # ctx 已用 ≥ 此值 → 红
-CRIT_AT=95               # ctx / 额度已用 ≥ 此值 → 强红（T_CRIT；只有 tokyo-glass 与红色有别）
+CRIT_AT=95               # 额度已用 ≥ 此值 → 强红；ctx 还要同时 ≥ CTX_BAD（T_CRIT；只有 tokyo-glass 与红色有别）
 PILL_STYLE=tint          # 胶囊风格：tint cool jewel glass mono pastel tokyo-glass（见 statusline-theme.py STYLES）
 PILL_CHROMA=12           # tint 风格的淡染彩度（0 = 所有胶囊同一底色）
 STATUS_PAGE=on           # on | off：是否定时请求 status.claude.com（off 时零网络请求、不显示服务状态）
@@ -208,7 +209,7 @@ CCSWITCH_DB="$HOME/.cc-switch/cc-switch.db"
 # 宽度不够时从前往后逐步执行，放得下即停。每步一个动作：
 #   drop <项>    丢弃该项            shrink <项>  换成下一种更短的写法（多级写法可出现多次）
 # 没有 drop 步骤的项永不丢弃（现为 dir git gitst model ctx ctxin q5 cache hit io）；
-# 额度（q7 / day）进入风险态时，其 drop 步骤自动失效。
+# 额度（q7 / day / spend）进入风险态时，其 drop 步骤自动失效。
 # 配置文件里写了任何 step 行，就整体替换这份默认序列。
 STEPS=(                                               # 逐项裁定去留，见 docs/DECISIONS.md
   "drop api" "drop msgs" "drop today" "drop claudem" "drop q7r" "shrink io" "drop q5r" "drop cachet"
@@ -481,7 +482,7 @@ if [ "${1:-}" = "--refresh" ]; then
   pathkey "$dir"; key=$PK
   # git：缓存不足 GIT_TTL 秒且 .git/HEAD、.git/index 都没在缓存之后改过 → 跳过（本仓库
   # git status 约 34 ms，每 2 秒一次是后台刷新里最贵的一项）。worktree 的 .git 是文件，只按 TTL。
-  # 缓存第 4 段是写入时刻（免 stat fork 取 mtime）；HEAD / index 新旧用内建 -nt 比较。
+  # 缓存第 4 段是写入时刻（免 stat fork 取 mtime）；HEAD / index 新旧用内建 ! -ot 比较（同一秒也算新）。
   gc="${SLT}/claude-sl-git-${key}.cache"; need=1
   if cache_ok "$gc"; then
     groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
@@ -852,9 +853,11 @@ setlv() {
 # 前面那些牺牲就不必要了。从倒数第二步起逆序逐步撤销——越晚被牺牲的越重要、越先恢复——
 # 撤销后仍在预算内才保留；最后一步正是让它放得下的那一步，撤销必然超宽，不试。
 fit() {
-  local st act id old new i ok=0 budget=$(( ${COLUMNS:-0} - SAFE_MARGIN ))
+  local st act id old new i ok=0 budget
   local -a applied=()
+  # 先判是不是整数再进算术：COLUMNS=80x 时 $(( )) 报错写 stderr（[ -gt ] 不求值）
   { [ -n "${COLUMNS:-}" ] && [ "$COLUMNS" -gt 10 ] 2>/dev/null; } || return
+  budget=$(( COLUMNS - SAFE_MARGIN ))
   calc_width; [ "$W" -le "$budget" ] && return
   for st in "${STEPS[@]}"; do
     act=${st%% *}; id=${st#* }
@@ -1070,6 +1073,8 @@ case "$cache" in
   '') ;;
   cold) item cache cache BAD "cache cold" "cold"; item recache cache BAD "${recache:++${recache}}" ;;
   *) read -r left ttl <<< "$cache"
+     # 不合常理的 expires_at（1e300）经 jq 变成 1e+300，进算术会报错、丢掉整条命令：按「隐藏」处理
+     case "$left" in ''|*[!0-9]*) left=0; ttl=0 ;; esac
      if [ "$left" -ge 60 ]; then cm="$((left / 60))m"; else cm="${left}s"; fi
      if [ $((left * 6)) -lt "$ttl" ]; then
        item cache cache WARN "cache ${cm}" "c${cm}"; item recache cache WARN "${recache:++${recache}}"
