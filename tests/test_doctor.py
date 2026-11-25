@@ -677,6 +677,14 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/色板'), 'WARN')
 
+    def test_missing_palette_names_the_terminal_readably(self):
+        """终端键在文件名里是转义过的（iterm-_cDark_sMode），给人看时要还原。"""
+        self.sb.install()
+        self.sb.make_cache()
+        r = self.sb.run(env={'TERM_PROGRAM': 'iTerm.app', 'ITERM_PROFILE': 'Dark Mode_x'})
+        self.assertEqual(self.sb.status(r, '缓存/色板'), 'WARN')
+        self.assertIn('本终端（iterm-Dark Mode_x）', self.sb.detail(r, '缓存/色板'))
+
     def test_old_theme_cache_is_still_usable(self):
         """渲染侧读色板不看 mtime：年龄只影响后台何时重算，不算故障（没有活跃会话时必然偏旧）。"""
         self.sb.install()
@@ -931,10 +939,11 @@ class Doctor(unittest.TestCase):
         d = self.sb.detail(self.sb.run(env={'CLAUDE_SL_TMP': self.sb.cache}), '缓存/锁')
         self.assertNotIn(f'{CACHE_MAX_AGE} 天', d, '显式 CLAUDE_SL_TMP 不清理，不能说多少天后会删')
         self.assertIn('CLAUDE_SL_TMP', d)
-        # 天数取自已安装副本的自述，不在诊断侧另抄；不报这一项的是不清理锁的旧版：不能说会删
+        # 天数取自已安装副本的自述，不在诊断侧另抄；装着答不出这一版自述的旧副本时不知道它清不清理锁
+        # （1.0.6 及更早不清理）：不能说会删
         self.sb.set_installed(lambda src: src.replace('CACHE_MAX_AGE=30 ', 'CACHE_MAX_AGE=7 ', 1))
         self.assertIn('7 天', self.sb.detail(self.sb.run(), '缓存/锁'))
-        self.sb.set_installed(lambda src: src.replace('"cache_max_age=$CACHE_MAX_AGE" ', '', 1))
+        self.sb.set_installed(lambda src: src.replace('cc-pills-facts=' + FACTS_V, 'cc-pills-facts=2', 1))
         d = self.sb.detail(self.sb.run(), '缓存/锁')
         self.assertNotIn(' 天后', d)
         self.assertIn('rmdir', d)
@@ -1231,12 +1240,18 @@ class Doctor(unittest.TestCase):
                        'Authorization: Basic "auth secret"; '
                        'curl "https://relay.example/x?token=SECRET987&key=SECRET888&page=2"; '
                        'curl -H "Authorization: noscheme777"; API_KEY=abc#hashtail666; '
+                       # 11-25 用户裁定扩充的形态
+                       'PASSWORD=pw111 DB_SECRET=sec222 GITHUB_PAT=pat333 --api-key ak444 --token tk555 '
+                       '-H "X-Auth-Token: xat666" -H "api-key: hk777" ghp_abcdefghijklmnop888 '
+                       'github_pat_11ABCDEFGHIJ999xyz PATH=/keep/me; '
                        'bash /wrong/statusline-command.sh'}})
         r = self.sb.run()
         for s in ('tok_secret', 'low secret', 'key secret', 'auth secret',
-                  'SECRET987', 'SECRET888', 'noscheme777', 'hashtail666'):
+                  'SECRET987', 'SECRET888', 'noscheme777', 'hashtail666', 'pw111', 'sec222', 'pat333',
+                  'ak444', 'tk555', 'xat666', 'hk777', 'abcdefghijklmnop888', 'ABCDEFGHIJ999xyz'):
             self.assertNotIn(s, r.stdout, f'{s!r} 泄露到诊断输出')
         self.assertIn('&page=', r.stdout, 'query 参数结构必须保留，只抹值')
+        self.assertIn('PATH=/keep/me', r.stdout, '只抹凭据形态：PATH= 不是 PAT=')
         self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')
 
     def test_no_network(self):

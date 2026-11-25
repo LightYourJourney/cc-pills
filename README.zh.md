@@ -120,8 +120,8 @@ bash tools/preview.sh tint tokyo-glass
 
 状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它不改写你的配置 / 缓存 / 数据库
 内容，不联网，不打印环境变量全集；`settings.json` 里的命令行会先抹掉
-`sk-…` / `*_KEY=…` / `*_TOKEN=…`（大小写不敏感、值可带引号）/ URL 凭据与 query 参数 /
-`Bearer …` 再显示。唯一的写是冒烟用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时
+`sk-…` / `ghp_…` / `*_KEY=…` / `*_TOKEN=…` / `*PASSWORD=…` / `*SECRET=…`（大小写不敏感、值可带
+引号）/ `--api-key …` / URL 凭据与 query 参数 / API key 与 `Authorization` 请求头 / `Bearer …` 再显示。唯一的写是冒烟用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时
 可能生成 `-wal`/`-shm` 旁文件，与渲染脚本自己的读取方式相同。
 
 ```bash

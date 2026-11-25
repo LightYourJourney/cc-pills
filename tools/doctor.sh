@@ -40,7 +40,7 @@ DEST=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 
 # 诊断自己的阈值（渲染侧没有对应常量）
 PANEL_FAIL_STALE=86400  # 面板写回失败标记超过此秒数视为「此后没有写回尝试」
-FACTS_V=2               # 本工具读得懂的自述格式版本（渲染脚本 --facts 的首行）
+FACTS_V=3               # 本工具读得懂的自述格式版本（渲染脚本 --facts 的首行）
 
 DIR=$PWD
 TRANSCRIPT=""
@@ -70,14 +70,17 @@ res() {  # res <状态> <分组/项> [说明] [修复建议]
 sec() { printf '\n── %s ──\n' "$1"; }
 
 # 凭据形态从要显示的任何字符串里抹掉；其余内容原样保留（否则用户没法照着修）。
-# *_KEY= / *_TOKEN= 的值到空白、; " ' & 为止（& 在 shell 里结束这个词、在 URL 里是下一个参数，
+# 认的形态见 docs/DECISIONS.md「凭据过滤在显示层」。*_KEY= / *_TOKEN= 等的值到空白、; " ' & 为止（& 在 shell 里结束这个词、在 URL 里是下一个参数，
 # 要留下结构）；# 在词中间是字面字符，不能截断。Authorization 的 scheme 可有可无
 scrub() {
   sed -E \
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
-    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=)([\"'][^\"']*[\"']|[^ ;\"&']+)/\\1***/g" \
+    -e 's/(gh[opusr])_[A-Za-z0-9]{16,}/\1_***/g' -e 's/github_pat_[A-Za-z0-9_]{16,}/github_pat_***/g' \
+    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Tt])=)([\"'][^\"']*[\"']|[^ ;\"&']+)/\\1***/g" \
+    -e "s/(--(api-key|token|password|secret)[ =])([\"'][^\"']*[\"']|[^ ;\"']+)/\\1***/g" \
     -e 's#//[^/@ ]+@#//***@#g' \
     -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/(([Aa]pi-[Kk]ey|[Xx]-[Aa]uth-[Tt]oken)[ ]*:[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
     -e "s/([Aa]uthorization[ ]*:[ ]*([A-Za-z]+[ ]+)?)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
     -e "s/([Bb]earer )([\"']?)[^ \"';]+/\\1\\2***/g" \
     -e "s/([?&#])([A-Za-z0-9_.-]+)=[^ ;\"&#']+/\\1\\2=***/g"
@@ -168,7 +171,8 @@ fi
 printf 'cc-pills %s （%s）\n' "$F_version" "$ver_note"
 CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
-CACHE_MAX_AGE=${F_cache_max_age:-}      # 1.0.6 及更早的副本不报这一项（见 cache.sh 的残锁文案）
+# 装着旧副本时判据取自仓库，可它未必清理锁（1.0.6 及更早不清理）：天数留空，残锁文案改给手工命令
+CACHE_MAX_AGE=${F_cache_max_age:-}; [ "$COPY_OLD" = 1 ] && CACHE_MAX_AGE=""
 BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
 C_THEME=$F_theme; C_CHROMA=$F_pill_chroma; C_STYLE=$F_pill_style; C_PAGE=$F_status_page
 CFG_READABLE=$F_conf_readable

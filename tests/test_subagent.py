@@ -135,6 +135,72 @@ class SubagentState(unittest.TestCase):
             self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
         self.assertEqual(self.reason(st), 'busy', '抢锁失败没有落 busy 标记')
 
+    def test_fresh_lock_without_owner_is_not_stolen(self):
+        """刚建（不足 5 秒）、还没来得及写 owner 的锁属于另一个正在起步的实例：不能当残锁回收，
+        否则两个实例会同时读改写。抢锁方放弃本次写回、记 busy，锁目录原样留着。"""
+        st = self.seeded()
+        lock = st + '.lock'
+        os.makedirs(lock)
+        self.spawn(st, 'a').wait()
+        self.assertTrue(os.path.isdir(lock), '不足 5 秒的锁被当残锁回收了')
+        self.assertEqual(os.listdir(lock), [], '别人的锁里被写了东西')
+        with open(st) as f:
+            self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
+        self.assertEqual(self.reason(st), 'busy')
+
+    def test_release_only_removes_own_lock(self):
+        """释放锁前核对 owner：写回期间锁被别人接管（owner 变了）时，退出不能把别人的锁删掉。
+        用假 jq 在合并那一步把 owner 改写成别人的 token。"""
+        st = self.seeded()
+        lock = st + '.lock'
+        env = self.shim('jq', 'case "$*" in *with_entries*) printf %s intruder.1 > "' + lock +
+                        '/owner" ;; esac; exec "$REAL" "$@"')
+        self.spawn(st, 'a', env=env).wait()
+        with open(st) as f:
+            self.assertIn('a', json.load(f), '对照失效：写回本身应当成功')
+        self.assertTrue(os.path.isdir(lock), '释放锁删掉了别人的锁')
+        with open(os.path.join(lock, 'owner')) as f:
+            self.assertEqual(f.read(), 'intruder.1')
+
+    def test_write_back_prunes_entries_older_than_600s(self):
+        """写回时剪掉 600 秒前的条目：本会话已不再出现的 subagent 不能永远留在共享状态里；
+        没到 600 秒的照留。"""
+        st = os.path.join(self.d, 's.json')
+        now = time.time()
+        with open(st, 'w') as f:
+            json.dump({'old': {'t': now - 700, 'k': 1}, 'recent': {'t': now - 500, 'k': 1}}, f)
+        self.spawn(st, 'a').wait()
+        with open(st) as f:
+            d = json.load(f)
+        self.assertEqual(sorted(d), ['a', 'recent'], '700 秒前的条目没有被剪掉（或 500 秒前的被误剪）')
+
+    def test_entry_is_not_refreshed_within_2s(self):
+        """同一条目 2 秒内再次写回不改 t / k：事件驱动的密集重跑不能冲掉速率基线；满 2 秒才更新。"""
+        st = os.path.join(self.d, 's.json')
+        now = time.time()
+        with open(st, 'w') as f:
+            json.dump({'a': {'t': now, 'k': 7}, 'b': {'t': now - 3, 'k': 7}}, f)
+        self.spawn(st, 'a').wait()
+        self.spawn(st, 'b').wait()
+        with open(st) as f:
+            d = json.load(f)
+        self.assertEqual(d['a']['k'], 7, '2 秒内的再次写回改了速率基线的 k')
+        self.assertAlmostEqual(d['a']['t'], now, places=3)
+        self.assertEqual(d['b']['k'], 1000, '满 2 秒的条目没有更新')
+        self.assertGreater(d['b']['t'], now - 1)
+
+    def test_write_back_keeps_running_pending_and_empty_status_only(self):
+        """写回只收运行中的行：running、pending、空串、缺 status（按 running）；已结束的不记
+        速率基线。"""
+        st = os.path.join(self.d, 's.json')
+        tasks = {'columns': 120, 'tasks': [
+            {'id': 'run', 'status': 'running'}, {'id': 'pend', 'status': 'pending'},
+            {'id': 'empty', 'status': ''}, {'id': 'none'},
+            {'id': 'done', 'status': 'completed'}, {'id': 'bad', 'status': 'failed'}]}
+        self.panel(tasks, st)
+        with open(st) as f:
+            self.assertEqual(sorted(json.load(f)), ['empty', 'none', 'pend', 'run'])
+
     def test_write_failures_record_their_reason(self):
         """合并 / 建临时文件 / 写入 / 替换失败各落自己的原因码（假命令制造失败点）。"""
         cases = {
@@ -390,7 +456,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(tmp)
         f = self.panel_facts({'TMPDIR': tmp + os.sep})
         root = os.path.join(tmp, f'claude-sl-{os.getuid()}')
-        self.assertEqual(f, {'cc-pills-facts': '2', 'state_explicit': '0',
+        self.assertEqual(f, {'cc-pills-facts': '3', 'state_explicit': '0',
                              'state': os.path.join(root, f'claude-subagent-sl-{os.getuid()}.json')})
         self.assertEqual(os.listdir(tmp), [], '自述模式建了缓存目录')
         slt = os.path.join(self.d, 'slt')

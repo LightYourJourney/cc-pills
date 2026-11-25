@@ -128,8 +128,8 @@
 #  16. 输出用 printf '%s'、转义序列用真实 ESC 字节拼接，外部文本（路径 / 分支 / 模型名）
 #      先剔除控制字符——printf '%b' 会把目录名里的 \c 当「停止输出」、\033[41m 当真转义
 #  17. 同步路径只允许 jq 一次外部进程，其余全用 bash 内建（cd -P / 参数展开 / read）；
-#      唯一例外：某目录还没有 git 缓存时同步跑 git_data（约 4 个进程）——直到后台刷新写出缓存，
-#      期间每次渲染都跑（大仓库 git status 慢时，这几帧都会卡住）
+#      唯一例外：某目录还没有 git 缓存时同步跑 git_data quick（2–3 个进程，只取仓库根与分支，
+#      不跑 status——大仓库的 status 要几秒，期间每帧都会卡住）；状态旗标等后台刷新写出缓存
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
 #  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件与超龄的空锁目录，
@@ -263,13 +263,18 @@ fi
 SELF=${BASH_SOURCE[0]}; [ "${SELF#/}" = "$SELF" ] && SELF="$PWD/$SELF"
 HERE=${SELF%/*}
 
-# 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
+# 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d、大写 X → _cX），不同路径
+# 不撞名——缓存根在不区分大小写的文件系统上（macOS 默认的 APFS）也不撞：只差大小写的两个目录此前
+# 落到同一个文件，互相显示对方的分支（11-25）；
 # 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
 # 终审：此前直接用全路径，超长目录的 git 缓存永远写不进去，每次渲染都同步跑 git）。
 # 色板键也用它，所以定义在 --facts 之前，保持 bash 3.2 可跑
 pathkey() {
   local k=$1 h i c
   k=${k//_/_u}; k=${k// /_s}; k=${k//\//_d}
+  for c in A B C D E F G H I J K L M N O P Q R S T U V W X Y Z; do
+    case $k in *$c*) k=${k//$c/_c$c} ;; esac
+  done
   local LC_ALL=C
   if [ "${#k}" -gt 180 ]; then
     h=-3750763034362895579                       # FNV-1a 64 偏移基（0xcbf29ce484222325）
@@ -363,7 +368,7 @@ if [ "${1:-}" = --facts ]; then
   slt_explicit=0; [ -n "${CLAUDE_SL_TMP:-}" ] && slt_explicit=1
   relay=0; relay_env && relay=1
   tok_keys=""; for m in $TOK_MAP; do tok_keys="$tok_keys ${m%%:*}"; done
-  printf '%s\n' "cc-pills-facts=2" "version=$VERSION" \
+  printf '%s\n' "cc-pills-facts=3" "version=$VERSION" \
     "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" \
     "conf=$SL_CONF" "conf_readable=$CONF_READ" "conf_unknown=${CONF_UNKNOWN# }" "conf_bad=${CONF_BAD# }" \
     "theme=$THEME" "pill_style=$PILL_STYLE" "pill_chroma=$PILL_CHROMA" "status_page=$STATUS_PAGE" \
@@ -378,7 +383,8 @@ fi
 
 
 # git 三件套 → "repo_root \t branch \t 状态旗标"（空字段用 "-" 占位，约束 5）；
-# 写缓存时后台刷新再追加第 4 段「写入时刻」（GIT_TTL 判定用）
+# 写缓存时后台刷新再追加第 4 段「写入时刻」（GIT_TTL 判定用）。git_data quick 不跑 status
+# （同步回退用：大仓库的 status 要几秒，旗标留给后台刷新补）
 # core.fsmonitor 是仓库 .git/config 里可写的命令（拷来的仓库能借它在每轮刷新里执行任意命令），
 # 一律关掉。仓库配置的 clean filter 仍可能在 status 刷新索引时执行——这是所有带 git 信息的提示符
 # 共有的暴露面，此处不另做处理。
@@ -388,7 +394,7 @@ git_data() {
   branch=$(git --no-optional-locks -c core.fsmonitor=false symbolic-ref --short HEAD 2>/dev/null)
   [ -z "$branch" ] && branch=$(git --no-optional-locks -c core.fsmonitor=false rev-parse --short HEAD 2>/dev/null)  # detached HEAD 回退短 SHA
   status=""
-  if [ -n "$branch" ]; then
+  if [ -n "$branch" ] && [ "${1:-}" != quick ]; then
     # --porcelain=v1 的分支头在任何 locale 下都输出英文 ahead/behind，
     # 不可换成 `status -sb`（后者会本地化成「领先/落后」导致匹配失效）。
     status=$(git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -b 2>/dev/null | awk '
@@ -687,13 +693,13 @@ fi
 { [ -n "$dir" ] && cd -P "$dir" 2>/dev/null; } || cd -P . 2>/dev/null
 dir=$PWD                                 # cd -P 后 PWD 即物理路径（约束 17：不 fork pwd）
 
-# ── git 段：优先读缓存，缺失时同步回退（首次/换目录后的那一轮）──────────
+# ── git 段：优先读缓存，缺失时同步回退（只取仓库根与分支，状态旗标等后台刷新写出缓存）──
 pathkey "$dir"; key=$PK
 gitcache="${SLT}/claude-sl-git-${key}.cache"
 if [ "$SLT_OK" = 1 ] && cache_ok "$gitcache"; then
   IFS=$'\t' read -r repo_root branch gstatus _ < "$gitcache"     # 第 4 段为写入时刻
 else
-  IFS=$'\t' read -r repo_root branch gstatus <<< "$(git_data)"
+  IFS=$'\t' read -r repo_root branch gstatus <<< "$(git_data quick)"
 fi
 [ "$repo_root" = "-" ] && repo_root=""
 branch=${branch//[[:cntrl:]]/}; model=${model//[[:cntrl:]]/}; eff=${eff//[[:cntrl:]]/}   # 约束 16

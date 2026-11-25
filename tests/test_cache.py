@@ -15,7 +15,7 @@ import tempfile
 import time
 import unittest
 
-from _util import SCRIPT, TOKENS, Sandbox, strip, tok_line
+from _util import SCRIPT, TOKENS, Sandbox, color_of, strip, tok_line
 
 
 class CacheBase(unittest.TestCase):
@@ -209,6 +209,21 @@ class ContentSafety(CacheBase):
         self.assertFalse(os.path.exists(marker), '色板缓存的键触发了命令执行')
         self.assertIn('42%', strip(out))
 
+    def test_theme_cache_for_another_theme_is_not_used(self):
+        """色板缓存首行的主题名必须与配置的 theme 相符：别的主题的色板不能给当前主题上色（整行
+        无色，等后台按首行不符重算）；相符时才有 24 位色。"""
+        slt = os.path.join(self.d, 'slt')
+        os.makedirs(slt, mode=0o700)
+        body = 'P_NEU=40;40;40\nP_CTX=40;40;40\nT_NEU=230;230;230\n'
+        color = re.compile(r'\x1b\[[0-9;]*[34]8;2;')
+        for theme, colored in (('nord', False), ('dracula', True)):
+            with open(os.path.join(slt, 'claude-sl-theme-term-other.cache'), 'w') as f:
+                f.write(f'THEME={theme}/12/tint/v4\n{body}')
+            out = self.render('thm', {'CLAUDE_SL_TMP': slt})
+            self.assertIn('42%', strip(out))
+            self.assertEqual(bool(color.search(out)), colored,
+                             f'缓存主题 {theme}、配置 dracula：着色与否不对 {out!r}')
+
     def test_token_cache_number_cannot_run_commands(self):
         """命中率要进算术展开取整：$((…)) 会把变量内容当表达式求值，非数字必须先丢弃。"""
         slt = os.path.join(self.d, 'slt')
@@ -220,6 +235,49 @@ class ContentSafety(CacheBase):
         self.assertFalse(os.path.exists(marker), 'token 缓存的命中率字段触发了命令执行')
         self.assertNotIn('hit', out, '非数字的命中率不该显示')
         self.assertIn('↑30M', out, '其余合法字段不应被连带丢弃')
+
+    def test_token_cache_hit_must_be_digits_dot_digits(self):
+        """命中率只收「数字.数字」：1.2.3 与 x.9 能过前面的取值字符集（字母数字 . $ /），但不是
+        生产者会写的形状，须在进取整之前丢掉——不显示、不报错，其余字段照常。"""
+        for bad in ('1.2.3', 'x.9'):
+            with Sandbox() as sb:
+                sb.write_tok('hitshape', **{'in': '30M', 'out': '290k', 'hit': bad})
+                r = sb.render(sb.stdin('hitshape'), cols=240, raw=True)
+            out = strip(r.stdout)
+            self.assertNotIn('hit', out, f'形状不对的命中率 {bad} 上了屏')
+            self.assertEqual(r.stderr, '', f'命中率 {bad} 进了算术展开')
+            self.assertIn('↑30M', out, '其余合法字段不应被连带丢弃')
+
+    def test_hit_ratio_rounds_half_up_in_short_form(self):
+        """窄屏只写取整后的「N%」：小数部分 ≥ .5 进位（97.5 → 98%），.4 舍去（97.4 → 97%）。"""
+        with Sandbox() as sb:
+            for hit, want in (('97.5', '98%'), ('97.4', '97%')):
+                sb.write_tok('round', hit=hit)
+                out = strip(sb.render(sb.stdin('round'), cols=40))
+                self.assertNotIn('hit', out, '40 列应已降到只剩取整百分比')
+                self.assertTrue(out.rstrip().endswith(want + ''),
+                                f'命中率 {hit} 应显示 {want}，实际 {out!r}')
+
+    def test_subscription_quota_wins_over_relay_env(self):
+        """stdin 里有 5h / 7d 额度就是订阅，即使同时设了非官方 ANTHROPIC_BASE_URL（例如把别的
+        工具的环境变量带进来了）：费用仍是 $17.54，不加中转站口径的 * 标记。"""
+        relay = {'ANTHROPIC_BASE_URL': 'https://relay.example/v1'}
+        with Sandbox() as sb:
+            self.assertIn('$17.54*', strip(sb.render(sb.stdin(), env=relay)), '对照失效：只有 BASE_URL 时应按中转站')
+            for q in ({'q5': 40}, {'q7': 40}):
+                out = strip(sb.render(sb.stdin(**q), env=relay))
+                self.assertIn('$17.54', out)
+                self.assertNotIn('$17.54*', out, f'有 {list(q)[0]} 额度时被判成了中转站')
+
+    def test_spend_exhausted_in_cache_is_dropped_below_100(self):
+        """网关花费限额的跨窗口护栏：stdin 里已用 <100% 时，缓存里的「用尽」只可能是上一个窗口
+        的遗留，等级与文案一并丢弃（与 5h / 7d 同规则）。"""
+        with Sandbox() as sb:
+            sb.write_tok('spx', splv='bad', spout='用尽')
+            out = sb.render(sb.stdin('spx', spend={'used_percentage': 30, 'period': 'daily'}))
+            self.assertIn('今日 30%', strip(out))
+            self.assertNotIn('用尽', strip(out), '上一窗口遗留的「用尽」上了屏')
+            self.assertEqual(color_of(out, '30%'), sb.theme()['T_NEU'], '遗留的 bad 等级染红了 30%')
 
 
 class Lifecycle(CacheBase):
@@ -470,6 +528,26 @@ class Hardening(CacheBase):
         os.symlink(real, os.path.join(slt, 'claude-sl-tok-sym.cache'))
         out = self.render('sym', {'CLAUDE_SL_TMP': slt})
         self.assertNotIn('↑777M', out, '符号链接被当作 token 缓存读取了')
+
+    def test_symlinked_timestamp_is_not_trusted(self):
+        """.ts 是符号链接时不信任（指向的时间戳再新也不算）：派生项隐藏，只留 stdin 的值；
+        换成同内容的普通文件才显示——对照证明隐藏确实来自符号链接。"""
+        with Sandbox() as sb:
+            sb.write_tok('lnk', rate='$99/h', msgs='517')
+            fresh = os.path.join(sb.dir, 'fresh-ts')
+            with open(fresh, 'w') as f:
+                f.write(f'{int(time.time())}\n')
+            ts = os.path.join(sb.tmp, 'claude-sl-tok-lnk.cache.ts')
+            os.symlink(fresh, ts)
+            out = strip(sb.render(sb.stdin('lnk', q5=20)))
+            self.assertIn('5h 20%', out)
+            for item in ('$99/h', 'm517'):
+                self.assertNotIn(item, out, f'符号链接的 .ts 被信任了：{item!r} 仍在展示')
+            os.unlink(ts)
+            shutil.copy(fresh, ts)
+            out = strip(sb.render(sb.stdin('lnk', q5=20)))
+            for item in ('$99/h', 'm517'):
+                self.assertIn(item, out, '对照失效：普通文件的新鲜 .ts 应当显示')
 
     def old_ts(self, slt, sid, age=0):
         with open(os.path.join(slt, f'claude-sl-tok-{sid}.cache.ts'), 'w') as f:

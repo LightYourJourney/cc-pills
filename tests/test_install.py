@@ -172,6 +172,68 @@ class Install(unittest.TestCase):
                          '依赖不满足时不应安装任何副本')
 
 
+    def test_uninstall_refuses_hand_edited_copy_without_force(self):
+        """线上副本与仓库不同（被手改过）时卸载拒绝删它、返回 1，别的未改动副本照删；加 --force
+        才删：用户对已安装脚本的改动不能被一条 --uninstall 悄悄带走。"""
+        self.assertEqual(self.run_sh().returncode, 0)
+        edited = os.path.join(self.dest, 'statusline-command.sh')
+        with open(edited, 'a') as f:
+            f.write('# 本地改动\n')
+        r = self.run_sh('--uninstall')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('statusline-command.sh 与本仓库不同', r.stderr)
+        self.assertIn('--force', r.stderr)
+        with open(edited) as f:
+            self.assertIn('# 本地改动', f.read(), '被手改的副本没有 --force 就被删了')
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'statusline-tokens.py')),
+                         '未改动的副本应照常删除')
+        r = self.run_sh('--uninstall', '--force')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(edited), '--force 没有删掉被手改的副本')
+
+    def test_installer_refuses_bash_3_2(self):
+        """安装器自己要在 bash ≥ 4.2 下跑（渲染脚本用到关联数组等）：macOS 自带的 /bin/bash 是 3.2，
+        直接拒绝、提示换新版 bash，且一个副本都不装。/bin/bash 不是 3.x 的机器上无从构造，跳过。"""
+        if not os.path.exists('/bin/bash'):
+            self.skipTest('没有 /bin/bash')
+        ver = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'],
+                             capture_output=True, text=True).stdout.strip()
+        if ver != '3':
+            self.skipTest(f'/bin/bash 主版本是 {ver}，不是 3.x')
+        r = subprocess.run(['/bin/bash', INSTALL, '--with-subagent'], capture_output=True,
+                           text=True, env=self.env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('需要 bash', r.stderr)
+        self.assertEqual(os.listdir(self.dest), [], '版本不够时不应安装任何副本')
+
+    def test_uninstall_warns_when_command_only_names_the_script(self):
+        """settings 命令只含脚本名、路径不是安装副本（points_to 返回 2）也算「仍指向」：卸载后
+        同样提示，只有完全无关的命令（返回 1）才不吵。"""
+        self.assertEqual(self.run_sh('--with-subagent').returncode, 0)
+        s = {'statusLine': {'type': 'command', 'command': 'bash statusline-command.sh'},
+             'subagentStatusLine': {'type': 'command',
+                                    'command': 'bash /elsewhere/subagent-statusline.sh'}}
+        r = self.run_sh('--uninstall', settings=s)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stderr, r'statusLine 仍指向已删除的 \S*/statusline-command\.sh')
+        self.assertRegex(r.stderr, r'subagentStatusLine 仍指向已删除的 \S*/subagent-statusline\.sh')
+        self.assertEqual(r.stderr.count('仍指向已删除'), 2, r.stderr)
+
+    def test_check_flags_panel_command_pointing_elsewhere_when_panel_not_installed(self):
+        """面板脚本没装、settings 的 subagentStatusLine 却含面板脚本名（只有文件名，或路径在别处）：
+        --check 报「指向面板脚本，但文件未安装」并返回 1；配的是毫不相干的程序则不算失败。"""
+        self.assertEqual(self.run_sh().returncode, 0)
+        for cmd in ('bash subagent-statusline.sh', 'bash /elsewhere/subagent-statusline.sh'):
+            s = self.cmds(sub=False)
+            s['subagentStatusLine'] = {'type': 'command', 'command': cmd}
+            r = self.run_sh('--check', settings=s)
+            self.assertEqual(r.returncode, 1, f'{cmd}\n{r.stdout}')
+            self.assertIn('指向面板脚本，但文件未安装', r.stdout, cmd)
+        s['subagentStatusLine']['command'] = 'bash /usr/local/bin/other-panel.sh'
+        r = self.run_sh('--check', settings=s)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('配置的是别的程序', r.stdout)
+
     def test_plain_reinstall_updates_installed_panel(self):
         """README：拉取后重跑 bash install.sh。已经装过的面板脚本必须一起更新，否则它悄悄
         停在旧版，直到 --check 才报不一致。"""

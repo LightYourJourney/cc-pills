@@ -134,9 +134,9 @@ live session's caches.
 
 When an item disappears, the line loses its colours, or nothing renders at all, run the
 diagnostic first. It never modifies your config, cache or database content, makes no network
-requests, never dumps the environment, and scrubs `sk-…` / `*_KEY=…` / `*_TOKEN=…`
-(case-insensitive, quoted values included) / URL credentials and query parameters / `Bearer …`
-out of the `settings.json` command before printing it. Its only write is a throwaway temp dir;
+requests, never dumps the environment, and scrubs `sk-…` / `ghp_…` / `*_KEY=…` / `*_TOKEN=…` /
+`*PASSWORD=…` / `*SECRET=…` (case-insensitive, quoted values included) / `--api-key …` /
+URL credentials and query parameters / API-key and `Authorization` headers / `Bearer …` out of the `settings.json` command before printing it. Its only write is a throwaway temp dir;
 a WAL-mode SQLite database may get `-wal`/`-shm` sidecars on read-only open, exactly as the
 renderer's own read does.
 

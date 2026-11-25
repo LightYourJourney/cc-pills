@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import unittest
 
@@ -284,6 +285,39 @@ class Robustness(unittest.TestCase):
             self.assertIn(name, strip(sb.render(sb.stdin(), 400)), '宽屏应显示全名')
 
 class Semantics(unittest.TestCase):
+    def test_git_cache_key_survives_case_insensitive_fs(self):
+        """只差大小写的两个仓库目录（区分大小写的卷上可以并存），缓存键在不区分大小写的缓存根上
+        也必须不同：此前 …_dFoo 与 …_dfoo 是同一个文件，5 秒内会显示另一个仓库的分支。"""
+        with Sandbox() as sb:
+            keys = []
+            for name in ('Foo', 'foo'):
+                d = os.path.join(sb.dir, 'p', name)
+                os.makedirs(d)
+                subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True)
+                before = set(os.listdir(sb.tmp))
+                sb.refresh(d)
+                new = [f for f in set(os.listdir(sb.tmp)) - before if f.startswith('claude-sl-git-')]
+                self.assertEqual(len(new), 1, new)
+                keys.append(new[0].lower())
+                shutil.rmtree(d)                    # 不区分大小写的卷上两个目录不能并存
+            self.assertNotEqual(keys[0], keys[1])
+
+    def test_uncached_git_dir_skips_status_on_sync_path(self):
+        """还没有 git 缓存的目录：同步回退只取分支，不跑 git status——大仓库的 status 要几秒，
+        后台写出缓存之前每帧都会卡住。状态旗标等后台刷新补上（11-25 用户裁定）。"""
+        with Sandbox() as sb:
+            d = os.path.join(sb.dir, 'fresh')
+            os.makedirs(d)
+            subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True)
+            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feat'], cwd=d, check=True)
+            with open(os.path.join(d, 'u.txt'), 'w') as f:
+                f.write('x')
+            o = strip(sb.render(sb.stdin(cwd=d)))
+            self.assertIn('feat', o)
+            self.assertNotIn('[?]', o, '同步路径跑了 git status')
+            sb.refresh(d)
+            self.assertIn('feat [?]', strip(sb.render(sb.stdin(cwd=d))), '后台刷新没补上状态旗标')
+
     def test_quota_colored_by_current_value(self):
         with Sandbox() as sb:
             th = sb.theme()
@@ -450,7 +484,7 @@ class Facts(unittest.TestCase):
                 f.write(conf)
             f_, r = facts(sb)
             self.assertEqual(r.stderr, '')
-            self.assertEqual(f_['cc-pills-facts'], '2')
+            self.assertEqual(f_['cc-pills-facts'], '3')
             self.assertEqual((f_['bash_min'], f_['py_min']), ('4.2', '3.9'))
             self.assertRegex(f_['version'], r'^\d+\.\d+\.\d+$')
             self.assertTrue(f_['tok_v'].isdigit())
@@ -506,12 +540,13 @@ class Facts(unittest.TestCase):
 
     def test_theme_cache_key_is_distinct_per_profile(self):
         """色板按 profile 背景算：键有损（非 ASCII 与空格都换成 _）时「深色」「浅色」共用一份，
-        浅色会话用上深色的色板。"""
+        浅色会话用上深色的色板。缓存根在不区分大小写的文件系统上（macOS 默认），只差大小写的
+        两个名字也不能落到同一个文件。"""
         with Sandbox() as sb:
-            names = ['深色', '浅色', 'Dark Mode', 'Dark_Mode', 'Dark/Mode']
+            names = ['深色', '浅色', 'Dark Mode', 'Dark_Mode', 'Dark/Mode', 'dark mode']
             paths = [facts(sb, {'TERM_PROGRAM': 'iTerm.app', 'ITERM_PROFILE': n})[0]['theme_cache']
                      for n in names]
-            self.assertEqual(len(set(paths)), len(names), dict(zip(names, paths)))
+            self.assertEqual(len({p.lower() for p in paths}), len(names), dict(zip(names, paths)))
             for p in paths:
                 self.assertEqual(os.path.dirname(p), sb.tmp, p)
             ctl = facts(sb, {'TERM_PROGRAM': 'iTerm.app', 'ITERM_PROFILE': 'a\nb'})[0]['theme_cache']

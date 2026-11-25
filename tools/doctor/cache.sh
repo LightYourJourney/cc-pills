@@ -36,6 +36,8 @@ fi
 # 色板：路径、期望首行、此刻能不能上色都由渲染脚本自述（终端键只为显示从文件名里取）
 tc=$F_theme_cache
 PKEY=${tc##*/claude-sl-theme-}; PKEY=${PKEY%.cache}
+# 还原 pathkey 的转义只为显示（iterm-_cDefault → iterm-Default）；_u 最后还原，_c / _s / _d 才不会认错
+PKEY=${PKEY//_c/}; PKEY=${PKEY//_s/ }; PKEY=${PKEY//_d//}; PKEY=${PKEY//_u/_}
 COLOUR_OK=0     # 渲染侧此刻能不能上色（不看终端色深；色深见 环境/终端）
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/色板 "缓存根不可用"
@@ -268,7 +270,7 @@ elif [ -n "$lock_bad" ]; then
   res WARN 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
     "无需手工处理；反复出现再检查缓存目录：rm -f \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_old" ]; then
-  # 自述不报 cache_max_age 的副本（1.0.6 之前）根本不清理锁：不能说「会被删」，给出手工命令
+  # 装着答不出这一版自述的旧副本时不知道它清不清理锁（1.0.6 及更早不清理）：不能说「会被删」，给出手工命令
   gone="会话已结束的由每日清理在 ${CACHE_MAX_AGE} 天后删掉"
   [ -n "$CACHE_MAX_AGE" ] || gone="会话已结束的留着（已安装副本没报清理天数，多半是不清理锁的旧版；重装即可，或手工 rmdir \"$SLT\"/claude-sl-lock-*）"
   [ "$F_slt_explicit" = 1 ] && gone="会话已结束的留着（显式 CLAUDE_SL_TMP 不清理，归调用方）"
