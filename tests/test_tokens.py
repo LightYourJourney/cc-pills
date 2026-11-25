@@ -132,6 +132,34 @@ class Counting(Base):
         self.assertEqual(sorted(st['unl']), ['m1'])
         self.assertEqual((st['in'], st['out']), (10, 1), '零用量的行仍要计入消息数等统计')
 
+    def test_compact_counts_main_conversation_only(self):
+        """compact 次数只算主对话、非 sidechain：主文件里 isSidechain=true 的行与 subagent 文件
+        里的 compact 都属于另一个上下文，算进来会虚报主对话被压缩的次数。"""
+        side = json.dumps({'type': 'system', 'subtype': 'compact_boundary', 'isSidechain': True})
+        tp = self.write('cp.jsonl', [line('m1', 10, 1, 'end_turn'),
+                                     json.dumps({'type': 'system', 'subtype': 'compact_boundary'}),
+                                     side])
+        self.write('cp/subagents/agent-x.jsonl', [
+            line('s1', 1, 1, 'end_turn'),
+            json.dumps({'type': 'system', 'subtype': 'compact_boundary'})])
+        out = self.fields(self.run_tok(tp, 'cp').stdout)
+        self.assertEqual(out[IDX['comp']], '1', 'sidechain / subagent 的 compact 被计入了主对话')
+
+    def test_line_longer_than_chunk_does_not_stall_cursor(self):
+        """单行超过一整片时跳过着读、仍要推进游标：不推进就永远读回同一片，该文件后面
+        的行再也读不到（每轮刷新都卡在这里，会话永久停更）。"""
+        good = line('m2', 20, 40, 'end_turn')
+        tp = self.write('big.jsonl', ['x' * 1000, good])       # 第一行 1000 B，远长于下面的一片
+        self.assertLess(len(good), 500, '夹具前提：普通行短于一片，才能被正常读到')
+        self.t.MAX_CHUNK = 500
+        st, fs = json.loads(json.dumps(self.t.EMPTY)), {'off': 0, 'fp': 0}
+        for _ in range(10):
+            if self.t.scan_chunk(tp, fs, st, {}, [], True, False):
+                break
+        self.assertGreater(fs['off'], 0, '超长行所在的那一片被反复重读，游标没有前进')
+        self.assertEqual(fs['off'], os.path.getsize(tp))
+        self.assertEqual((st['in'], st['out']), (20, 40), '超长行之后的行没有被计入')
+
     def test_compact_substring_does_not_drop_usage(self):
         tp = self.write('b.jsonl', [
             line('m1', 10, 300, 'tool_use', extra={'type': 'tool_use', 'name': 'Grep',
@@ -228,6 +256,22 @@ class Counting(Base):
         with contextlib.redirect_stdout(io.StringIO()):
             self.t.main()
         self.assertLess(time.time() - t0, 3.0)  # 共享预算约 1.2 s；6 倍则是 2.4 s+，3.0 s 仍能区分且容忍慢 runner
+
+    def test_state_symlink_is_not_followed(self):
+        """约束 9：状态文件按不可信磁盘数据对待，用 O_NOFOLLOW 打开。链接指向一份「看起来
+        合法」的状态时绝不能读——否则紧跟链接就会把别人写好的累计数（这里是 777777）
+        当成自己的会话统计显示出来。"""
+        tp = self.write('sl.jsonl', [line('m1', 10, 5, 'end_turn')])
+        off = os.path.getsize(tp)
+        decoy = dict(self.t.EMPTY, files={tp: {'off': off, 'fp': self.t.tail_fp(tp, off),
+                                               'last_id': 'm1', 'msgs': 1}})
+        decoy.update({'in': 777777, 'out': 888888})
+        real = os.path.join(self.d, 'decoy.json')
+        with open(real, 'w') as f:
+            json.dump(decoy, f)                       # 状态版本与指纹都对：只靠 O_NOFOLLOW 才拦得住
+        os.symlink(real, os.path.join(self.d, 'claude-statusline-sym.json'))
+        out = self.fields(self.run_tok(tp, 'sym').stdout)
+        self.assertEqual((out[IDX['in']], out[IDX['out']]), ('10', '5'), '跟随了符号链接的状态文件')
 
 
 class Incremental(Base):
@@ -345,6 +389,16 @@ class Trackers(Base):
         self.t.track(st, 'cost', rate_per_h * ramp / 3600 * drop, 1000 + ramp + 1200, epoch='stdin')
         self.assertAlmostEqual(self.t.rate(st, 'cost', 1000 + ramp + 1200) * 3600, 4.0, delta=0.1)
 
+    def test_rate_is_hidden_during_warmup(self):
+        """TRACK 的预热期（cost 120s）：预热未满时速率没有意义（样板里 ew 还在爬坡），
+        必须返回 None——否则刚启动的会话会显示一个偏小的速率，比不显示更误导。"""
+        st = {'trk': {}}
+        for k in range(0, 61):
+            self.t.track(st, 'cost', 12 * k / 3600, 1000 + k, epoch='stdin')
+        self.assertIsNone(self.t.rate(st, 'cost', 1110), '预热期（110s < 120s）就输出了速率')
+        self.assertAlmostEqual(self.t.rate(st, 'cost', 1130) * 3600, 12, delta=0.5,
+                               msg='预热期满后应给出真实速率')
+
 
 class Pace(Base):
     def test_levels(self):
@@ -368,6 +422,34 @@ class Pace(Base):
         self.assertNotEqual(out[IDX['spout']], '-')
         out = self.fields(self.run_tok(tp, 'c6', f'sp=60,{now + 40000},hourly').stdout)
         self.assertEqual([out[IDX['splv']], out[IDX['spout']]], ['-', '-'])
+
+    def test_seven_day_extrapolates_only_after_a_full_day(self):
+        """7d 只用窗口均速、且窗口过满 1 天才外推（文档 5）：周窗口有昼夜节律，开窗头几小时
+        按 24h 连续外推一整周会系统性高估（实测开窗 6.9h 用 30% 就被判「16 小时后用完」）。
+        同样的「已用 ÷ 已过时长」在窗口过了半天以后就该外推。"""
+        now = int(time.time())
+        tp = self.write('q7.jsonl', [line('m1', 1, 1, 'end_turn')])
+        resets = now + 604800 - 6.9 * 3600
+        out = self.fields(self.run_tok(tp, 'q7a', f'q7=30,{int(resets)}').stdout)
+        self.assertEqual([out[IDX['q7lv']], out[IDX['q7out']]], ['ok', '-'],
+                         '开窗 6.9h 用 30% 不该外推成「很快用完」')
+        resets = now + 604800 - 3 * 86400 + 6 * 3600
+        out = self.fields(self.run_tok(tp, 'q7b', f'q7=60,{int(resets)}').stdout)
+        self.assertEqual(out[IDX['q7lv']], 'warn', '窗口已过 3 天，按均速会在重置前用完，应判 warn')
+
+    def test_past_reset_windows_are_hidden(self):
+        """已过重置时刻的窗口输出 '-'：窗口已经重开，旧百分比不再代表现在（拿它算节奏会
+        按负的剩余时长外推出荒谬的倒计时）。刚好等于 now 也算过期。"""
+        tp = self.write('exp.jsonl', [line('m1', 1, 1, 'end_turn')])
+        now = int(time.time())
+        for i, resets in enumerate((now - 3600, now, now + 3600)):
+            out = self.fields(self.run_tok(tp, f'exp{i}', f'q5=40,{resets}', f'q7=40,{resets}',
+                                           f'sp=40,{resets},daily').stdout)
+            if resets > now:
+                self.assertNotEqual(out[IDX['q5lv']], '-', '前提：未过期的窗口要出等级')
+                continue
+            self.assertEqual([out[IDX['q5lv']], out[IDX['q5out']], out[IDX['q7lv']], out[IDX['q7out']],
+                              out[IDX['splv']], out[IDX['spout']]], ['-'] * 6, f'resets={resets - now:+}')
 
 
 class Format(Base):
@@ -571,6 +653,52 @@ class Relay(Base):
         self.assertIn('claude-opus-5-5', c('anthropic/claude-opus-5-5-20261001[1m]'))
         self.assertIn('claude-sonnet-5-5', c('Claude-Sonnet-5-5@20261001'))
         self.assertEqual(c('unknown'), [])
+
+    def test_one_hour_cache_write_costs_1_6x_the_5m_price(self):
+        """calculator.rs 的规则（文档 4）：1h 缓存写入按 5m 单价 ×1.6 计价；且 1h 的 token
+        数不能超过缓存写入总数（min(cw1, cw)）——超了会让 (cw - cw1) 变成负数，把写缓存
+        算成负花费，会话花费凭空变少。"""
+        p = [5.0, 25.0, 0.5, 6.25]
+        priced = lambda inp, out, cr, cw, cw1: self.t.msg_cost(
+            p, ['claude-opus-5-5', inp, out, cr, cw, cw1, 0, 0])
+        self.assertAlmostEqual(priced(0, 0, 0, 1000000, 1000000), 10.0, places=6,
+                               msg='1h 缓存写入应按 6.25 × 1.6 = $10/M')
+        self.assertAlmostEqual(priced(0, 0, 0, 0, 0), 0.0, places=9)
+        self.assertAlmostEqual(priced(1000, 100, 2000, 0, 0),
+                               (1000 * 5 + 100 * 25 + 2000 * 0.5) / 1e6, places=9)
+        self.assertAlmostEqual(priced(0, 0, 0, 1000000, 3000000), 10.0, places=6,
+                               msg='cw1 超过 cw 时应按 cw 截住，不能算出负数')
+
+    def test_unpriced_messages_are_counted_from_ledger_and_tail(self):
+        """runpriced（`+` 下限标记的来源）= 账本里记了 token 却费用为 0 的行 + 尾部里查不到
+        价格的消息。两处都要计：只算账本时尾部那些没价格的消息被静默当成免费，
+        只算尾部时账本里的零费用行也被当成免费。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        c = sqlite3.connect(db)
+        c.execute("insert into proxy_request_logs values('z0', 'r1', 'B', 'claude', 'proxy', 200, ?, 5, 5, 0, 0, '0')",
+                  (now - 60,))                 # 账本：有 token、费用 0 → 未计价 1
+        c.commit()
+        c.close()
+        o = json.loads(line('mystery', 1000, 100, 'end_turn', ts=iso_utc(now - 60)))
+        o['message']['model'] = 'mystery-9'       # 价格表里查不到 → 尾部未计价 1
+        tp = self.write('up.jsonl', [json.dumps(o)])
+        out = self.fields(self.run_tok(tp, 'r1', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['runpriced']], '2', '账本零费用行 + 尾部无价格消息各算 1 条')
+        self.assertAlmostEqual(float(out[IDX['rcost']]), 30.0, places=6,
+                               msg='无价格的消息不能凭空折算出花费')
+
+    def test_tail_today_excludes_messages_before_local_midnight(self):
+        """今日尾部只算本地零点之后的消息：昨天（甚至更早）未入账的消息属于昨日花费，
+        算进今日会让「剩余预算」凭空缩水。总额（rcost）仍然包含它。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        ts = iso_utc(now - 2 * 86400)
+        tp = self.write('tt.jsonl', [line('mold', 1000, 100, 'end_turn', ts=ts)])
+        out = self.fields(self.run_tok(tp, 'r1', f'relay={db}').stdout)
+        self.assertAlmostEqual(float(out[IDX['rcost']]), 30 + 0.0075, places=6,
+                               msg='前提：旧消息仍在未入账尾部里')
+        self.assertEqual(out[IDX['rtoday']], '0.0000', '昨天的尾部被算进了今日')
 
 
 class DailyLimit(Base):

@@ -73,6 +73,34 @@ def palette(home, style, theme_name='auto', ver='4'):
     return kv, lines
 
 
+def comp(h):
+    v = rgb(h)
+    return {'Red Component': v[0] / 255, 'Green Component': v[1] / 255, 'Blue Component': v[2] / 255}
+
+
+def iterm_home(*profiles, guid='G0'):
+    """只放给定 iTerm profile 的 HOME（make_home 固定用东京夜 ANSI，识别不出别的主题）。"""
+    home = tempfile.mkdtemp(prefix='ccpills-theme-')
+    os.makedirs(os.path.join(home, 'Library', 'Preferences'))
+    with open(os.path.join(home, 'Library', 'Preferences', 'com.googlecode.iterm2.plist'), 'wb') as f:
+        plistlib.dump({'New Bookmarks': list(profiles), 'Default Bookmark Guid': guid}, f)
+    return home
+
+
+def run_theme(home, profile='P'):
+    """在 home 里跑一次 THEME=auto 的色板生成；没写出缓存时返回 None（异常被吞掉）。"""
+    out = os.path.join(home, 'auto-tint.cache')
+    env = dict(os.environ, HOME=home, TERM_PROGRAM='iTerm.app')
+    if profile is not None:
+        env['ITERM_PROFILE'] = profile
+    subprocess.run([sys.executable, PATH, 'auto', out, '12', 'tint', '4'],
+                   env=env, capture_output=True, check=False)
+    if not os.path.exists(out):
+        return None
+    with open(out) as f:
+        return f.read().split('\n')
+
+
 class ContrastMatrix(unittest.TestCase):
     def test_every_text_readable_on_every_pill(self):
         bad = []
@@ -145,6 +173,66 @@ class ContrastMatrix(unittest.TestCase):
         a, _ = palette(home, 'tokyo-glass')
         b, _ = palette(home, 'tokyo-glass')
         self.assertEqual(a, b)
+
+
+class AutoDetect(unittest.TestCase):
+    """THEME=auto 的终端识别：ITERM_PROFILE 选 profile、深浅色各取一套、plist 损坏回落 tokyonight。"""
+
+    def ansi_profile(self, theme_name, name='P', **extra):
+        """ANSI 1–6 用某主题的标准色，识别结果应当是该主题。"""
+        prof = {'Name': name, 'Guid': 'G-' + name,
+                'Background Color': comp('#101010'), 'Foreground Color': comp('#e0e0e0')}
+        for i, a in enumerate(theme.THEMES[theme_name]['ansi'], 1):
+            prof[f'Ansi {i} Color'] = comp(a)
+        prof.update(extra)
+        return prof
+
+    def test_plist_failure_falls_back_to_tokyonight(self):
+        """文档 1：读 plist 出任何异常（缺键、损坏）都回落 tokyonight——异常不能让整个色板
+        生成失败，否则状态栏一直无色。这里放一个缺 ANSI 键的 profile：取值时抛 KeyError。"""
+        home = iterm_home({'Name': 'P', 'Guid': 'G0',
+                           'Background Color': comp('#101010'), 'Foreground Color': comp('#e0e0e0')})
+        lines = run_theme(home)
+        self.assertIsNotNone(lines, 'plist 损坏时没写出色板（异常逃出了回落分支）')
+        self.assertEqual(lines[0], 'THEME=auto/12/tint/v4')
+        self.assertIn('NAME=tokyonight', lines)
+        self.assertIn('P_NEU', dict(l.split('=', 1) for l in lines if '=' in l))
+
+    def test_profile_matched_by_name_not_just_default(self):
+        """ITERM_PROFILE 指定的 profile 要按名字选中：删掉按名查找那行就只剩默认 profile，
+        dracula 的终端被当成默认的东京夜（主题识别退回默认而不是用户实际的 profile）。"""
+        home = iterm_home(self.ansi_profile('dracula', 'Dracula'), self.ansi_profile('nord', 'Default'),
+                          guid='G-Default')
+        self.assertIn('NAME=dracula', run_theme(home, profile='Dracula'),
+                      'ITERM_PROFILE=Dracula 没被选中，用了默认 profile')
+        # ITERM_PROFILE 对不上任何 profile 时取默认 profile（这里是 nord，与回落主题 tokyonight 不同，
+        # 才能区分「读了默认 profile」与「回落」）。不用「不设」：外层终端的 ITERM_PROFILE 会漏进来
+        self.assertIn('NAME=nord', run_theme(home, profile='NoSuchProfile'), '名字对不上时应当取默认 profile')
+
+    def test_separate_light_and_dark_colors(self):
+        """profile 分深浅色时按 macOS 当前外观取带 suffix 的那套：suffix 写成空串就永远读
+        共用的那套，浅色模式上会拿到深色（或反之）的 ANSI，识别出错误的主题。"""
+        light = self.ansi_profile('nord', 'Split', **{'Use Separate Colors for Light and Dark Mode': True})
+        for i in range(1, 7):                         # 共用的一套是 dracula 色
+            light[f'Ansi {i} Color'] = comp(theme.THEMES['dracula']['ansi'][i - 1])
+            light[f'Ansi {i} Color (Light)'] = comp(theme.THEMES['nord']['ansi'][i - 1])
+            light[f'Ansi {i} Color (Dark)'] = comp(theme.THEMES['catppuccin']['ansi'][i - 1])
+        home = iterm_home(light)
+        # 测试机上没有 AppleInterfaceStyle 时按浅色（defaults 读出空串 ≠ 'Dark'）
+        for want_dark, want_theme in ((False, 'nord'), (True, 'catppuccin')):
+            fake = os.path.join(home, 'fakebin')
+            os.makedirs(fake, exist_ok=True)
+            with open(os.path.join(fake, 'defaults'), 'w') as f:
+                f.write('#!/bin/sh\necho ' + ('Dark' if want_dark else 'Light') + '\n')
+            os.chmod(os.path.join(fake, 'defaults'), 0o755)
+            out = os.path.join(home, 'auto-tint.cache')
+            subprocess.run([sys.executable, PATH, 'auto', out, '12', 'tint', '4'],
+                           env=dict(os.environ, HOME=home, TERM_PROGRAM='iTerm.app', ITERM_PROFILE='Split',
+                                    PATH=fake + os.pathsep + os.environ['PATH']),
+                           capture_output=True, check=False)
+            with open(out) as f:
+                lines = f.read().split('\n')
+            self.assertIn(f'NAME={want_theme}', lines, ('深色' if want_dark else '浅色') + '模式取错了那一套 ANSI')
 
 
 if __name__ == '__main__':
