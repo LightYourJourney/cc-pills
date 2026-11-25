@@ -350,6 +350,21 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '安装/subagentStatusLine'), 'WARN')
 
+    def test_third_party_panel_is_skipped_when_ours_is_not_installed(self):
+        """面板没装、subagentStatusLine 配的是别的程序：与本项目无关，不能报 FAIL 让人换掉它；
+        install --check 也不算失败。命令里提到本项目脚本名（装漏了）仍是 FAIL。"""
+        self.sb.install(subagent=False, settings=False)
+        main = {'type': 'command', 'command': f'bash {self.sb.dest}/statusline-command.sh'}
+        for cmd, want, rc in (('node /opt/other-panel.js', 'SKIP', 0),
+                              (f'bash {self.sb.dest}/subagent-statusline.sh', 'FAIL', 1)):
+            self.sb.write_settings({'statusLine': main,
+                                    'subagentStatusLine': {'type': 'command', 'command': cmd}})
+            r = self.sb.run()
+            self.assertEqual(self.sb.status(r, '安装/subagentStatusLine'), want, cmd)
+            chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
+                                 text=True, env=self.sb.env)
+            self.assertEqual(chk.returncode, rc, f'{cmd}\n{chk.stdout}')
+
     # ── 3. 安装副本不一致 ───────────────────────────────────────────────
     def test_installed_copy_drift_warns(self):
         self.sb.healthy()
@@ -1197,17 +1212,19 @@ class Doctor(unittest.TestCase):
         self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')
 
     def test_quoted_and_query_credentials_are_scrubbed(self):
-        """DECISIONS 承诺「值可带引号」；URL query 里的 token 也不能漏。"""
+        """DECISIONS 承诺「值可带引号」；URL query 里的 token 也不能漏；Authorization 不带
+        scheme、值中间有 #（shell 里是字面字符）也要整段抹掉。"""
         self.sb.install()
         self.sb.write_settings({'statusLine': {
             'type': 'command',
             'command': 'Bearer "tok_secret"; api_key="low secret"; x-api-key: "key secret"; '
                        'Authorization: Basic "auth secret"; '
                        'curl "https://relay.example/x?token=SECRET987&key=SECRET888&page=2"; '
+                       'curl -H "Authorization: noscheme777"; API_KEY=abc#hashtail666; '
                        'bash /wrong/statusline-command.sh'}})
         r = self.sb.run()
         for s in ('tok_secret', 'low secret', 'key secret', 'auth secret',
-                  'SECRET987', 'SECRET888'):
+                  'SECRET987', 'SECRET888', 'noscheme777', 'hashtail666'):
             self.assertNotIn(s, r.stdout, f'{s!r} 泄露到诊断输出')
         self.assertIn('&page=', r.stdout, 'query 参数结构必须保留，只抹值')
         self.assertIn('/wrong/statusline-command.sh', r.stdout, '路径必须留下，否则无法修')

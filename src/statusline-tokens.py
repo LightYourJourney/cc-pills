@@ -171,6 +171,9 @@ def transcript_files(path):
     base = glob.escape(base)                   # 路径里的 [ ] * ? 不能当通配符（如 CLAUDE_CONFIG_DIR=~/claude[1]）
     subs = glob.glob(os.path.join(base, 'subagents', '*.jsonl'))
     subs += glob.glob(os.path.join(base, 'subagents', 'workflows', '*', '*.jsonl'))
+    # glob 也列出断链、名为 *.jsonl 的目录与无权读的文件：打开时一抛异常，整轮没有输出、
+    # 游标也不落盘，之后每轮如此，该会话永久不出数（同约束 6 那条「每轮再死一次」）
+    subs = [p for p in subs if os.path.isfile(p) and os.access(p, os.R_OK)]
     return [path] + sorted(subs)
 
 

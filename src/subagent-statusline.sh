@@ -96,7 +96,10 @@ prev='{}'
 # $(<file) 是内建读，不 fork；状态文件必须是本人的普通文件（不跟随符号链接）。
 [ "$state_ok" = 1 ] && [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] &&
   prev=$(< "$STATE")
-printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'
+# 必须恰好一个对象：-e 只看最后一个输出，「{} {}」能过 type 校验，随后 --argjson 拒收多值，
+# 渲染与合并的 jq 每轮都失败、状态永不修复
+is_obj() { printf '%s' "$1" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; }
+is_obj "$prev" || prev='{}'
 initprev=$prev                              # 锁内重读后与它比较：未变就省一次 jq
 
 # ── 渲染各行 ────────────────────────────────────────────────────────────
@@ -227,7 +230,7 @@ if [ "$got" = 1 ]; then
   trap release_lock EXIT
   prev='{}'
   [ -f "$STATE" ] && [ ! -L "$STATE" ] && [ -O "$STATE" ] && prev=$(< "$STATE")
-  [ "$prev" = "$initprev" ] || { printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1 || prev='{}'; }
+  [ "$prev" = "$initprev" ] || is_obj "$prev" || prev='{}'
   new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
     now as $n
     | ($prev | with_entries(select(
@@ -241,6 +244,7 @@ if [ "$got" = 1 ]; then
            then .[$i] = {t: $n, k: ($t.tokenCount // 0)}
            else . end)
   ' 2>/dev/null)
+  case $new in *$'\n'*) new="" ;; esac       # stdin 违约给了多个对象：多行结果不能落盘
   if [ -n "$new" ]; then
     tmp=$(mktemp "$sdir/.claude-sl-panel.XXXXXX" 2>/dev/null)   # .claude-sl-*：残留由主栏每日清理收走
     if [ -z "$tmp" ]; then mark_fail tmp

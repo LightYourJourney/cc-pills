@@ -53,12 +53,16 @@ keycheck statusLine statusline-command.sh FAIL
 
 sub_installed=0
 [ -f "$DEST/subagent-statusline.sh" ] && sub_installed=1
-sub_cfg=0
+sub_cfg=0; sub_cmd=""
 if [ "$SJ_OK" = 1 ]; then
-  [ -n "$(jq -r '.subagentStatusLine.command // empty' "$sj" 2>/dev/null)" ] && sub_cfg=1
+  sub_cmd=$(jq -r '.subagentStatusLine.command // empty' "$sj" 2>/dev/null)
+  [ -n "$sub_cmd" ] && sub_cfg=1
 fi
 if [ "$sub_installed" = 0 ] && [ "$sub_cfg" = 0 ]; then
   res SKIP 安装/subagentStatusLine "面板脚本未安装、也未配置"
+elif [ "$sub_installed" = 0 ] && { points_to "$sub_cmd" subagent-statusline.sh "$DEST"; [ $? = 1 ]; }; then
+  # 配的是别的面板程序（命令里根本没有本项目的脚本名）：与本项目无关，不是故障
+  res SKIP 安装/subagentStatusLine "面板脚本未安装；subagentStatusLine 配置的是别的程序"
 else
   keycheck subagentStatusLine subagent-statusline.sh "$([ "$sub_installed" = 1 ] && echo WARN || echo FAIL)"
 fi

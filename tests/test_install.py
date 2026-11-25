@@ -118,6 +118,25 @@ class Install(unittest.TestCase):
         r = self.run_sh('--check', settings=s, env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def points_to(self, cmd, dest):
+        r = subprocess.run(['bash', '-c', '. "$1"; points_to "$2" statusline-command.sh "$3"; echo $?',
+                            '_', os.path.join(REPO, 'tools', 'lib', 'points_to.sh'), cmd, dest],
+                           capture_output=True, text=True, env=self.env, timeout=30)
+        return int(r.stdout)
+
+    def test_home_shortcuts_must_name_the_installed_file(self):
+        """$HOME/.claude/ 与 ~/.claude/ 后面必须紧跟脚本名：子目录里的同名脚本、前缀黏住的
+        文件名、复合命令里的另一个脚本跑的都不是安装副本（克隆在 ~/.claude/cc-pills 时会误判）。"""
+        home_dest = os.path.join(self.d, '.claude')
+        for cmd in ('bash $HOME/.claude/cc-pills/src/statusline-command.sh',
+                    'bash ~/.claude/backup/statusline-command.sh',
+                    'bash $HOME/.claude/my-statusline-command.sh',
+                    'bash $HOME/.claude/statusline-tokens.py; bash /opt/x/statusline-command.sh'):
+            self.assertEqual(self.points_to(cmd, home_dest), 2, cmd)
+        self.assertEqual(self.points_to('bash $HOME/.claude/statusline-command.sh', home_dest), 0)
+        # 设了 CLAUDE_CONFIG_DIR=/别处 时，$HOME/.claude/… 跑的是默认目录里的另一份
+        self.assertEqual(self.points_to('bash $HOME/.claude/statusline-command.sh', self.dest), 2)
+
     def test_with_conf_does_not_freeze_default_steps(self):
         r = self.run_sh('--with-conf')
         self.assertEqual(r.returncode, 0, r.stderr)

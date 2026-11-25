@@ -156,8 +156,8 @@ check)
     points_to "$cmd" subagent-statusline.sh "$DEST"; st=$?
     if [ "$st" != 1 ]; then
       echo "  settings.json 指向面板脚本，但文件未安装"; rc=1
-    else
-      echo "  settings.json 的 subagentStatusLine 未指向 subagent-statusline.sh"; rc=1
+    else      # 面板脚本没装、配的是别的程序：与本项目无关，不算失败
+      echo "  settings.json 的 subagentStatusLine 配置的是别的程序（面板脚本未安装）"
     fi
   fi
   exit "$rc"

@@ -29,7 +29,7 @@ points_to() {  # points_to <command> <脚本名> <DEST> → 0 明确指向 / 2 �
   esac
   if [ "$d" = "$HOME/.claude" ]; then
     case "$CLEAN" in
-      *'$HOME/.claude/'*"$2"*|*'~/.claude/'*"$2"*) return 0 ;;   # 默认目录的等价写法
+      *'$HOME/.claude/'"$2"*|*'~/.claude/'"$2"*) return 0 ;;   # 默认目录的等价写法
     esac
   fi
   case "$CLEAN" in *"$2"*) return 2 ;; esac              # 只是文件名相同，路径不明

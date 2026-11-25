@@ -491,6 +491,19 @@ class Facts(unittest.TestCase):
             self.assertEqual(facts(sb)[0]['palette_usable'], '0')
             self.assertEqual(facts(sb, {'COLORTERM': '', 'TERM': 'dumb'})[0]['color_depth'], '0')
 
+    def test_theme_cache_key_is_distinct_per_profile(self):
+        """色板按 profile 背景算：键有损（非 ASCII 与空格都换成 _）时「深色」「浅色」共用一份，
+        浅色会话用上深色的色板。"""
+        with Sandbox() as sb:
+            names = ['深色', '浅色', 'Dark Mode', 'Dark_Mode', 'Dark/Mode']
+            paths = [facts(sb, {'TERM_PROGRAM': 'iTerm.app', 'ITERM_PROFILE': n})[0]['theme_cache']
+                     for n in names]
+            self.assertEqual(len(set(paths)), len(names), dict(zip(names, paths)))
+            for p in paths:
+                self.assertEqual(os.path.dirname(p), sb.tmp, p)
+            ctl = facts(sb, {'TERM_PROGRAM': 'iTerm.app', 'ITERM_PROFILE': 'a\nb'})[0]['theme_cache']
+            self.assertNotIn('\n', ctl)
+
     def test_relay_judgement_follows_base_url(self):
         with Sandbox() as sb:
             for url, want in (('', '0'), ('https://api.anthropic.com', '0'),

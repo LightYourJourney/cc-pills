@@ -160,6 +160,26 @@ class Counting(Base):
         o = self.fields(self.run_tok(tp, 'cg').stdout)
         self.assertEqual([o[IDX['in']], o[IDX['out']], o[IDX['msgs']]], ['18', '9', '3'])
 
+    def test_unopenable_subagent_path_is_skipped(self):
+        """glob 列出的断链 / 名为 *.jsonl 的目录 / 无权读的文件打不开：不能让整轮中止、
+        游标不落盘——那样每轮都死在同一处，该会话永久不出数。"""
+        if os.getuid() == 0:
+            self.skipTest('root 读得了 0 权限文件')
+        tp = self.write('u.jsonl', [line('m1', 10, 5, 'end_turn')])
+        self.write('u/subagents/agent-a.jsonl', [line('s1', 7, 3, 'end_turn')])
+        os.symlink('/nonexistent', os.path.join(self.d, 'u/subagents/agent-b.jsonl'))
+        os.makedirs(os.path.join(self.d, 'u/subagents/agent-c.jsonl'))
+        locked = self.write('u/subagents/agent-d.jsonl', [line('s2', 1, 1, 'end_turn')])
+        os.chmod(locked, 0)
+        try:
+            for _ in range(2):
+                r = self.run_tok(tp, 'un')
+                o = self.fields(r.stdout)
+                self.assertTrue(o, r.stderr)
+                self.assertEqual([o[IDX['in']], o[IDX['out']]], ['17', '8'])
+        finally:
+            os.chmod(locked, 0o600)
+
     def test_output_is_versioned_key_value_lines(self):
         """首行是调用方传入的格式版本（版本号只在 bash 一处维护），其后每行「键=值」；
         拿不到的指标整行不写，不用占位符。"""
@@ -413,6 +433,21 @@ class Relay(Base):
         st = self.state('r1')
         self.assertEqual(st['trk']['cost']['ep'], 'ledger')
         self.assertLess(st['trk']['cost']['lv'], 100)
+
+    def test_session_logged_message_is_not_counted_twice(self):
+        """会话日志已入账（request_id = 'session:<message.id>'）的消息要移出未入账集合，
+        否则账本与自算尾部各算一次（见文档 4）。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        c = sqlite3.connect(db)
+        c.execute("insert into proxy_request_logs values('session:m1', 'r1', '_session', 'claude', 'session_log', "
+                  "200, ?, 1000, 100, 0, 0, '0.0075')", (now - 120,))
+        c.commit()
+        c.close()
+        tp = self.write('dd.jsonl', [line('m1', 1000, 100, 'end_turn', ts=iso_utc(now - 120))])
+        out = self.fields(self.run_tok(tp, 'r1', f'relay={db}').stdout)
+        self.assertAlmostEqual(float(out[IDX['rcost']]), 30.0075, places=6, msg='已入账的消息又按自算尾部计了一次')
+        self.assertNotIn('m1', self.state('r1')['unl'])
 
     def test_malformed_relay_fields_do_not_stall_counting(self):
         """中转站模式多读 model 与 cache_creation 两个字段，形状不对同样只当没有：

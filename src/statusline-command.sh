@@ -261,12 +261,37 @@ fi
 # 绝对路径定位——不依赖 CLAUDE_CONFIG_DIR，也不怕被相对路径调用后 cd 走（后台刷新会 cd 到工作目录）
 SELF=${BASH_SOURCE[0]}; [ "${SELF#/}" = "$SELF" ] && SELF="$PWD/$SELF"
 HERE=${SELF%/*}
+
+# 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
+# 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
+# 终审：此前直接用全路径，超长目录的 git 缓存永远写不进去，每次渲染都同步跑 git）。
+# 色板键也用它，所以定义在 --facts 之前，保持 bash 3.2 可跑
+pathkey() {
+  local k=$1 h i c
+  k=${k//_/_u}; k=${k// /_s}; k=${k//\//_d}
+  local LC_ALL=C
+  if [ "${#k}" -gt 180 ]; then
+    h=-3750763034362895579                       # FNV-1a 64 偏移基（0xcbf29ce484222325）
+    for (( i = 0; i < ${#k}; i++ )); do
+      printf -v c '%d' "'${k:i:1}"; [ "$c" -lt 0 ] && c=$((c + 256))
+      h=$(( (h ^ c) * 1099511628211 ))
+    done
+    c=${k: -60}; c=${c//[^A-Za-z0-9_]/}
+    printf -v PK 'h%016x_%s' "$h" "$c"
+  else
+    PK=$k
+  fi
+}
+
 if [ "${TERM_PROGRAM:-}" = iTerm.app ] || [ "${LC_TERMINAL:-}" = iTerm2 ]; then   # tmux 里也有 LC_TERMINAL
   PKEY="iterm-${ITERM_PROFILE:-default}"
 else
   PKEY="term-${TERM_PROGRAM:-other}"     # 非 iTerm 不读 profile，同一种终端共用一份
 fi
-PKEY=${PKEY//[^A-Za-z0-9_-]/_}
+# 色板按 profile 背景算，键必须一一对应：此前把非 [A-Za-z0-9_-] 一律换成 _，「深色」「浅色」、
+# 「Dark Mode」「Dark_Mode」落到同一个文件，谁先刷新就用谁的颜色。改用 pathkey 的可逆转义，
+# 只剔除控制字符（不能进文件名与 --facts 的行）
+pathkey "${PKEY//[[:cntrl:]]/}"; PKEY=$PK
 THEME_CACHE="${SLT}/claude-sl-theme-${PKEY}.cache"
 # 色板缓存首行应有的样子；带格式版本 v$PALETTE_V，旧版脚本生成的缓存首行不符即重算
 THEME_WANT="THEME=${THEME}/${PILL_CHROMA}/${PILL_STYLE}/v${PALETTE_V}"
@@ -350,25 +375,6 @@ if [ "${1:-}" = --facts ]; then
   exit 0
 fi
 
-# 路径 → 缓存文件名用的键 → 全局 PK。可逆转义（_ → _u、空格 → _s、/ → _d），不同路径不撞名；
-# 超过 180 字节（APFS 文件名上限 255 字节）改为 FNV-1a 64 位哈希 + 末段可读部分（2026-10-28
-# 终审：此前直接用全路径，超长目录的 git 缓存永远写不进去，每次渲染都同步跑 git）
-pathkey() {
-  local k=$1 h i c
-  k=${k//_/_u}; k=${k// /_s}; k=${k//\//_d}
-  local LC_ALL=C
-  if [ "${#k}" -gt 180 ]; then
-    h=-3750763034362895579                       # FNV-1a 64 偏移基（0xcbf29ce484222325）
-    for (( i = 0; i < ${#k}; i++ )); do
-      printf -v c '%d' "'${k:i:1}"; [ "$c" -lt 0 ] && c=$((c + 256))
-      h=$(( (h ^ c) * 1099511628211 ))
-    done
-    c=${k: -60}; c=${c//[^A-Za-z0-9_]/}
-    printf -v PK 'h%016x_%s' "$h" "$c"
-  else
-    PK=$k
-  fi
-}
 
 # git 三件套 → "repo_root \t branch \t 状态旗标"（空字段用 "-" 占位，约束 5）；
 # 写缓存时后台刷新再追加第 4 段「写入时刻」（GIT_TTL 判定用）

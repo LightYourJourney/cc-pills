@@ -277,6 +277,24 @@ class SubagentState(unittest.TestCase):
             self.assertEqual(sorted(json.load(f)), ['a', 'b', 'c', 'd', 'e'])
         self.assertFalse(os.path.exists(st + '.fail'), '写回被记成失败')
 
+    def test_multi_value_state_is_treated_as_empty(self):
+        """状态文件里有多个 JSON 值（「{} {}」）能骗过只看最后一个输出的 type 校验，随后
+        --argjson 拒收多值：此前每轮零输出、记 merge，状态永不修复。stdin 违约给了两个对象时，
+        多行的合并结果也不能落盘（下一轮就是这种坏状态）。"""
+        st = os.path.join(self.d, 'mv.json')
+        with open(st, 'w') as f:
+            f.write('{} {}')
+        tasks = {'columns': 120, 'tasks': [{'id': 'a', 'status': 'running', 'description': 'work'}]}
+        self.assertEqual([row['id'] for row in self.panel(tasks, st)], ['a'])
+        with open(st) as f:
+            self.assertEqual(sorted(json.load(f)), ['a'])
+        self.assertFalse(os.path.exists(st + '.fail'))
+        two = json.dumps(tasks) + json.dumps({'tasks': [{'id': 'b', 'status': 'running'}]})
+        subprocess.run(['bash', SCRIPT], input=two, capture_output=True, text=True,
+                       env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60)
+        with open(st) as f:
+            json.load(f)                                  # 仍是单个 JSON 值
+
     def test_non_numeric_columns_falls_back_to_default_width(self):
         """columns 不是数字时按默认宽度 120 渲染，而不是一行都不出。"""
         tasks = {'columns': '100', 'tasks': [{'id': 'a', 'status': 'running', 'description': 'work'}]}
