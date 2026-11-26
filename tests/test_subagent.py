@@ -18,6 +18,15 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO, 'src', 'subagent-statusline.sh')
 
 
+NARROW = {0x2026, 0x2191, 0x2193, 0x21BA, 0x21BB, 0x21E1, 0x21E3}
+
+
+def w(s):
+    """终端显示宽度：与脚本的 dw 同一模型（≤ 0x7FF 的码点占 1 列，3/4 字节字符占 2 列，
+    已知按 1 列显示的 3 字节符号除外）。"""
+    return sum(1 if ord(c) <= 0x7FF or ord(c) in NARROW else 2 for c in s)
+
+
 def task(i):
     return json.dumps({'columns': 120, 'tasks': [{
         'id': i, 'name': 'agent', 'status': 'running', 'description': 'work',
@@ -387,13 +396,44 @@ class SubagentState(unittest.TestCase):
         p = rows['p']
         self.assertTrue(p.startswith('reviewer 审查'), p)
         self.assertIn('…', p, '超宽描述没有截断')
-        self.assertLessEqual(len(p), 120)
+        self.assertLessEqual(w(p), 120, '行宽按码点算会超宽')
         self.assertRegex(p, r'— opus-5-5 · high · tok 250k ↑[45]\.\dk/s · ctx 剩75% · 2m0[5-9]s$')
         q = rows['q']
         self.assertTrue(q.startswith('done  — '), q)
         self.assertIn('ctx 剩10%⚠', q)
         self.assertTrue(q.endswith(' [completed]'), q)
         self.assertNotRegex(q, r'\dm\d\ds', '非运行态不应显示时长')
+
+    def test_cjk_description_fits_the_row(self):
+        """中文描述按显示宽度截断。码点数只有实际列数的一半，按码点分预算会让整行超宽，
+        面板于是把行尾的 tok / ctx 剩余 / 时长裁掉（80 列实测超 29 列）。"""
+        st = os.path.join(self.d, 'w.json')
+        for cols in (60, 80, 120):
+            tasks = {'columns': cols, 'tasks': [
+                {'id': 'c', 'name': 'reviewer', 'status': 'running',
+                 'description': '审查这个模块的并发写与残锁恢复逻辑' * 10,
+                 'model': 'claude-opus-5-5', 'effort': 'high',
+                 'startTime': (time.time() - 125) * 1000,
+                 'tokenCount': 250000, 'contextWindowSize': 1000000}]}
+            out = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True,
+                                 text=True, env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st),
+                                 timeout=60).stdout
+            row = json.loads(out.splitlines()[0])['content']
+            self.assertLessEqual(w(row), cols, f'{cols} 列时超宽：{row!r}')
+            self.assertIn('ctx 剩75%', row, '行尾的 ctx 段不见了')
+
+    def test_combining_marks_do_not_double_count(self):
+        """2 字节的拉丁重音字符（é、ü）在终端里占 1 列，不能按宽字符算成 2。"""
+        st = os.path.join(self.d, 'e.json')
+        tasks = {'columns': 100, 'tasks': [
+            {'id': 'e', 'status': 'running', 'description': 'café Zürich ' * 20,
+             'model': 'm', 'tokenCount': 1000, 'contextWindowSize': 1000000}]}
+        out = subprocess.run(['bash', SCRIPT], input=json.dumps(tasks), capture_output=True,
+                             text=True, env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st),
+                             timeout=60).stdout
+        row = json.loads(out.splitlines()[0])['content']
+        self.assertLessEqual(w(row), 100)
+        self.assertGreaterEqual(w(row), 94, '把 2 字节字符按宽字符算，行没填满就提前截断了')
 
     def test_default_state_path_is_per_user(self):
         tmp = os.path.join(self.d, 'T')

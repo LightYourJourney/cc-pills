@@ -13,6 +13,10 @@
 #
 # 契约（来源：code.claude.com/docs/en/statusline · Subagent status lines）
 # ----------------------------------------------------------------------
+# ⚠️ 上游已弃用这个设置键：Claude Code 2.1.330–2.1.332 的二进制里有
+#   「subagentStatusLine is deprecated in favor of mods and will stop working in a
+#   future release」，每个会话都会提示一次，官方文档也已删掉这一节。替代品是 mod 的
+#   AgentRow 渲染点（同样的数据 + 面板实测的 columns）。在决定迁移前本脚本继续维护。
 #   - stdin：每个刷新 tick 一个 JSON 对象：columns（行可用宽度）+ tasks[]，
 #     每个 task 含 id/name/type/status/description/label/startTime/model/
 #     effort/contextWindowSize/tokenCount/tokenSamples/cwd
@@ -22,10 +26,10 @@
 # 字段格式（从 Claude Code 二进制核实，版本随升级可能变化）
 # ----------------------------------------------------------------------
 #   - startTime：epoch 毫秒（任务创建处 `startTime:Date.now()`）
-#   - tokenSamples：纯数字数组（每 tick 推入当时 tokenCount，环形缓冲上限
-#     NWm=16，面板 tick 常量 VHi=2500ms）。元素无时间戳，换算速率需假设
-#     tick 间隔——违背「不显示推算值」原则，故【不使用】；速率改为脚本
-#     自记状态实测：上次运行的 (时刻, tokenCount) 存进状态文件，本次求差。
+#   - tokenSamples：纯数字数组（最后 16 次 tokenCount，文档称「约五秒一次」）。
+#     元素无时间戳，换算速率要假设 tick 间隔——违背「不显示推算值」原则，故
+#     【不使用】；速率改为脚本自记状态实测：上次运行的 (时刻, tokenCount)
+#     存进状态文件，本次求差。
 #
 # ⚠️ 估算值声明（与主状态栏脚本同一原则：字段缺失/不可靠即整段隐藏）
 # ----------------------------------------------------------------------
@@ -52,7 +56,8 @@
 # --------------------------
 #   1. jq 缺失、输入/状态解析失败：静默不输出或按空状态处理，绝不输出错误
 #   2. 末尾 true 保证退出码恒 0
-#   3. 截断按 codepoint 计，CJK 实占 2 列按 1 计——已知偏差，面板会兜底裁剪
+#   3. 截断按显示宽度算（1/2 字节 UTF-8 字符 1 列，3/4 字节 2 列，与主栏 dw() 同模型）；
+#      emoji 组合序列仍可能被切开（不产生乱码，只是显示残缺）
 #
 # 配套设置键：subagentStatusLine（用户级 settings.json + CC Switch 共享层）
 #
@@ -104,6 +109,25 @@ initprev=$prev                              # 锁内重读后与它比较：未�
 
 # ── 渲染各行 ────────────────────────────────────────────────────────────
 printf '%s' "$input" | jq -c --argjson prev "$prev" '
+  # 显示宽度：与主栏 dw() 同一模型——1/2 字节 UTF-8 字符各占 1 列，3/4 字节占 2 列。
+  # jq 的 length 数的是码点，中文与 emoji 只算 1，按它分预算会让中文描述超宽，
+  # 面板于是把行尾（tok、ctx 剩余、时长）裁掉。
+  # 已知按 1 列显示的 3 字节符号（与主栏 dw() 里被剔除的那一组同源）
+  def narrow: . == 8230 or . == 8593 or . == 8595 or . == 8634 or . == 8635
+              or . == 8673 or . == 8675;
+  def cw: if narrow then 1 elif . > 2047 then 2 else 1 end;
+  def dw: [explode[] | cw] | add // 0;
+  def cut($n):                                # 截到显示宽度 ≤ $n（含截断符 …）
+    if dw <= $n then .
+    elif $n < 2 then ""
+    else (reduce explode[] as $c ({s: "", w: 0};
+            if .w > $n then .
+            else ([$c] | implode) as $ch | ($c | cw) as $w
+              | if .w + $w > $n - 1 then {s: .s, w: $n + 1}
+                else {s: (.s + $ch), w: (.w + $w)} end
+            end)
+          | .s) + "…"
+    end;
   (.columns | if type == "number" then . else 120 end) as $cols
   | (.tasks // [])[]
   # 逐行兜底：某个 task 的字段类型不对（tokenCount 是字符串、description 是数字……）只让那一行
@@ -163,18 +187,16 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
        (if $durS != null then $durS else empty end)
      ] | join(" · ")) as $tail
   | (if $st != "" and $st != "running" then " [\($st)]" else "" end) as $stTag
+  | (if $name != "" then "\($name) " else "" end) as $head
+  | (if $tail != "" then "  — " + $tail else "" end) as $sepTail
 
-  # ── 描述按剩余宽度截断（截断符 …）────────────────────────────────────
-  | ($cols - ($name | length) - ($tail | length) - ($stTag | length) - 5) as $budget
-  | (if $desc == "" or $budget < 4 then ""
-     elif ($desc | length) > $budget then ($desc[0:($budget - 1)] + "…")
-     else $desc end) as $desc2
+  # ── 描述按剩余显示宽度截断（截断符 …）────────────────────────────────
+  # 预算用各段实际拼出的字符串算，不再用魔法数（— 在 dw 里就算 2 列）；$tail 里有
+  # 「ctx 剩85%」这样的中文，按码点算预算会偏窄
+  | ($cols - ($head | dw) - ($sepTail | dw) - ($stTag | dw)) as $budget
+  | (if $desc == "" or $budget < 4 then "" else ($desc | cut($budget)) end) as $desc2
 
-  | { id: .id,
-      content: ((if $name != "" then "\($name) " else "" end)
-                + $desc2
-                + (if $tail != "" then "  — " + $tail else "" end)
-                + $stTag) }
+  | { id: .id, content: ($head + $desc2 + $sepTail + $stTag) }
   ) catch empty
 ' 2>/dev/null
 
