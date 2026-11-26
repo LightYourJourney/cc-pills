@@ -184,6 +184,14 @@ class Robustness(unittest.TestCase):
             r = sb.render(d, raw=True)
             self.assertEqual((r.returncode, r.stderr), (0, ''))
             self.assertNotIn('cache', strip(r.stdout))
+            # 整数写法（不是 1e+19）：jq 1.7 保留整数精度，原样打出 19 位剩余秒数，
+            # 旧守卫只挡指数写法，[ -ge ] 直接报错；1.8 起改用指数写法，两种都不能出错
+            for huge in (10 ** 19, 10 ** 20):
+                d['prompt_cache'] = {'warm': True, 'caching_observed': True, 'ttl': '1h',
+                                     'expires_at': huge}
+                r = sb.render(d, raw=True)
+                self.assertEqual((r.returncode, r.stderr), (0, ''), f'expires_at={huge!r} 写了 stderr')
+                self.assertNotIn('cache', strip(r.stdout), f'expires_at={huge!r} 显示了荒唐的倒计时')
 
     def test_config_last_line_without_newline(self):
         """很多编辑器不补文件末尾的换行；最后一行配置不能因此被丢掉。"""

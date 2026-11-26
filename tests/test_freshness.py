@@ -66,6 +66,17 @@ class Freshness(unittest.TestCase):
             self.assertEqual(r.stderr, '')
             self.assertNotIn('m517', strip(r.stdout))
 
+    def test_future_ts_is_stale_not_fresh(self):
+        """时钟回拨留下的未来时间戳按「很旧」处理：否则 now - ts 为负，缓存永远「新鲜」，
+        陈旧值在回拨期间一直冒充当前值。"""
+        with Sandbox() as sb:
+            sb.write_tok('fu', **{'in': '172M'}, rate='$99/h', msgs='517')
+            with open(os.path.join(sb.tmp, 'claude-sl-tok-fu.cache.ts'), 'w') as f:
+                f.write(f'{int(time.time()) + 3600}\n')
+            r = sb.render(sb.stdin('fu', q5=20), raw=True)
+            self.assertEqual(r.stderr, '')
+            self.assertNotIn('m517', strip(r.stdout))
+
     def test_just_under_100_is_not_exhausted(self):
         """99.6% 还没用尽：不能四舍五入成 100 再显示「用尽」；满 100 才算。"""
         with Sandbox() as sb:

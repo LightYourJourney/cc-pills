@@ -115,7 +115,8 @@
 #      会静默吞掉裸字形
 #   8. 渲染与宽度计算全在当前 shell 内用全局变量完成，不可 $(...) 取值：子 shell 改不到
 #      父 shell 的数组，且每次 fork 都是开销
-#   9. 后台刷新按会话加 mkdir 锁（原子），超过 LOCK_STALE 秒视为残锁清除
+#   9. 后台刷新按会话加 mkdir 锁（原子），超过 LOCK_STALE 秒视为残锁清除；锁目录里记
+#      属主，退出时只删自己那把——否则刷新超时被接管后，先退出的进程会把新锁删掉
 #  10. token 助手输出为空（未追平 / 异常）时保留旧缓存不覆盖，否则该项闪烁消失
 #  11. 色板缓存缺失或与 THEME 不符时整行无色输出，不在同步路径算颜色
 #  12. 可移植：macOS 直接用 /usr/bin/stat -f；其余先试 GNU（-c）再试 BSD（-f）——GNU 的 -f 是
@@ -321,6 +322,9 @@ fi
 # 缓存读取前确认：是普通文件、可读、不是符号链接、且属于当前用户。跨用户预置的同名
 # 文件一律不读（-f / -r / -L / -O 都是内建，不 fork）。
 cache_ok() { [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
+# not_future <时间戳> <变量名>：落在未来的时间戳（时钟回拨遗留）按 0 = 很旧算。所有
+# 节流都以「now - 时间戳」判新旧，不夹的话回拨多久，缓存、清理、状态页与残锁就冻结多久。
+not_future() { if [ "${1:-0}" -gt "$now" ]; then printf -v "$2" '%s' 0; else printf -v "$2" '%s' "${1:-0}"; fi; }
 # put <目标> <临时名> <内容>：同目录临时文件 + mv 原子替换，失败不留残渣。临时名统一落在
 # .claude-sl-* 下，被杀进程的遗留由每日清理按这个前缀收走。
 put() {
@@ -446,29 +450,39 @@ if [ "${1:-}" = "--refresh" ]; then
   # 路径会一直按「无时间戳 = 新鲜」展示，长期失效时等于没修。
   tokf0="${SLT}/claude-sl-tok-${skey}.cache"
   if cache_ok "$tokf0" && [ ! -e "${tokf0}.ts" ]; then
-    m=$(mtime "$tokf0"); put "${tokf0}.ts" "tokts-${skey}" "${m:-$now}"
+    m=$(mtime "$tokf0"); not_future "${m:-$now}" m; put "${tokf0}.ts" "tokts-${skey}" "$m"
   fi
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
+  owner="$$.${RANDOM:-0}"                  # 本轮刷新的属主标记，退出时只删自己的锁
   if ! mkdir "$lock" 2>/dev/null; then
     # 普通文件 / 符号链接不是进行中的刷新锁：清掉重试，否则后台会永久退出。
-    # 目录仍按 mtime 判残锁、只用 rmdir——不抢可能还活着的持有者。
+    # 目录仍按 mtime 判残锁、清掉 owner 后 rmdir——不抢可能还活着的持有者。
     if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
       rm -f "$lock" 2>/dev/null
     else
-      lt=$(mtime "$lock"); lt=${lt:-$now}
+      lt=$(mtime "$lock"); [ -n "$lt" ] || lt=$now; not_future "$lt" lt
       [ $((now - lt)) -lt "$LOCK_STALE" ] && exit 0
-      rmdir "$lock" 2>/dev/null
+      rm -f "$lock/owner" 2>/dev/null; rmdir "$lock" 2>/dev/null
     fi
     mkdir "$lock" 2>/dev/null || exit 0
   fi
-  trap 'rmdir "$lock" 2>/dev/null' EXIT
+  printf '%s\n' "$owner" > "$lock/owner" 2>/dev/null
+  # 刷新超过 LOCK_STALE 被别的进程接管后，无条件 rmdir 会把新锁删掉，之后同一会话能
+  # 并发跑好几轮刷新（实测 3 轮）。所以只删属主仍是自己那一把。
+  release_lock() {
+    local o=""; read -r o 2>/dev/null < "$lock/owner"
+    [ "$o" = "$owner" ] || return 0
+    rm -f "$lock/owner" 2>/dev/null; rmdir "$lock" 2>/dev/null
+  }
+  trap release_lock EXIT
 
   # 色板：缺失 / THEME、PILL_CHROMA 或 PILL_STYLE 改过 / 超过 THEME_TTL 时重算
   tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
-  tm=$(mtime "$THEME_CACHE"); tage=$(( now - ${tm:-0} ))
+  tm=$(mtime "$THEME_CACHE"); not_future "$tm" tm; tage=$(( now - tm ))
   failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
+  not_future "$ft" ft
   # 首行不符（含格式版本）立即重算，不等 THEME_TTL；失败后 THEME_TTL 内不再重跑。成功 = python
   # 正常退出且写出的首行相符——只看首行的话，「首行相符、只是过期」的旧色板失败了也算成功，
   # 退避标记被删掉，之后每轮刷新都重跑一次 python
@@ -493,6 +507,7 @@ if [ "${1:-}" = "--refresh" ]; then
   if cache_ok "$gc"; then
     groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
     case "$gts" in ''|*[!0-9]*) gts=0 ;; *) gts=$((10#$gts)) ;; esac
+    not_future "$gts" gts
     if [ $((now - gts)) -lt "$GIT_TTL" ]; then
       need=0
       # -nt / -ot 在 bash 4.2 只比较到秒：同一秒内的切换会被当成「没变」而沿用旧缓存
@@ -513,6 +528,7 @@ if [ "${1:-}" = "--refresh" ]; then
     lsig=""; lts=0
     cache_ok "$skipf" && IFS=$'\t' read -r lsig lts < "$skipf"
     case "$lts" in ''|*[!0-9]*) lts=0 ;; *) lts=$((10#$lts)) ;; esac
+    not_future "$lts" lts
     if [ "$sig" != "$lsig" ] || [ $((now - lts)) -ge "$TOK_MIN_GAP" ]; then
       args=("th=${WARN_AT},${BAD_AT}" "fmt=${TOK_V}")
       [ "$costraw" != "-" ] && args+=("cost=${costraw}")
@@ -534,6 +550,7 @@ if [ "${1:-}" = "--refresh" ]; then
   try=${SLT}/claude-sl-status.try
   last=0; cache_ok "$try" && read -r last < "$try"
   case "$last" in ''|*[!0-9]*) last=0 ;; *) last=$((10#$last)) ;; esac
+  not_future "$last" last
   if [ "$STATUS_PAGE" = on ] && [ $((now - last)) -ge "$STATUS_TTL" ]; then
     put "$try" status-try "$now"
     ind=$(curl -s -m 4 "$STATUS_URL" 2>/dev/null | jq -r '.status.indicator // empty' 2>/dev/null)
@@ -548,8 +565,11 @@ if [ "${1:-}" = "--refresh" ]; then
   # 匹配，与下面会话状态的 now-30*86400 差一天。
   if [ -z "${CLAUDE_SL_TMP:-}" ] && [ -w "$SLT" ]; then
     pstamp="${SLT}/claude-sl-prune.stamp"
-    pst=$(mtime "$pstamp"); pst=${pst:-0}
+    pst=$(mtime "$pstamp"); pst=${pst:-0}; not_future "$pst" pst
     if [ $((now - pst)) -ge "$PRUNE_GAP" ]; then
+      # 先写节流戳再清：清理本身可能要十几秒（上千个超龄状态文件），期间别的会话刷新
+      # 看到旧戳会把整轮再跑一遍（实测 3 个会话并发时跑了 3 遍）。
+      put "$pstamp" prune "$now"
       find "$SLT" -mindepth 1 -maxdepth 1 -type f \
         \( -name 'claude-sl-tok-*.cache' -o -name 'claude-sl-tok-*.cache.ts' \
            -o -name 'claude-sl-skip-*' -o -name 'claude-sl-git-*.cache' \
@@ -558,6 +578,10 @@ if [ "${1:-}" = "--refresh" ]; then
       # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后删掉（只删空目录）。find 判完年龄到删除
       # 之间若恰有那个会话恢复、刚接管残锁，新锁会被删、该会话可能并发跑两次刷新——窗口只有毫秒，
       # 且刷新幂等（见头部架构）
+      # 崩溃在刷新中途的锁里留着 owner 文件，目录因此不再「空」：同阈值先清掉它，
+      # 下一轮清理才能按空目录收走
+      find "$SLT" -mindepth 1 -maxdepth 2 -type f -path '*/claude-sl-lock-*/owner' \
+        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
       find "$SLT" -mindepth 1 -maxdepth 1 -type d -empty -name 'claude-sl-lock-*' \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -delete 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
@@ -573,7 +597,6 @@ if [ "${1:-}" = "--refresh" ]; then
         done <<< "$paths"
         [ "$keep" = 0 ] && rm -f "$f"
       done
-      put "$pstamp" prune "$now"
     fi
   fi
   exit 0
@@ -628,7 +651,9 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     (if $p.caching_observed != true or ($p.expires_at | num) == null then "-"
      elif $p.expires_at <= $now then "cold"
      elif $p.warm != true then "-"
-     else "\($p.expires_at - $now | floor) \(if $p.ttl == "1h" then 3600 else 300 end)" end),
+     # 剩余秒数封顶一年：expires_at 离谱（1e19）时 jq 会打出 19 位整数，bash 的
+     # [ -ge ] 超出 64 位范围直接报错，整条 cache 项连同 stderr 一起坏掉
+     else "\([($p.expires_at - $now | floor), 31536000] | min) \(if $p.ttl == "1h" then 3600 else 300 end)" end),
     (if ($p.recache_tokens_if_cold | num) == null then "-" else ($p.recache_tokens_if_cold | hfmt) end),
     (if ($p.hit_ratio | num) == null then "-"
      else ($p.hit_ratio * 1000 | round) as $h | "\($h / 10 | floor).\($h % 10)" end),
@@ -719,7 +744,8 @@ if [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && { [ -e "${tokf}.ts" ] || [ -L "${tokf}.
     tok_ts=""; read -r tok_ts < "${tokf}.ts"
     case "$tok_ts" in
       ''|*[!0-9]*) tok_ok=0 ;;                    # 坏的 .ts：按陈旧处理，等刷新重写
-      *) [ $((now - 10#$tok_ts)) -gt "$TOK_STALE" ] && tok_ok=0 ;;
+      *) tok_ts=$((10#$tok_ts)); not_future "$tok_ts" tok_ts
+         [ $((now - tok_ts)) -gt "$TOK_STALE" ] && tok_ok=0 ;;
     esac
   else
     tok_ok=0                                      # 有 .ts 但不是本人的普通文件：不读缓存
@@ -757,7 +783,9 @@ case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 st_ind=""
 if [ "$STATUS_PAGE" = on ] && [ "$SLT_OK" = 1 ] && cache_ok "${SLT}/claude-sl-status.cache"; then
   IFS=$'\t' read -r st_ts st_ind < "${SLT}/claude-sl-status.cache"
-  case "$st_ts" in ''|*[!0-9]*) st_ind="" ;; *) [ $((now - 10#$st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
+  case "$st_ts" in ''|*[!0-9]*) st_ind="" ;;
+    *) st_ts=$((10#$st_ts)); not_future "$st_ts" st_ts
+       [ $((now - st_ts)) -gt "$STATUS_STALE" ] && st_ind="" ;; esac
 fi
 
 # ── 目录显示（starship truncate_to_repo 语义）──────────────────────────

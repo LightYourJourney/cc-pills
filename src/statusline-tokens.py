@@ -641,6 +641,50 @@ def day_bounds(now):
             time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, 0, 0, 0, 0, 0, -1)))
 
 
+def num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def valid_state(d):
+    """状态文件的结构校验：认不出本程序写出的形状就整份丢弃、从头重扫。
+
+    写回是原子替换，正常路径产不出坏形状；这里挡的是手工编辑、磁盘异常，以及将来
+    改了结构却忘升 STATE_V——那时的坏形状会让下面每一轮都抛异常：同步路径只看到
+    「助手没有输出」，于是该会话永久不出数，且没有任何提示。重扫最多多花几秒。"""
+    if not isinstance(d, dict):
+        return False
+    if not all(num(d.get(k, 0)) for k in KEYS) or not num(d.get('comp', 0)):
+        return False
+    files = d.get('files', {})
+    if not isinstance(files, dict):
+        return False
+    for fs in files.values():
+        if not isinstance(fs, dict) or not num(fs.get('off')) or not num(fs.get('fp')):
+            return False
+    pend = d.get('pend', [])
+    if not isinstance(pend, list):
+        return False
+    for e in pend:                             # [message.id, [四列用量, stop_reason]]
+        if not (isinstance(e, list) and len(e) == 2 and isinstance(e[0], str)
+                and isinstance(e[1], list) and len(e[1]) == 2
+                and isinstance(e[1][0], list) and len(e[1][0]) == len(KEYS)
+                and all(num(x) for x in e[1][0])):
+            return False
+    trk = d.get('trk', {})
+    if not isinstance(trk, dict):
+        return False
+    for t in trk.values():                     # track() / rate() 直接取这四个键
+        if not (isinstance(t, dict) and all(num(t.get(x)) for x in ('ew', 'lt', 'lv', 't0'))):
+            return False
+    unl = d.get('unl', {})
+    if not isinstance(unl, dict):
+        return False
+    for row in unl.values():                   # 按位置存 8 列，见 U_*
+        if not (isinstance(row, list) and len(row) == 8):
+            return False
+    return True
+
+
 def main():
     if len(sys.argv) < 3:
         return
@@ -670,7 +714,7 @@ def main():
             if os.fstat(f.fileno()).st_uid != os.getuid():
                 raise OSError
             loaded = json.load(f)
-        if loaded.get('v') == STATE_V:     # 约束 5
+        if loaded.get('v') == STATE_V and valid_state(loaded):   # 约束 5：版本 + 结构
             st.update(loaded)
     except Exception:
         pass

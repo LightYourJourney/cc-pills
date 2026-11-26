@@ -94,8 +94,14 @@ install)
       if cp -p "$dst" "$bak"; then echo "  备份旧副本 → $bak"
       else echo "  备份失败，未覆盖 ${f}（线上副本有改动，先处理再重装）" >&2; rc=1; continue; fi
     fi
-    if install -m 0755 "$src" "$dst"; then echo "  已安装 $f → $dst"
-    else echo "  安装失败：${f} → $dst" >&2; rc=1; fi
+    # 原子替换：install(1) 会先截断目标再写，重装那一刻每次状态栏刷新都可能读到
+    # 「文件不存在」（实测 1404 次探测里 370 次），空白一帧。同目录临时文件 + mv 不会。
+    tmp="$DEST/.$f.tmp.$$"
+    if cp "$src" "$tmp" 2>/dev/null && chmod 0755 "$tmp" && mv -f "$tmp" "$dst"; then
+      echo "  已安装 $f → $dst"
+    else
+      rm -f "$tmp" 2>/dev/null; echo "  安装失败：${f} → $dst" >&2; rc=1
+    fi
   done
   if [ "$WITH_CONF" = 1 ]; then
     if [ -e "$CONF" ]; then

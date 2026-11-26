@@ -675,6 +675,48 @@ class RefreshState(unittest.TestCase):
         self.assertEqual(self.git_cache()[1], 'stale', '锁还新鲜时不该并行再跑一轮刷新')
         self.assertTrue(os.path.isdir(lock), '别人的锁被删了')
 
+    def test_future_lock_mtime_is_taken_over(self):
+        """时钟回拨把锁目录的 mtime 推到未来：按 0 = 很旧处理。否则该会话的后台刷新
+        在回拨期间一直停摆（锁永远「还很新」）。"""
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-lk')
+        os.mkdir(lock)
+        os.utime(lock, (self.now + 3600, self.now + 3600))
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='lk')
+        self.assertEqual(self.git_cache()[1], 'main', '未来 mtime 的锁没有被当作残锁')
+        self.assertFalse(os.path.exists(lock), '接管后的锁没有释放')
+
+    def test_stale_lock_with_owner_is_reclaimed(self):
+        """崩溃的刷新会在锁目录里留下 owner 文件：回收残锁必须连它一起清，否则 rmdir
+        与 mkdir 都失败，该会话后台永久退出。"""
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-lk')
+        os.mkdir(lock)
+        with open(os.path.join(lock, 'owner'), 'w') as f:
+            f.write('999.1\n')
+        os.utime(lock, (self.now - 3600, self.now - 3600))
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='lk')
+        self.assertEqual(self.git_cache()[1], 'main', '带 owner 的残锁没有被回收')
+        self.assertFalse(os.path.exists(lock))
+
+    def test_live_lock_with_owner_is_left_alone(self):
+        """锁还新鲜时（哪怕带着别人的 owner）一律不动：刷新退出时只删自己那把。"""
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-lk')
+        os.mkdir(lock)
+        with open(os.path.join(lock, 'owner'), 'w') as f:
+            f.write('1.1\n')
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='lk')
+        self.assertEqual(self.git_cache()[1], 'stale', '锁还新鲜时不该再跑一轮刷新')
+        self.assertTrue(os.path.isfile(os.path.join(lock, 'owner')), '别人的锁被删了')
+
+    def test_future_git_cache_timestamp_is_refreshed(self):
+        """写入时刻落在未来（时钟回拨）：按 0 处理并重算，否则 git 分支会冻结到回拨结束。"""
+        with open(self.git_cache_path(), 'w') as f:
+            f.write(f'{self.sb.repo}\tfuture\t-\t{self.now + 3600}\n')
+        self.sb.refresh(self.sb.repo, sid='gk')
+        self.assertEqual(self.git_cache()[1], 'main', '未来时间戳让 git 缓存永不过期')
+
     # ── 色板失败退避 ─────────────────────────────────────────────────────
     def break_theme(self, fail_age):
         tc = next(os.path.join(self.sb.tmp, f) for f in os.listdir(self.sb.tmp)

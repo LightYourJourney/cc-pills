@@ -241,6 +241,26 @@ class Counting(Base):
                        'files': {tp: {'off': off, 'fp': self.t.tail_fp(tp, off)}}}, f)
         self.assertEqual(self.fields(self.run_tok(tp, 'v1').stdout)[IDX['msgs']], '2')
 
+    def test_broken_state_shape_rescans_instead_of_stalling(self):
+        """状态结构坏掉时整份丢弃重扫。此前只查版本号，坏形状会让助手每轮抛异常：
+        同步路径只看到「助手没有输出」，该会话永久不出数，且没有任何提示。"""
+        tp = self.write('b.jsonl', [line('a', 10, 5, 'end_turn'), line('b', 20, 7, 'end_turn')])
+        self.assertEqual(self.fields(self.run_tok(tp, 'b0').stdout)[IDX['in']], '30')
+        cases = [('files', []), ('pend', [['x', [1, 2]]]), ('trk', [1]),
+                 ('trk', {'cost': {'ew': 0.0, 'lt': 0, 't0': 0}}),   # 缺 lv
+                 ('in', 'abc'), ('unl', {'m': [1, 2]})]
+        for i, (k, v) in enumerate(cases):
+            sid = f'b{i + 1}'
+            self.fields(self.run_tok(tp, sid).stdout)             # 先写出合法状态
+            p = os.path.join(self.d, f'claude-statusline-{sid}.json')
+            with open(p) as f:
+                st = json.load(f)
+            st[k] = v
+            with open(p, 'w') as f:
+                json.dump(st, f)
+            out = self.fields(self.run_tok(tp, sid).stdout)
+            self.assertEqual(out[IDX['in']], '30', f'{k}={v!r} 应触发整份重扫')
+
     def test_time_budget_shared_across_files(self):
         tp = self.write('e.jsonl', [line('m1', 1, 1, 'end_turn')])
         for i in range(6):
