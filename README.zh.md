@@ -87,6 +87,11 @@ bash install.sh --with-subagent --with-conf
                         "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
 ```
 
+> **面板已被上游弃用。** Claude Code 2.1.330–2.1.332 的提示原文是
+> `subagentStatusLine is deprecated in favor of mods and will stop working in a future
+> release`，每个会话警告一次，官方文档也已删掉这一节。脚本本身照常工作，本仓库继续维护；
+> 替代品是 mod 的 `AgentRow` 渲染点，迁移说明见 `docs/DECISIONS.md`。
+
 复制安装意味着仓库是源、线上文件是快照：`git pull` 之后要重新跑一次 `bash install.sh`。
 `--with-conf` 只在还没有配置文件时写入示例配置。`bash install.sh --check` 检查两边是否一致；
 `--uninstall` 删除线上副本（本地改过则拒绝，加 `--force` 照删）。
@@ -106,6 +111,15 @@ bash install.sh --with-subagent --with-conf
 | `truncate_length` | 目录保留的末尾段数（默认 3） |
 | `status_page` | `on` 每分钟请求一次 status.claude.com；`off` 则零网络请求 |
 | `step = drop/shrink <项>` | 整体替换降级序列 |
+
+状态栏只在 Claude Code 有事件时重跑，空闲时 `cache` 倒计时和 `5h` / `7d` 的重置时间会停在
+上一帧。Claude Code 自己的设置 `refreshInterval`（秒，最小 1）可以按固定间隔重跑：
+
+```json
+"refreshInterval": 30
+```
+
+同步渲染只读缓存，网络与 python 都在后台刷新里，设小不会拖慢输入。
 
 在 iTerm 里并排预览：
 

@@ -322,7 +322,7 @@ class SubagentState(unittest.TestCase):
         st = os.path.join(self.d, 'ctx.json')
         with open(p) as f:
             out = subprocess.run(['bash', SCRIPT], stdin=f, capture_output=True, text=True,
-                                 env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st)).stdout
+                                 env=dict(self.env, CLAUDE_SUBAGENT_SL_STATE=st), timeout=60).stdout
         self.assertIn('ctx 剩75%', out)
 
     def panel(self, tasks, st):

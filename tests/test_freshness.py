@@ -106,7 +106,7 @@ class Freshness(unittest.TestCase):
                 f.write(line + '\n')
             env = dict(sb.env, CLAUDE_SL_NO_REFRESH='1')
             subprocess.run(['bash', SCRIPT, '--refresh', sb.repo, tp, 'rt', 'sub'],
-                           env=env, capture_output=True)
+                           env=env, capture_output=True, timeout=60)
             cache = os.path.join(sb.tmp, 'claude-sl-tok-rt.cache')
             self.assertTrue(os.path.isfile(cache), '刷新没有写出 token 缓存')
             ts = cache + '.ts'
@@ -141,7 +141,7 @@ class Freshness(unittest.TestCase):
             old = time.time() - 10 * 86400
             os.utime(f, (old, old))
             subprocess.run(['bash', SCRIPT, '--refresh', sb.repo, '-', 'legacy', 'sub'],
-                           env=sb.env, capture_output=True)
+                           env=sb.env, capture_output=True, timeout=60)
             self.assertTrue(os.path.isfile(f + '.ts'), '刷新没有为无 .ts 的旧缓存补时间戳')
             o = strip(sb.render(sb.stdin('legacy', q5=20)))
             self.assertNotIn('m517', o, '旧缓存的 mtime 已超时，仍被当作新鲜值展示')

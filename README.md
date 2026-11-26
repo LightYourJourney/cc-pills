@@ -99,6 +99,12 @@ script with `--with-subagent`, or when it is already installed) and prints wheth
                         "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
 ```
 
+> **The subagent panel is deprecated upstream.** Claude Code 2.1.330–2.1.332 ships
+> `subagentStatusLine is deprecated in favor of mods and will stop working in a future
+> release`, warns once per session, and has dropped the section from the official docs. The
+> script itself still works and this repo keeps maintaining it; the replacement is a mod's
+> `AgentRow` render point. See `docs/DECISIONS.md` for the migration note.
+
 Copy-install means the repo is the source of truth and the installed files are snapshots:
 re-run `bash install.sh` after pulling. `--with-conf` writes the example config only when you
 have no config file yet. `bash install.sh --check` reports drift; `--uninstall` removes the
@@ -119,6 +125,17 @@ copies (and refuses if they were edited locally — add `--force` to remove them
 | `truncate_length` | trailing path segments kept for the directory (default 3) |
 | `status_page` | `on` polls status.claude.com once a minute; `off` makes zero network requests |
 | `step = drop/shrink <item>` | replaces the whole degradation sequence |
+
+Claude Code only re-runs the status line when something happens, so while idle the `cache`
+countdown and the `5h` / `7d` reset times freeze on the last frame. Its own `refreshInterval`
+setting (seconds, minimum 1) re-runs on a fixed cadence:
+
+```json
+"refreshInterval": 30
+```
+
+Rendering only reads caches — the network call and python run in the background refresh — so a
+small value does not slow typing down.
 
 Preview styles side by side inside iTerm:
 

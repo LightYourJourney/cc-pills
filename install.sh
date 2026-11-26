@@ -135,6 +135,8 @@ install)
       *) echo "⚠ settings.json 尚未配置 subagentStatusLine（agent 面板会用默认渲染）。手工写入："
          echo '  "subagentStatusLine": {"type": "command", "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\""}' ;;
     esac
+    echo "  注意：subagentStatusLine 已被上游弃用（2.1.330–2.1.332 起每会话警告一次，未来版本会"
+    echo "  停止调用）。面板脚本照常可用、本仓库继续维护；替代品是 mod 的 AgentRow，见 README。"
   fi
   exit "$rc"
   ;;

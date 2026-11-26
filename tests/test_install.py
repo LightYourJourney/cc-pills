@@ -35,7 +35,7 @@ class Install(unittest.TestCase):
             with open(os.path.join(dest, 'settings.json'), 'w') as f:
                 json.dump(settings, f)
         return subprocess.run(['bash', INSTALL, *args], capture_output=True,
-                              text=True, env=e)
+                              text=True, env=e, timeout=60)
 
     def cmds(self, sub=True):
         out = {'statusLine': {'type': 'command',
@@ -197,11 +197,11 @@ class Install(unittest.TestCase):
         if not os.path.exists('/bin/bash'):
             self.skipTest('没有 /bin/bash')
         ver = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'],
-                             capture_output=True, text=True).stdout.strip()
+                             capture_output=True, text=True, timeout=60).stdout.strip()
         if ver != '3':
             self.skipTest(f'/bin/bash 主版本是 {ver}，不是 3.x')
         r = subprocess.run(['/bin/bash', INSTALL, '--with-subagent'], capture_output=True,
-                           text=True, env=self.env)
+                           text=True, env=self.env, timeout=60)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn('需要 bash', r.stderr)
         self.assertEqual(os.listdir(self.dest), [], '版本不够时不应安装任何副本')

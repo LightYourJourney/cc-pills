@@ -61,6 +61,25 @@ jobs:
           CCPILLS_SKIP_CONCURRENCY: '1'
         run: bash run_tests.sh
 
+  # jq 1.6 是支持的下限（Debian 12 / Ubuntu 22.04 自带的就是它）。jq 1.7 起放宽了
+  # 对象字面量里的表达式语法，1.6 会对 {k: $n + 1} 报语法错误——这正是本作业存在的理由
+  # （11-27 加面板宽度函数时真的踩到了）。
+  jq16:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 jq 1.6
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/jq \
+            https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
+          sudo chmod +x /usr/local/bin/jq
+          jq --version | grep -qx 'jq-1.6'
+      - name: 跑测试（全量；并发用例除外）
+        env:
+          CCPILLS_SKIP_CONCURRENCY: '1'
+        run: bash run_tests.sh
+
   # python 3.9 是支持的下限（PY_MIN，str.removesuffix）。runner 自带的 python 更新，下限
   # 此前只在 README 里声明；这里用 3.9 跑全量——测试本身与两个助手都在这个版本上跑。
   python39:

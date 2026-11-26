@@ -123,7 +123,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
     else (reduce explode[] as $c ({s: "", w: 0};
             if .w > $n then .
             else ([$c] | implode) as $ch | ($c | cw) as $w
-              | if .w + $w > $n - 1 then {s: .s, w: $n + 1}
+              | if .w + $w > $n - 1 then {s: .s, w: ($n + 1)}
                 else {s: (.s + $ch), w: (.w + $w)} end
             end)
           | .s) + "…"

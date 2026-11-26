@@ -95,7 +95,7 @@ class DoctorSandbox:
     # ── 造健康安装 ──────────────────────────────────────────────────────
     def install(self, subagent=True, settings=True):
         args = ['--with-subagent'] if subagent else []
-        r = subprocess.run([BASE_BASH, INSTALL, *args], capture_output=True, text=True, env=self.env)
+        r = subprocess.run([BASE_BASH, INSTALL, *args], capture_output=True, text=True, env=self.env, timeout=60)
         assert r.returncode == 0, r.stderr
         if settings:
             s = {'statusLine': {'type': 'command',
@@ -292,7 +292,7 @@ class Doctor(unittest.TestCase):
         for p in ('/opt/homebrew/bin/bash', '/usr/local/bin/bash', '/usr/bin/bash'):
             if os.access(p, os.X_OK):
                 v = subprocess.run([p, '-c', 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'],
-                                   capture_output=True, text=True).stdout.strip()
+                                   capture_output=True, text=True, timeout=60).stdout.strip()
                 try:
                     major, minor = (int(x) for x in v.split('.'))
                 except ValueError:
@@ -362,7 +362,7 @@ class Doctor(unittest.TestCase):
             r = self.sb.run()
             self.assertEqual(self.sb.status(r, '安装/subagentStatusLine'), want, cmd)
             chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
-                                 text=True, env=self.sb.env)
+                                 text=True, env=self.sb.env, timeout=60)
             self.assertEqual(chk.returncode, rc, f'{cmd}\n{chk.stdout}')
 
     # ── 3. 安装副本不一致 ───────────────────────────────────────────────
@@ -1267,7 +1267,7 @@ class Doctor(unittest.TestCase):
         self.sb.write_settings({'statusLine': {'type': 'command', 'command': cmd}})
         d = self.sb.run()
         chk = subprocess.run([BASE_BASH, INSTALL, '--check'], capture_output=True,
-                             text=True, env=self.sb.env)
+                             text=True, env=self.sb.env, timeout=60)
         got = self.sb.status(d, '安装/statusLine')
         self.assertEqual(chk.returncode == 0, got == 'PASS',
                          f'写法 {cmd!r}：install --check rc={chk.returncode}，doctor={got}\n{chk.stdout}')
@@ -1358,12 +1358,12 @@ class Doctor(unittest.TestCase):
         if not os.path.exists(sysbash):
             self.skipTest('没有 /bin/bash')
         v = subprocess.run([sysbash, '-c', 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'],
-                           capture_output=True, text=True).stdout.strip()
+                           capture_output=True, text=True, timeout=60).stdout.strip()
         if not v.startswith('3.'):
             self.skipTest(f'/bin/bash 是 {v}，不是 3.2')
         sb = DoctorSandbox()
         self.addCleanup(sb.close)
-        r = subprocess.run([sysbash, DOCTOR], capture_output=True, text=True, env=sb.env)
+        r = subprocess.run([sysbash, DOCTOR], capture_output=True, text=True, env=sb.env, timeout=60)
         self.assertNotIn('unbound variable', r.stderr)
         self.assertIn('汇总', r.stdout)
 
@@ -1462,7 +1462,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/git'), 'WARN')
         repo = os.path.join(self.sb.d, 'gitrepo')         # 自建仓库：源码树本身不一定是 git 检出（zip / tarball）
         os.makedirs(repo)
-        subprocess.run(['git', 'init', '-q', '.'], cwd=repo, check=True)
+        subprocess.run(['git', 'init', '-q', '.'], cwd=repo, check=True, timeout=60)
         self.assertEqual(self.sb.status(self.sb.run('--dir', repo), '缓存/git'), 'PASS')
 
     def test_render_path_never_calls_doctor(self):
@@ -1487,7 +1487,7 @@ class InstallAlias(unittest.TestCase):
         sb = DoctorSandbox()
         self.addCleanup(sb.close)
         r = subprocess.run([BASE_BASH, INSTALL, '--doctor', '--help'], capture_output=True,
-                           text=True, env=sb.env)
+                           text=True, env=sb.env, timeout=60)
         self.assertEqual(r.returncode, 0)
         self.assertIn('--transcript', r.stdout)
 

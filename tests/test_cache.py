@@ -48,11 +48,11 @@ class CacheBase(unittest.TestCase):
             'cost': {'total_cost_usd': 17.54, 'total_api_duration_ms': 1000}})
         e = dict(self.env, COLUMNS=str(cols), CLAUDE_SL_NO_REFRESH='1', **(env or {}))
         return subprocess.run(['bash', SCRIPT], input=data, capture_output=True,
-                              text=True, env=e).stdout
+                              text=True, env=e, timeout=60).stdout
 
     def refresh(self, env):
         return subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', 'cachetest', 'sub'],
-                              capture_output=True, env=env)
+                              capture_output=True, env=env, timeout=60)
 
 
 class DefaultDir(CacheBase):
@@ -95,7 +95,7 @@ class DefaultDir(CacheBase):
         with open(paths[2], 'w') as f:
             f.write('{"v":9}')
         r = subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
-                           env=self.env, capture_output=True)
+                           env=self.env, capture_output=True, timeout=60)
         self.assertEqual(r.returncode, 0)
         p = self.private()
         for n in names:
@@ -107,7 +107,7 @@ class DefaultDir(CacheBase):
                 return f.read()
         before = {n: read(n) for n in names}
         r = subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
-                           env=self.env, capture_output=True)
+                           env=self.env, capture_output=True, timeout=60)
         self.assertEqual(r.returncode, 0)
         for n in names:
             self.assertTrue(os.path.isfile(os.path.join(p, n)), f'重复刷新后 {n} 消失')
@@ -289,7 +289,7 @@ class Lifecycle(CacheBase):
 
     def refresh(self, env, sid='life'):
         return subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
-                              capture_output=True, env=env)
+                              capture_output=True, env=env, timeout=60)
 
     def test_prune_keeps_session_state_while_transcript_exists(self):
         """会话状态是重扫断点：transcript 还在就不能删，哪怕状态文件很旧。"""
@@ -558,7 +558,7 @@ class Hardening(CacheBase):
         os.makedirs(t, mode=0o700)
         env = dict(self.env, TMPDIR=t + os.sep)
         subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', 'x', 'sub'],
-                       capture_output=True, env=env)
+                       capture_output=True, env=env, timeout=60)
         want = os.path.join(t, f'claude-sl-{os.getuid()}')
         self.assertTrue(os.path.isdir(want), f'含空格 / 中文的 TMPDIR 未归一（{want}）')
 
@@ -635,7 +635,7 @@ class RefreshState(unittest.TestCase):
     def test_head_change_invalidates_git_cache_within_ttl(self):
         """切分支后不等 TTL：HEAD 不比缓存旧就立即重算。"""
         self.plant_git_cache('main', age=0)
-        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feature'], cwd=self.sb.repo, check=True)
+        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feature'], cwd=self.sb.repo, check=True, timeout=60)
         self.sb.refresh(self.sb.repo)
         self.assertEqual(self.git_cache()[1], 'feature', '切分支后 TTL 内没有重算')
 
@@ -643,7 +643,7 @@ class RefreshState(unittest.TestCase):
         """core.fsmonitor 是仓库 .git/config 里可写的命令：拷来的仓库能借它在每轮刷新里执行任意
         命令。状态栏的 git 调用一律关掉它。"""
         marker = os.path.join(self.sb.dir, 'fsmonitor-ran')
-        subprocess.run(['git', 'config', 'core.fsmonitor', f'touch {marker}; false'], cwd=self.sb.repo, check=True)
+        subprocess.run(['git', 'config', 'core.fsmonitor', f'touch {marker}; false'], cwd=self.sb.repo, check=True, timeout=60)
         with open(os.path.join(self.sb.repo, 'f.txt'), 'w') as f:
             f.write('x')
         self.plant_git_cache('stale', age=60)
@@ -766,7 +766,7 @@ class RefreshState(unittest.TestCase):
 
         def run():
             subprocess.run(['bash', SCRIPT, '--refresh', self.sb.repo, tp, 'gap', 'sub', '1.5'],
-                           env=env, capture_output=True)
+                           env=env, capture_output=True, timeout=60)
         run()
         self.assertEqual(self.calls(marker), 1)
         self.assertTrue(os.path.isfile(os.path.join(self.sb.tmp, 'claude-sl-tok-gap.cache')))

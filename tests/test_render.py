@@ -250,9 +250,9 @@ class Robustness(unittest.TestCase):
                             '超长路径的 git 缓存没写进去')
             for p in ('x/y_z', 'x_y/z'):
                 os.makedirs(os.path.join(sb.dir, p))
-            subprocess.run(['git', 'init', '-q', '.'], cwd=os.path.join(sb.dir, 'x/y_z'), check=True)
+            subprocess.run(['git', 'init', '-q', '.'], cwd=os.path.join(sb.dir, 'x/y_z'), check=True, timeout=60)
             subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feat-collide'],
-                           cwd=os.path.join(sb.dir, 'x/y_z'), check=True)
+                           cwd=os.path.join(sb.dir, 'x/y_z'), check=True, timeout=60)
             sb.refresh(os.path.join(sb.dir, 'x/y_z'))
             sb.refresh(os.path.join(sb.dir, 'x_y/z'))
             self.assertNotIn('feat-collide', strip(sb.render(sb.stdin(cwd=os.path.join(sb.dir, 'x_y/z')))))
@@ -275,7 +275,7 @@ class Robustness(unittest.TestCase):
     def test_cjk_branch_truncated_by_display_width(self):
         with Sandbox() as sb:
             subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/功能/超长中文分支名称测试显示宽度截断'],
-                           cwd=sb.repo, check=True)
+                           cwd=sb.repo, check=True, timeout=60)
             sb.refresh(sb.repo)
             o = strip(sb.render(sb.stdin(), 80))
             br = o.split(' ')[1].split('')[0].split(' ')[0]
@@ -286,7 +286,7 @@ class Robustness(unittest.TestCase):
         """超长分支名缩到 20 列 + …（与「从全名逐字去尾」结果相同，但不按全名长度逐字量宽）。"""
         with Sandbox() as sb:
             name = 'feature/' + 'x' * 101
-            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/' + name], cwd=sb.repo, check=True)
+            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/' + name], cwd=sb.repo, check=True, timeout=60)
             sb.refresh(sb.repo)
             o = strip(sb.render(sb.stdin(), 80))
             self.assertIn(' ' + name[:20] + '…', o)
@@ -301,7 +301,7 @@ class Semantics(unittest.TestCase):
             for name in ('Foo', 'foo'):
                 d = os.path.join(sb.dir, 'p', name)
                 os.makedirs(d)
-                subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True)
+                subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True, timeout=60)
                 before = set(os.listdir(sb.tmp))
                 sb.refresh(d)
                 new = [f for f in set(os.listdir(sb.tmp)) - before if f.startswith('claude-sl-git-')]
@@ -316,8 +316,8 @@ class Semantics(unittest.TestCase):
         with Sandbox() as sb:
             d = os.path.join(sb.dir, 'fresh')
             os.makedirs(d)
-            subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True)
-            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feat'], cwd=d, check=True)
+            subprocess.run(['git', 'init', '-q', '.'], cwd=d, check=True, timeout=60)
+            subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/feat'], cwd=d, check=True, timeout=60)
             with open(os.path.join(d, 'u.txt'), 'w') as f:
                 f.write('x')
             o = strip(sb.render(sb.stdin(cwd=d)))
@@ -440,7 +440,7 @@ class OldBash(unittest.TestCase):
 
     def setUp(self):
         v = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True,
-                           text=True).stdout.strip()
+                           text=True, timeout=60).stdout.strip()
         if v != '3':
             self.skipTest(f'/bin/bash 不是 3.x（{v or "不存在"}）')
 
@@ -579,7 +579,7 @@ class Facts(unittest.TestCase):
 
     def test_runs_on_system_bash_3_2(self):
         """诊断要在只有 bash 3.2 的机器上也能回答问题，所以自述模式不走版本守卫。"""
-        v = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True, text=True).stdout.strip()
+        v = subprocess.run(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True, text=True, timeout=60).stdout.strip()
         if v != '3':
             self.skipTest(f'/bin/bash 不是 3.x（{v or "不存在"}）')
         with Sandbox() as sb:

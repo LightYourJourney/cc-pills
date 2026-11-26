@@ -45,7 +45,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.d, ignore_errors=True)
 
     def run_tok(self, tp, sid, *args):
-        return subprocess.run([sys.executable, PATH, tp, sid, *args], capture_output=True, text=True, env=self.env)
+        return subprocess.run([sys.executable, PATH, tp, sid, *args], capture_output=True, text=True, env=self.env, timeout=60)
 
     def fields(self, stdout):
         """「键=值」输出 → 按 FIELDS 排好的列表（没输出的键记 '-'）；整体无输出返回 []。"""
@@ -606,7 +606,7 @@ class Relay(Base):
         out = self.fields(self.run_tok(tp, 'ro', f'relay={db}').stdout)
         self.assertNotEqual(out[IDX['rcost']], '-', '路径带 # ? 的库读不出账本')
         r = subprocess.run([sys.executable, PATH, '--provider-state', db], capture_output=True, text=True,
-                           env=self.env)
+                           env=self.env, timeout=60)
         self.assertTrue(r.stdout.strip(), '探针读不出路径带 # ? 的库')
         self.assertEqual(sorted(os.listdir(self.d)), sorted(['a#b?c', 'claude-statusline-ro.json', 'ro.jsonl']),
                          '在截断后的路径上建出了新文件（读写打开）')
@@ -863,7 +863,7 @@ class DailyLimit(Base):
 
     def probe(self, db):
         return subprocess.run([sys.executable, PATH, '--provider-state', db],
-                              capture_output=True, text=True, env=self.env).stdout
+                              capture_output=True, text=True, env=self.env, timeout=60).stdout
 
     def test_provider_probe_reports_what_the_renderer_would_use(self):
         """--provider-state：诊断工具问「限额口径能不能确定」，答案来自渲染用的同一段代码。"""
