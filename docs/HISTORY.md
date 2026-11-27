@@ -245,7 +245,9 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 | 三：文档与测试/CI 加固 | ae02145 | 332 | README 两版写弃用现状与 `refreshInterval`；install.sh 装面板时提示；DECISIONS 记四处新裁定；35 处子进程超时；jq 1.6 作业 |
 | 发布 1.0.9 | 见 tag `v1.0.9` | 332 | `VERSION=1.0.9` |
 | 四：面板迁移到 mod | bbe9213 | 332 + 5 | `mods/agent-row` + 仓库根 marketplace；bash 面板保留一个版本作过渡 |
-| 五：变异用例补强 | 本阶段 | 332→339 | 上一轮 9 个存活变异里 7 个补了用例并逐个验证被杀（见下） |
+| 五：变异用例补强 | 5d06824 | 332→339 | 上一轮 9 个存活变异里 7 个补了用例并逐个验证被杀（见下） |
+| 六：全量审查修复 | 1dc7eed | 339→342 + 9 | doctor 放行合法 `owner` 锁目录并同步 `not_future` 未来时间戳；每日清理删超龄 `owner` 当轮 `rmdir`；主栏 jq 拦截负数输入；mod 修 `kfmt("1000M")`、`num()` 负数过滤与 `seen` 剪枝并补至 9 项测试；`preview.sh` 加 `CLAUDE_SL_NO_REFRESH=1` 与配置尾换行；CI `jq16` 补固定 sha256 校验；`test_theme.py` 清理临时目录并补齐 30 处测试子进程超时；README / DECISIONS 对齐 |
+| 发布 1.0.10 | 见 tag `v1.0.10` | 342 + 9 | `VERSION=1.0.10`（含 `mods/agent-row` 0.1.1、变异用例补强与全量审查修复） |
 
 ### mod 迁移（11-27 决定）
 
@@ -284,7 +286,7 @@ mods 是 Claude Code 2.1.33x 的插件形态，`ui.render` 的 `{ component: 'Ag
 task 字段同源，另有 `tokenSamples`（最后 16 次采样）、`cost`、`label`（模型写的进度摘要），
 以及**面板实测的 `columns`** 和可带 SGR 的 `body`。换过去等于：不再解析 transcript、不再有
 共享状态与锁、宽度由面板给。代价是 TypeScript + 插件分发（`.claude-plugin/plugin.json`）+
-最低版本 2.1.330。方案未定，面板脚本在此之前继续维护。
+最低版本 2.1.330。方案当时未定；11-27 决定迁移（见上面的「mod 迁移」）。
 
 ## 裁定沿革（11-20 从 DECISIONS.md 移出）
 
