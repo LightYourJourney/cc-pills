@@ -40,7 +40,7 @@ TOKENS = _load('sltokens', os.path.join(SRC, 'statusline-tokens.py'))
 
 
 def utf8_locale():
-    out = subprocess.run(['locale', '-a'], capture_output=True, text=True).stdout.split()
+    out = subprocess.run(['locale', '-a'], capture_output=True, text=True, timeout=30).stdout.split()
     low = {x.lower().replace('-', ''): x for x in out}
     for want in ('c.utf8', 'en_us.utf8', 'zh_cn.utf8'):
         if want in low:
@@ -110,8 +110,8 @@ class Sandbox:
                          if not re.match(r'\s*(pill_style|theme|status_page)\s*=', l))
         with open(os.path.join(self.cfg, 'claude-statusline.conf'), 'w') as f:
             f.write(conf + f'\ntheme = dracula\npill_style = {self.style}\n{self.conf_extra}\n')
-        subprocess.run(['git', 'init', '-q', '.'], cwd=self.repo, check=True)
-        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/main'], cwd=self.repo, check=True)
+        subprocess.run(['git', 'init', '-q', '.'], cwd=self.repo, check=True, timeout=TIMEOUT)
+        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/main'], cwd=self.repo, check=True, timeout=TIMEOUT)
         self.now = int(time.time())
         self.set_status(self.status)
         self.env = {k: v for k, v in os.environ.items()

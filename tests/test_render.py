@@ -157,6 +157,20 @@ class Robustness(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, f'stdin={bad!r} 退出码非 0')
                 self.assertEqual(r.stderr, '', f'stdin={bad!r} 有 stderr 输出')
 
+    def test_negative_numeric_fields_are_hidden(self):
+        """非负字段收到负数时按缺失隐藏，不输出 -999、+-500、api -12s 或把负费用伪造成 $0.00。"""
+        with Sandbox() as sb:
+            d = sb.stdin(ctx=10, ctx_tok=-999, cost=-5.2, api_ms=-12000, cache='cold',
+                         spend={'used_percentage': 40, 'used_usd': -1, 'limit_usd': 50, 'period': 'daily'})
+            d['prompt_cache']['recache_tokens_if_cold'] = -500
+            r = sb.render(d, raw=True)
+            o = strip(r.stdout)
+            self.assertEqual((r.returncode, r.stderr), (0, ''))
+            self.assertIn('ctx 10%', o)
+            self.assertIn('今日 40%', o)
+            for bad in ('-999', '$0.00', '+-500', 'api -12s', '$-1'):
+                self.assertNotIn(bad, o, f'负数输入渲染出了 {bad!r}：{o!r}')
+
     def test_empty_string_fields_do_not_shift(self):
         with Sandbox() as sb:
             d = sb.stdin(q5=58)

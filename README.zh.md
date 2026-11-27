@@ -35,7 +35,8 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 - bash ≥ 4.2（macOS 自带 3.2，需 `brew install bash`；脚本会先尝试
   `/opt/homebrew/bin/bash` 等位置的 ≥4.2 版本重跑。安装器不换壳：PATH 里的 `bash` 仍是 3.2 时，
   用新版 bash 运行它，如 `/opt/homebrew/bin/bash install.sh`）
-- `jq`、`python3` ≥ 3.9（`str.removesuffix`）、`git`；`curl` 仅在 `status_page = on` 时使用
+- `jq` ≥ 1.6（Debian 12 / Ubuntu 22.04 自带的就是它）、`python3` ≥ 3.9（`str.removesuffix`）、`git`；
+  `curl` 仅在 `status_page = on` 时使用
 
 | 环境 | 支持 | 说明 |
 |---|---|---|
@@ -46,6 +47,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
 | python3 ≥ 3.9 | 是 | CI 在 Python 3.9 上跑全量（并发写面板用例除外）；低于 3.9 安装会拒绝，doctor 报 FAIL |
+| jq 1.6 | 是 | Debian 12 / Ubuntu 22.04 自带的版本，CI 单独一个作业跑全量。1.7 才放宽对象字面量语法，1.6 对 `{k: $n + 1}` 直接报语法错误 |
 
 ## 缓存
 
@@ -97,7 +99,7 @@ bash install.sh --with-subagent --with-conf
 仓库里的 `mods/agent-row` 是同一套面板的 mod 版本，用引擎的 `AgentRow` 渲染点：每个
 subagent 一行，内容不变（描述 · 模型 · effort · tok 与实测增速 · ctx 剩余 · 时长），
 数据直接来自引擎的 `AgentInfo`，不再解析 transcript、不再有共享状态与锁。需要
-Claude Code ≥ 2.1.330。
+Claude Code ≥ 2.1.330（更早的版本没核实过有没有 `AgentRow`）。
 
 在 Claude Code 的提示符里：
 
@@ -105,8 +107,9 @@ Claude Code ≥ 2.1.330。
 /plugin install cc-pills-agent-row --marketplace LightYourJourney/cc-pills
 ```
 
-装好后从 `settings.json` 删掉 `subagentStatusLine`：两者同时生效会画出两行。bash 面板
-保留一个版本作过渡，随时可以装回去。
+装好后要停用 bash 面板：从 `settings.json` 删掉 `subagentStatusLine`，并删掉已安装的
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh`（`install.sh --check` 以这个
+文件为准，留着会报「面板脚本已安装但未配置」）。bash 面板保留一个版本作过渡，重装即可换回。
 
 复制安装意味着仓库是源、线上文件是快照：`git pull` 之后要重新跑一次 `bash install.sh`。
 `--with-conf` 只在还没有配置文件时写入示例配置。`bash install.sh --check` 检查两边是否一致；
@@ -202,7 +205,7 @@ bash tools/doctor.sh --dir <项目目录>                     # git 相关检查
 | token 缓存不是当前格式版本（旧版留下的 / 被截断） | WARN | `缓存/token` |
 | token 缓存是符号链接（会被忽略） | WARN | `缓存/token` |
 | 刷新锁被普通文件 / 符号链接占住（下一轮先清掉再抢锁，能自愈） | WARN | `缓存/锁` |
-| 刷新锁是非空目录（不会自愈，后台刷新永久退出） | FAIL | `缓存/锁` |
+| 刷新锁是非空目录且含 `owner` 之外的异常文件（不会自愈，后台刷新永久退出） | FAIL | `缓存/锁` |
 | 面板锁路径被普通文件 / 符号链接占住（面板每轮会先清掉再抢锁，能自愈） | WARN | `缓存/面板锁` |
 | 面板上次写回失败（含原因码、年龄；超过 1 天视为面板可能已停跑） | WARN | `缓存/面板锁` |
 | 面板的写回失败标记不是普通文件（目录或符号链接，读不出原因） | WARN | `缓存/面板锁` |
@@ -223,13 +226,17 @@ bash tools/doctor.sh --dir <项目目录>                     # git 相关检查
 src/statusline-command.sh     主渲染器（bash）
 src/statusline-tokens.py      transcript 聚合、速率、额度节奏、中转站账本
 src/statusline-theme.py       色板生成与对比度验收
-src/subagent-statusline.sh    agent 面板里每个 subagent 的状态行
+src/subagent-statusline.sh    agent 面板里每个 subagent 的状态行（上游已弃用；过渡保留）
+mods/agent-row/               替代 subagentStatusLine 的 AgentRow mod
+.claude-plugin/               /plugin install 用的 marketplace 清单
+config/                       用户示例配置
+docs/                         DECISIONS.md（现行规则）与 HISTORY.md（审查沿革）
 tools/preview.sh              并排预览
 tools/doctor.sh               只读诊断（入口）
 tools/doctor/*.sh             检查分组：环境 / 安装 / 缓存 / 数据来源
 tools/lib/points_to.sh        install 与 doctor 共用的 settings 命令判定
 tests/                        单元 + 金样 + 性质 + 对比度矩阵测试
-.github/workflows/tests.yml   CI：macOS、Linux、bash 4.2、Python 3.9 四个作业各跑全量，另有 shellcheck
+.github/workflows/tests.yml   CI：macOS、Linux、bash 4.2、Python 3.9、jq 1.6 五个作业各跑全量，另有 shellcheck
 install.sh  run_tests.sh
 ```
 
@@ -238,11 +245,12 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # 并行分片，8 核机器约 1 分钟；全隔离（不读线上缓存、不联网）
 bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
+claude plugin test mods/agent-row          # mod 的 9 项（run_tests.sh 在 PATH 里有 claude 时顺带跑）
 UPDATE_GOLDEN=1 bash run_tests.sh render   # 有意改变渲染结果后更新金样
 ```
 
-CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有两个作业分别把 PATH 里的 bash 换成源码编译的 4.2.0、把 python3 换成 3.9 再跑一遍。Linux、bash 4.2 与 Python 3.9 的实测结论见上面的兼容性矩阵；其中
-「多进程并发写面板状态」用例在三个 ubuntu 作业上跳过——该 runner 的跨进程 `mkdir`
+CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有三个作业分别把 PATH 里的 bash 换成源码编译的 4.2.0、把 python3 换成 3.9、把 jq 换成 1.6 再跑一遍（mod 的测试不在 CI 里：runner 上没有 `claude` CLI）。Linux、bash 4.2、Python 3.9 与 jq 1.6 的实测结论见上面的兼容性矩阵；其中
+「多进程并发写面板状态」用例在四个 ubuntu 作业上跳过——该 runner 的跨进程 `mkdir`
 可见性异常，锁语义无法在那里验证（证据见 [docs/DECISIONS.md](docs/DECISIONS.md)）。
 
 ## 精度声明

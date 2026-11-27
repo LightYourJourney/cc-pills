@@ -1,5 +1,6 @@
 {
   "name": "cc-pills",
+  "description": "Subagent rows for Claude Code: model, tokens with a measured rate, context left and duration",
   "owner": { "name": "LightYourJourney" },
   "plugins": [
     {

@@ -111,8 +111,10 @@
     不碰色板、状态页、面板状态。这些都能重建，最坏是下一轮慢一次。
   - 节流戳在清理**开始前**写（11-27）：清理上千个超龄状态文件要十几秒，期间并发的会话刷新会
     看到旧戳、把整轮再跑一遍（3 个会话实测跑了 3 遍）。写戳后才被杀只是少跑一天清理。
-  - 刷新锁只删**超过 30 天的空目录**（11-22 用户裁定，此前不碰锁）：已结束会话被杀时留下的空锁
-    没人再抢，否则永久残留。`-type d -empty … -delete`，不跟随链接。find 判完年龄
+  - 刷新锁只删**超过 30 天的空目录或仅含超龄 `owner` 的残锁**（11-22 用户裁定，11-27 补齐 `owner`
+    同轮回收）：已结束会话被杀时留下的空锁或只剩 `owner` 的锁没人再抢，否则永久残留。删掉超龄 `owner`
+    后当场 `rmdir`（不顺手删的话，删文件会把父目录 `mtime` 重置成当前时间，得多等 30 天）；无 `owner`
+    的空锁仍由 `-type d -empty … -delete` 回收，不跟随链接。find 判完年龄
     到删除之间若恰有那个会话恢复、刚接管残锁，新锁会被删、该会话可能并发跑两次刷新——
     窗口只有毫秒，刷新幂等，接受。
   - 会话状态另加 transcript 守卫：只在它记录的 `files` **全部不存在**时才删；读不出就保留——
@@ -227,7 +229,7 @@
   - **宽度用引擎实测的 `columns`**（嵌套行的连接符已由它扣掉），截断与 `dw` 同 bash 那份；
     落不到 `columns` 的 surface 按 120。
   - **最低版本 2.1.330**：`AgentRow` 在该版本的二进制里首次确认；更早的版本未核实。
-  - **测试**：`claude plugin test mods/agent-row`（5 项，引擎那一层由测试钩子代替，断言
+  - **测试**：`claude plugin test mods/agent-row`（9 项，引擎那一层由测试钩子代替，断言
     写进 `body` 的字符串）。`run_tests.sh` 在 PATH 里有 `claude` 时顺带跑，CI runner 没有
     这个 CLI，所以 CI 不覆盖 mod。
 - **截断按显示宽度算**（11-27）：`length` 数的是码点，CJK / emoji 在终端占两列——80 列实测中文
@@ -266,6 +268,10 @@
 - **不自动改 `settings.json`**：install / check 只读 `statusLine` 与 `subagentStatusLine` 两个键并
   打印建议写法；uninstall 只警告仍指向已删除文件的键。这样 JSON 写坏、符号链接写穿这类风险整类
   不存在。
+- **安装器不碰 mod**（11-27）：`cc-pills-agent-row` 由 Claude Code 的 `/plugin install` 自己管
+  （启用状态、版本与更新都在那边），`install.sh` 只装两个 bash 脚本，`--check` 与 doctor 都不
+  检查 mod。代价是迁移到 mod 后要手动删掉已安装的面板脚本——`--check` 以那个文件为准，留着会
+  报「面板脚本已安装但未配置」（11-27 全量审查发现，README 已写明）。
 - **「指向已安装副本」的判定**（`tools/lib/points_to.sh`，安装器与 doctor 共用）：命令里有
   `<DEST>/<脚本>`（DEST 去掉尾斜杠），或 `${CLAUDE_CONFIG_DIR}` / `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
   （及 `~`、展开后的家目录写法）开头的建议写法；`${CLAUDE_CONFIG_DIR:-/别处}` 不算——变量未设时
@@ -292,8 +298,9 @@
 - **五个状态词**：PASS / WARN / FAIL / SKIP / UNKNOWN。SKIP = 不适用；UNKNOWN = 取决于运行时
   stdin（如计费模式）。没有「差不多正常」这种中间态。
 - **FAIL 只留给「状态栏很可能不工作」**：环境依赖不满足、安装目录或副本缺失、settings
-  缺失 / 不可读 / 非普通文件 / 语法错误 / 未指向、缓存根不可用、主栏刷新锁是非空目录（只用
-  `rmdir`，不会自愈）、显式 `--transcript` 不存在或不可读、冒烟失败。副本与仓库不一致、配置文件
+  缺失 / 不可读 / 非普通文件 / 语法错误 / 未指向、缓存根不可用、主栏刷新锁目录含 `owner` 之外的
+  异常文件（只清 `owner` 后 `rmdir`，不会自愈；仅有合法普通文件 `owner` 是 1.0.9+ 正常的锁）、
+  显式 `--transcript` 不存在或不可读、冒烟失败。副本与仓库不一致、配置文件
   不可读、面板状态权限或类型不对是 WARN（能跑，只是跑的不是那一版 / 少一段）。主栏与面板的锁路径
   被普通文件 / 符号链接占住也是 WARN（11-22 用户裁定，此前 FAIL）：两边都先 `rm -f` 再抢锁，下一轮
   自愈；超过 `LOCK_STALE` 的空锁是 PASS 附说明（活跃会话下一轮抢掉，已结束的由每日清理删，
@@ -361,17 +368,20 @@
 - `TMPDIR` 尾斜杠归一（`${TMPDIR%/}`），含空格 / 中文的路径有回归测试；`stat` 用「macOS 用
   `/usr/bin/stat -f`，其余先 GNU 后 BSD」。
 - **不为未验证的环境牺牲已验证行为**：先验证，发现差异再按「macOS 不减功能、Linux 尽力兼容」裁定。
-- **CI 四个作业**（`.github/workflows/tests.yml`）：
+- **CI 五个作业**（`.github/workflows/tests.yml`）：
   - macOS：全量。
   - Linux：全量 + shellcheck（11-17 起全量，取代 10-31 的子集）。shellcheck 为 warning 级，
     SC2034 / SC2154 整类关掉（变量靠 read 名单、`printf -v` 与跨文件 source 赋值）。
   - bash 4.2：源码编译 4.2.0（按版本缓存），放到 PATH 最前跑全量。源码包下载后先按固定 sha256 校验
     （11-20 用户裁定；值与 Homebrew 历史 bash 公式一致）。4.3 / 4.4 没有单独作业。
   - python 3.9：用 `PY_MIN` 版本跑全量（11-20 起；此前下限只在 README 里声明）。
+  - jq 1.6（11-27 起）：Debian 12 / Ubuntu 22.04 自带的版本，下载官方静态二进制并做固定 sha256
+    校验后跑全量。jq 1.7 才放宽对象字面量里的表达式语法，1.6 对 `{k: $n + 1}` 直接报语法错误——
+    加面板宽度函数时真踩到过，面板一行都不出。
   - 各作业 `timeout-minutes: 30`；测试里单次渲染 / 刷新另有 60 s 超时，挂住时用例失败而不是空等。
-- **ubuntu 上的三个作业跳过并发写面板状态的用例**（10-31 实测）：`ubuntu-latest` 上两个独立进程能在约 2 µs
-  内**都** `mkdir` 同一条路径成功，本地 Debian / Ubuntu 容器复现不出。Linux、bash 4.2、python 3.9
-  三个作业都设 `CCPILLS_SKIP_CONCURRENCY=1` 跳过 `test_concurrent_writes_do_not_lose_entries`，该用例由 macOS 全量
+- **ubuntu 上的四个作业跳过并发写面板状态的用例**（10-31 实测）：`ubuntu-latest` 上两个独立进程能在约 2 µs
+  内**都** `mkdir` 同一条路径成功，本地 Debian / Ubuntu 容器复现不出。Linux、bash 4.2、python 3.9、jq 1.6
+  四个作业都设 `CCPILLS_SKIP_CONCURRENCY=1` 跳过 `test_concurrent_writes_do_not_lose_entries`，该用例由 macOS 全量
   覆盖；锁语义没有为这台 runner 改写。证据细节见 HISTORY。
 
 ## 测试

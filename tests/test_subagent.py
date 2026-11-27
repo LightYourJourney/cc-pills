@@ -95,8 +95,8 @@ class SubagentState(unittest.TestCase):
                 json.dump({'seed': {'t': time.time(), 'k': 1}}, f)
             a = self.spawn(st, 'a')
             b = self.spawn(st, 'b')
-            a.wait()
-            b.wait()
+            a.wait(timeout=60)
+            b.wait(timeout=60)
             with open(st) as f:
                 d = json.load(f)
             if not ('a' in d and 'b' in d and 'seed' in d):
@@ -113,7 +113,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(lock)
         old = time.time() - 10
         os.utime(lock, (old, old))
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertFalse(os.path.exists(lock), '超过 5s 的残锁没有被清除')
         with open(st) as f:
             d = json.load(f)
@@ -129,7 +129,7 @@ class SubagentState(unittest.TestCase):
             f.write('x')
         old = time.time() - 10
         os.utime(lock, (old, old))
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertFalse(os.path.exists(lock), '非空残锁没有被清除')
         with open(st) as f:
             self.assertIn('a', json.load(f))
@@ -138,7 +138,7 @@ class SubagentState(unittest.TestCase):
         """残锁里的 PID 还活着就不能抢：宁少一帧，也不与正在写的进程并发读改写。"""
         st = self.seeded()
         lock = self.hold_lock(st)
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertTrue(os.path.exists(lock), '持有者 PID 仍存活时锁被抢走了')
         with open(st) as f:
             self.assertNotIn('a', json.load(f), '没有拿到锁却写回了状态')
@@ -150,7 +150,7 @@ class SubagentState(unittest.TestCase):
         st = self.seeded()
         lock = st + '.lock'
         os.makedirs(lock)
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertTrue(os.path.isdir(lock), '不足 5 秒的锁被当残锁回收了')
         self.assertEqual(os.listdir(lock), [], '别人的锁里被写了东西')
         with open(st) as f:
@@ -164,7 +164,7 @@ class SubagentState(unittest.TestCase):
         lock = st + '.lock'
         env = self.shim('jq', 'case "$*" in *with_entries*) printf %s intruder.1 > "' + lock +
                         '/owner" ;; esac; exec "$REAL" "$@"')
-        self.spawn(st, 'a', env=env).wait()
+        self.spawn(st, 'a', env=env).wait(timeout=60)
         with open(st) as f:
             self.assertIn('a', json.load(f), '对照失效：写回本身应当成功')
         self.assertTrue(os.path.isdir(lock), '释放锁删掉了别人的锁')
@@ -178,7 +178,7 @@ class SubagentState(unittest.TestCase):
         now = time.time()
         with open(st, 'w') as f:
             json.dump({'old': {'t': now - 700, 'k': 1}, 'recent': {'t': now - 500, 'k': 1}}, f)
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         with open(st) as f:
             d = json.load(f)
         self.assertEqual(sorted(d), ['a', 'recent'], '700 秒前的条目没有被剪掉（或 500 秒前的被误剪）')
@@ -189,8 +189,8 @@ class SubagentState(unittest.TestCase):
         now = time.time()
         with open(st, 'w') as f:
             json.dump({'a': {'t': now, 'k': 7}, 'b': {'t': now - 3, 'k': 7}}, f)
-        self.spawn(st, 'a').wait()
-        self.spawn(st, 'b').wait()
+        self.spawn(st, 'a').wait(timeout=60)
+        self.spawn(st, 'b').wait(timeout=60)
         with open(st) as f:
             d = json.load(f)
         self.assertEqual(d['a']['k'], 7, '2 秒内的再次写回改了速率基线的 k')
@@ -228,7 +228,7 @@ class SubagentState(unittest.TestCase):
                 st = self.seeded()
                 if os.path.lexists(st + '.fail'):
                     os.unlink(st + '.fail')
-                self.spawn(st, 'a', **kw).wait()
+                self.spawn(st, 'a', **kw).wait(timeout=60)
                 self.assertEqual(self.reason(st), code)
                 with open(st) as f:
                     self.assertNotIn('a', json.load(f), '失败的写回不该改动状态')
@@ -238,7 +238,7 @@ class SubagentState(unittest.TestCase):
         """手工运行（没有 stdin）没有可记的 task：不抢锁、不落失败标记。"""
         st = self.seeded()
         self.hold_lock(st)
-        self.spawn(st, 'a', stdin='').wait()
+        self.spawn(st, 'a', stdin='').wait(timeout=60)
         self.assertFalse(os.path.lexists(st + '.fail'), '空 stdin 被记成了写回失败')
 
     def test_successful_write_clears_fail_marker(self):
@@ -246,7 +246,7 @@ class SubagentState(unittest.TestCase):
         st = self.seeded()
         with open(st + '.fail', 'w') as f:
             f.write(f'{int(time.time()) - 60} busy\n')
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertFalse(os.path.lexists(st + '.fail'), '成功写回后失败标记没有被清除')
 
     def test_fail_marker_symlink_is_not_followed(self):
@@ -262,7 +262,7 @@ class SubagentState(unittest.TestCase):
                     os.makedirs(victim)
                 os.symlink(victim, st + '.fail')
                 lock = self.hold_lock(st)
-                self.spawn(st, 'a').wait()
+                self.spawn(st, 'a').wait(timeout=60)
                 shutil.rmtree(lock)
                 if kind == 'file':
                     with open(victim) as f:
@@ -278,7 +278,7 @@ class SubagentState(unittest.TestCase):
         st = self.seeded()
         os.makedirs(st + '.fail')
         self.hold_lock(st)
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertEqual(os.listdir(st + '.fail'), [])
 
     def test_lock_path_occupied_by_file_is_recovered(self):
@@ -286,7 +286,7 @@ class SubagentState(unittest.TestCase):
         lock = st + '.lock'
         with open(lock, 'w') as f:
             f.write('not a lock')
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertFalse(os.path.exists(lock), '被普通文件占住的锁路径没有被清除')
         with open(st) as f:
             self.assertIn('a', json.load(f))
@@ -299,7 +299,7 @@ class SubagentState(unittest.TestCase):
         with open(os.path.join(victim, 'keep'), 'w') as f:
             f.write('x')
         os.symlink(victim, lock)
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         self.assertFalse(os.path.lexists(lock), '被符号链接占住的锁路径没有被清除')
         self.assertTrue(os.path.isfile(os.path.join(victim, 'keep')),
                         '清锁跟随了符号链接，删掉了目标目录里的文件')
@@ -308,7 +308,7 @@ class SubagentState(unittest.TestCase):
 
     def test_state_file_is_owner_only(self):
         st = os.path.join(self.d, 's.json')
-        self.spawn(st, 'a').wait()
+        self.spawn(st, 'a').wait(timeout=60)
         mode = stat.S_IMODE(os.stat(st).st_mode)
         self.assertEqual(mode, 0o600, f'状态文件模式是 {oct(mode)}，应为 0600')
 
@@ -440,7 +440,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(tmp, mode=0o700)
         # 空值等同上界未设置；TMPDIR 带尾斜杠也要归一成同一个私有根。
         self.spawn(os.path.join(tmp, 'unused.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp + os.sep}).wait()
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp + os.sep}).wait(timeout=60)
         root = os.path.join(tmp, f'claude-sl-{os.getuid()}')
         want = os.path.join(root, f'claude-subagent-sl-{os.getuid()}.json')
         self.assertTrue(os.path.isfile(want), '默认状态路径没有按用户隔离')
@@ -451,7 +451,7 @@ class SubagentState(unittest.TestCase):
         slt = os.path.join(self.d, 'slt')
         os.makedirs(slt)
         self.spawn(os.path.join(self.d, 'unused.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'CLAUDE_SL_TMP': slt}).wait()
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'CLAUDE_SL_TMP': slt}).wait(timeout=60)
         want = os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json')
         self.assertTrue(os.path.isfile(want), 'CLAUDE_SL_TMP 没有同时隔离面板状态')
 
@@ -460,7 +460,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(slt)
         st = os.path.join(self.d, 'own.json')
         self.spawn(st, 'a', env={'CLAUDE_SL_TMP': slt,
-                                 'CLAUDE_SUBAGENT_SL_STATE': st}).wait()
+                                 'CLAUDE_SUBAGENT_SL_STATE': st}).wait(timeout=60)
         self.assertTrue(os.path.isfile(st))
         self.assertFalse(os.path.exists(
             os.path.join(slt, f'claude-subagent-sl-{os.getuid()}.json')),
@@ -473,7 +473,7 @@ class SubagentState(unittest.TestCase):
         os.makedirs(target)
         os.symlink(target, os.path.join(tmp, f'claude-sl-{os.getuid()}'))
         self.spawn(os.path.join(self.d, 'in.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait(timeout=60)
         self.assertFalse(os.path.exists(
             os.path.join(target, f'claude-subagent-sl-{os.getuid()}.json')),
             '状态被写进了符号链接指向的目录')
@@ -482,7 +482,7 @@ class SubagentState(unittest.TestCase):
         tmp = os.path.join(self.d, 'T 空 格')
         os.makedirs(tmp, mode=0o700)
         self.spawn(os.path.join(self.d, 'in.json'), 'a',
-                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait()
+                   env={'CLAUDE_SUBAGENT_SL_STATE': '', 'TMPDIR': tmp}).wait(timeout=60)
         want = os.path.join(tmp, f'claude-sl-{os.getuid()}',
                             f'claude-subagent-sl-{os.getuid()}.json')
         self.assertTrue(os.path.isfile(want), '含空格 / 中文的缓存路径不可用')

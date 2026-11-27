@@ -4,16 +4,29 @@
 白 / 浅灰 / 中灰 / 深灰 / 近黑五种底 × 七种胶囊风格；色相用 Tokyo Night ANSI，
 主题自动识别应选中 tokyonight。
 """
+import atexit
 import math
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 from _util import SRC, STYLES, THEME as theme
+
+_TMPDIRS = []
+
+
+def _cleanup_tmpdirs():
+    for d in _TMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    _TMPDIRS.clear()
+
+
+atexit.register(_cleanup_tmpdirs)
 
 PATH = os.path.join(SRC, 'statusline-theme.py')
 THEMES = tuple(theme.THEMES)
@@ -44,6 +57,7 @@ def level(s):
 
 def make_home(bg, fg):
     home = tempfile.mkdtemp(prefix='ccpills-theme-')
+    _TMPDIRS.append(home)
     os.makedirs(os.path.join(home, 'Library', 'Preferences'))
 
     def comp(h):
@@ -62,7 +76,7 @@ def palette(home, style, theme_name='auto', ver='4'):
     out = os.path.join(home, f'{theme_name}-{style}.cache')
     env = dict(os.environ, HOME=home, TERM_PROGRAM='iTerm.app', ITERM_PROFILE='P')
     subprocess.run([sys.executable, PATH, theme_name, out, '12', style, ver],
-                   env=env, capture_output=True, check=False)
+                   env=env, capture_output=True, check=False, timeout=60)
     with open(out) as f:
         lines = f.read().split('\n')
     kv = {}
@@ -81,6 +95,7 @@ def comp(h):
 def iterm_home(*profiles, guid='G0'):
     """只放给定 iTerm profile 的 HOME（make_home 固定用东京夜 ANSI，识别不出别的主题）。"""
     home = tempfile.mkdtemp(prefix='ccpills-theme-')
+    _TMPDIRS.append(home)
     os.makedirs(os.path.join(home, 'Library', 'Preferences'))
     with open(os.path.join(home, 'Library', 'Preferences', 'com.googlecode.iterm2.plist'), 'wb') as f:
         plistlib.dump({'New Bookmarks': list(profiles), 'Default Bookmark Guid': guid}, f)
@@ -94,7 +109,7 @@ def run_theme(home, profile='P'):
     if profile is not None:
         env['ITERM_PROFILE'] = profile
     subprocess.run([sys.executable, PATH, 'auto', out, '12', 'tint', '4'],
-                   env=env, capture_output=True, check=False)
+                   env=env, capture_output=True, check=False, timeout=60)
     if not os.path.exists(out):
         return None
     with open(out) as f:
@@ -251,7 +266,7 @@ class AutoDetect(unittest.TestCase):
             subprocess.run([sys.executable, PATH, 'auto', out, '12', 'tint', '4'],
                            env=dict(os.environ, HOME=home, TERM_PROGRAM='iTerm.app', ITERM_PROFILE='Split',
                                     PATH=fake + os.pathsep + os.environ['PATH']),
-                           capture_output=True, check=False)
+                           capture_output=True, check=False, timeout=60)
             with open(out) as f:
                 lines = f.read().split('\n')
             self.assertIn(f'NAME={want_theme}', lines, ('深色' if want_dark else '浅色') + '模式取错了那一套 ANSI')

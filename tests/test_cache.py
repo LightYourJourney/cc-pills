@@ -401,7 +401,7 @@ class Lifecycle(CacheBase):
     def test_prune_covers_every_temp_file_name(self):
         """被杀进程遗留的临时文件靠 .claude-sl-* 谓词回收：每个生产者的临时名都得落在里面。"""
         src = os.path.dirname(SCRIPT)
-        names = [TOKENS.TMP_PREFIX + 'abc123']
+        names = [TOKENS.TMP_PREFIX + 'abc123', '.claude-sl-theme-term-other.cache.abc123']
         for sh in glob.glob(os.path.join(src, '*.sh')):
             with open(sh, encoding='utf-8') as f:
                 for tpl in re.findall(r'mktemp "[^"]*/([^"/]+)\.XXXXXX"', f.read()):
@@ -461,10 +461,14 @@ class Lifecycle(CacheBase):
         p = self.private()
         os.makedirs(p, mode=0o700)
         old_empty = os.path.join(p, 'claude-sl-lock-ended')
+        old_owned = os.path.join(p, 'claude-sl-lock-owned')
         new_empty = os.path.join(p, 'claude-sl-lock-recent')
         full = os.path.join(p, 'claude-sl-lock-full')
-        for d in (old_empty, new_empty, full):
+        for d in (old_empty, old_owned, new_empty, full):
             os.makedirs(d)
+        owned_f = os.path.join(old_owned, 'owner')
+        with open(owned_f, 'w') as f:
+            f.write('999.1\n')
         inside = os.path.join(full, 'x')
         with open(inside, 'w') as f:
             f.write('x')
@@ -472,11 +476,12 @@ class Lifecycle(CacheBase):
         os.makedirs(target)
         link = os.path.join(p, 'claude-sl-lock-link')
         os.symlink(target, link)
-        for d in (old_empty, full, link, target):
+        for d in (owned_f, old_owned, old_empty, full, link, target):
             self.old(d)
         self.old(new_empty, days=29)
         self.refresh(self.env)
         self.assertFalse(os.path.exists(old_empty), '30 天以上的空残锁没有被清理')
+        self.assertFalse(os.path.exists(old_owned), '30 天以上只含 owner 的残锁应在当轮清理中一起删掉')
         self.assertTrue(os.path.isdir(new_empty), '不足 30 天的空锁被误删')
         self.assertTrue(os.path.isfile(inside), '非空锁目录被清理（或被递归）')
         self.assertTrue(os.path.islink(link) and os.path.isdir(target), '清理碰了符号链接或其目标')

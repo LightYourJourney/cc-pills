@@ -578,10 +578,12 @@ if [ "${1:-}" = "--refresh" ]; then
       # 已结束会话被杀时留下的空刷新锁没人再抢：同一阈值后删掉（只删空目录）。find 判完年龄到删除
       # 之间若恰有那个会话恢复、刚接管残锁，新锁会被删、该会话可能并发跑两次刷新——窗口只有毫秒，
       # 且刷新幂等（见头部架构）
-      # 崩溃在刷新中途的锁里留着 owner 文件，目录因此不再「空」：同阈值先清掉它，
-      # 下一轮清理才能按空目录收走
-      find "$SLT" -mindepth 1 -maxdepth 2 -type f -path '*/claude-sl-lock-*/owner' \
-        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -exec rm -f {} + 2>/dev/null
+      # 崩溃在刷新中途的锁里留着 owner 文件，目录因此不再「空」：同阈值删掉 owner 后当场
+      # rmdir（只删空目录；不顺手删的话，删文件会把目录 mtime 重置成现在，得再等 30 天）
+      while IFS= read -r -d '' _of; do
+        rm -f "$_of" 2>/dev/null && rmdir "${_of%/owner}" 2>/dev/null
+      done < <(find "$SLT" -mindepth 2 -maxdepth 2 -type f -path '*/claude-sl-lock-*/owner' \
+        -mmin +$((CACHE_MAX_AGE * 24 * 60)) -print0 2>/dev/null)
       find "$SLT" -mindepth 1 -maxdepth 1 -type d -empty -name 'claude-sl-lock-*' \
         -mmin +$((CACHE_MAX_AGE * 24 * 60)) -delete 2>/dev/null
       # 会话状态是躲开整段重扫的断点，比 token 缓存贵得多：只有记录里的 transcript
@@ -619,6 +621,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     elif . < 86400 then "\(. / 3600 | floor)h\(. % 3600 / 60 | floor | if . < 10 then "0\(.)" else tostring end)m"
     else "\(. / 86400 | floor)d\(. % 86400 / 3600 | floor)h" end;
   def num: if type == "number" then . else null end;
+  def nn: if type == "number" and . >= 0 then . else null end;
   def obj: if type == "object" then . else {} end;          # 约束 18：类型不符当作缺失
   def clamp: if . < 0 then 0 elif . > 100 then 100 else . end;
   # 额度取整：未满 100 的不进位到 100——「用尽」只在已用 ≥ 100% 时显示，99.6 不算
@@ -641,11 +644,11 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
     (($in.effort | obj).level // "-"),
     (if $ctx == null then "-" else ($ctx | tostring) end),
     (if $ctx == null then "-" elif $ctx >= $bad then "bad" elif $ctx >= $warn then "warn" else "ok" end),
-    (if ($cw.total_input_tokens | num) == null then "-" else ($cw.total_input_tokens | hfmt) end),
+    (if ($cw.total_input_tokens | nn) == null then "-" else ($cw.total_input_tokens | hfmt) end),
     (quota($rl.five_hour | obj) | .[]),
     (quota($rl.seven_day | obj) | .[]),
-    (if ($c.total_cost_usd | num) == null then "-" else ($c.total_cost_usd | tostring) end),
-    (if ($c.total_api_duration_ms | num) == null then "-" else ($c.total_api_duration_ms / 1000 | floor | dfmt) end),
+    (if ($c.total_cost_usd | nn) == null then "-" else ($c.total_cost_usd | tostring) end),
+    (if ($c.total_api_duration_ms | nn) == null then "-" else ($c.total_api_duration_ms / 1000 | floor | dfmt) end),
     # cache 项："<剩余秒数> <TTL 秒数>"；expires_at 已过记作 "cold"；warm=false 而未到期、
     # 未观察到缓存或缺 expires_at 为 "-"（只按过期时间判冷）
     (if $p.caching_observed != true or ($p.expires_at | num) == null then "-"
@@ -654,7 +657,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
      # 剩余秒数封顶一年：expires_at 离谱（1e19）时 jq 会打出 19 位整数，bash 的
      # [ -ge ] 超出 64 位范围直接报错，整条 cache 项连同 stderr 一起坏掉
      else "\([($p.expires_at - $now | floor), 31536000] | min) \(if $p.ttl == "1h" then 3600 else 300 end)" end),
-    (if ($p.recache_tokens_if_cold | num) == null then "-" else ($p.recache_tokens_if_cold | hfmt) end),
+    (if ($p.recache_tokens_if_cold | nn) == null then "-" else ($p.recache_tokens_if_cold | hfmt) end),
     (if ($p.hit_ratio | num) == null then "-"
      else ($p.hit_ratio * 1000 | round) as $h | "\($h / 10 | floor).\($h % 10)" end),
     (if ($p.hit_ratio | num) == null then "-" else ($p.hit_ratio * 100 | round | tostring) end),
@@ -666,8 +669,8 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
         or (["daily", "weekly", "monthly"] | index($sl.period)) == null then "-"
      else "\($sl.used_percentage),\($sl.resets_at),\($sl.period)" end),
     ($sl.period // "-"),
-    (if ($sl.used_usd | num) == null then "-" else ($sl.used_usd | tostring) end),
-    (if ($sl.limit_usd | num) == null then "-" else ($sl.limit_usd | tostring) end)
+    (if ($sl.used_usd | nn) == null then "-" else ($sl.used_usd | tostring) end),
+    (if ($sl.limit_usd | nn) == null or $sl.limit_usd <= 0 then "-" else ($sl.limit_usd | tostring) end)
   ] | map(tostring | gsub("[\t\n]"; " ") | gsub("\\p{Cc}"; "")   # 约束 16：按 Unicode 剔除控制字符（含 C1，
          | if . == "" then "-" else . end)                         # C locale 下 bash 的 [[:cntrl:]] 认不出）；空串也占位
     | join("\t")' 2>/dev/null <<< "$input")

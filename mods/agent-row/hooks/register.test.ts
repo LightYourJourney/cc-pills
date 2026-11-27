@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { kfmt } from './register.tsx'
 
 // AgentRow 的输入是 AgentInfo 再加 rowIds / columns / body / isHidden。
 function row(over: Record<string, unknown> = {}) {
@@ -86,5 +87,70 @@ test('a task with no readings yet hides tok and context', async ($, on) => {
 test('a missing columns falls back to 120', async ($, on) => {
   const text = await harness($, on)({ columns: undefined })
 
+  expect(text).toContain('审查这个模块的并发写')
+})
+
+test('a pending row is tagged, a running one is not', async ($, on) => {
+  const body = harness($, on)
+  expect(await body({ status: 'pending' })).toContain('[pending]')
+  expect(await body({ status: 'running' })).not.toContain('[running]')
+})
+
+test('a bare agent leaves the row to the engine instead of hiding it', async ($, on) => {
+  // body === "" 按「隐藏该行」处理：什么字段都没有时必须原样放行，否则这一行整个消失
+  let seen: unknown = 'unset'
+  on('clock.now', () => ({ value: Date.now() }))
+  on('ui.render', ($: any, e: any) => {
+    seen = e.props.body
+    const { Text } = $.ui.resolve(e)
+
+    return Text({ children: 'engine' })
+  })
+  const ui = await $.ui.mount({
+    ...row({ description: '', label: '', model: undefined, tokenCount: 0,
+      contextWindowSize: undefined, effort: undefined, startTime: undefined }),
+    surface: 'terminal',
+  })
+  await ui.unmount()
+
+  expect(seen).toBeUndefined()
+})
+
+test('measured token rate appears after >=1s and warns when context < 20%', async ($, on) => {
+  let now = 1_700_000_000_000
+  on('clock.now', () => ({ value: now }))
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+
+    return Text({ children: String(e.props.body ?? '') })
+  })
+  const render = async (over: Record<string, unknown>) => {
+    const ui = await $.ui.mount({ ...row(over), surface: 'terminal' })
+    const text = (await ui.find({ type: 'Text' }))?.text ?? ''
+    await ui.unmount()
+
+    return text
+  }
+
+  // 首帧记基线，无速率
+  const first = await render({ id: 'rate1', tokenCount: 100_000, contextWindowSize: 1_000_000 })
+  expect(first).not.toContain('↑')
+
+  // 2 秒后增加 5000 tok → ↑2.5k/s，且剩余 < 20% 带 ⚠
+  now += 2000
+  const second = await render({ id: 'rate1', tokenCount: 105_000, contextWindowSize: 120_000 })
+  expect(second).toContain('↑2.5k/s')
+  expect(second).toContain('ctx 剩12%⚠')
+})
+
+test('kfmt never emits a four-digit mantissa and negative inputs are ignored', async ($, on) => {
+  for (const n of [999_499, 999_500, 99_950_000, 999_450_000, 999_499_999, 999_500_000]) {
+    expect(kfmt(n)).not.toMatch(/^1000/)
+  }
+  expect(kfmt(999_499_999)).toBe('1B')
+
+  const text = await harness($, on)({ tokenCount: -50, columns: -10 })
+  expect(text).not.toContain('tok')
+  expect(text).not.toContain('ctx')
   expect(text).toContain('审查这个模块的并发写')
 })

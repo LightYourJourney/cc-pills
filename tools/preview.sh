@@ -50,7 +50,7 @@ done
 # 每种风格一份配置（沿用用户配置、只换 pill_style）；同步跑一次刷新，按配置生成色板与 git 缓存
 for st in "${STYLES[@]}"; do
   mkdir -p "$work/$st"
-  { grep -v '^[[:space:]]*pill_style' "$CONF" 2>/dev/null; echo "pill_style = $st"; } > "$work/$st/claude-statusline.conf"
+  { grep -v '^[[:space:]]*pill_style' "$CONF" 2>/dev/null; printf '\npill_style = %s\n' "$st"; } > "$work/$st/claude-statusline.conf"
   CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" bash "$SRC/statusline-command.sh" --refresh "$PWD" - "slpv-init" sub
   for j in $(seq 0 $((i - 1))); do cp "$work/claude-sl-tok-slpv-$j.cache" "$work/$st/"; done
 done
@@ -64,7 +64,7 @@ for sc in "${SCENES[@]}"; do
     for st in "${STYLES[@]}"; do
       printf '%s\t%s\n' "$now" "$status" > "$work/$st/claude-sl-status.cache"
       printf '%s\n' "$now" > "$work/$st/claude-sl-status.try"   # 免后台刷新联网拉真实状态冲掉场景
-      line=$(CLAUDE_SL_TMP="$work/$st" XDG_CONFIG_HOME="$work/$st" COLUMNS=$cols bash "$SRC/statusline-command.sh" < "$work/s$i.json")
+      line=$(CLAUDE_SL_TMP="$work/$st" CLAUDE_SL_NO_REFRESH=1 XDG_CONFIG_HOME="$work/$st" COLUMNS=$cols bash "$SRC/statusline-command.sh" < "$work/s$i.json")
       printf '  %-12s %s\n' "$st" "$line"
     done
   done

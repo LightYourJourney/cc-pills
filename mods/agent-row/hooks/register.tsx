@@ -40,7 +40,7 @@ export function cut(s: string, n: number): string {
 
 // 与 statusline-tokens.py 的 fmt() 同口径：999.5k 起按 M，999.5M 起按 B，三位数 M 不留小数
 export function kfmt(n: number): string {
-  if (n >= 999_500_000) {
+  if (n >= 999_500_000 || Math.round((n / 1e6) * 10) / 10 >= 999.5) {
     const v = Math.round((n / 1e9) * 10) / 10
     return Number.isInteger(v) ? `${v}B` : `${v.toFixed(1)}B`
   }
@@ -62,7 +62,7 @@ export function dfmt(sec: number): string {
 
 // 非数字、负数、NaN 一律按「没有」——字段缺失就整段隐藏（与主栏同一原则）
 function num(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
 }
 
 function oneLine(v: unknown): string {
@@ -85,13 +85,25 @@ export const register: Register = on => {
     const windowSize = num(p.contextWindowSize)
 
     // ── 速率：两次实测求差（间隔 ≥1 s、增量非负、≥1 tok/s 才显示）──
+    const id = typeof p.id === 'string' && p.id !== '' ? p.id : null
     let rate: number | null = null
-    if (tokens !== null) {
-      const prev = seen.get(p.id)
-      if (prev && live && now - prev.t >= 1000 && tokens - prev.k >= 0) {
-        rate = (tokens - prev.k) / ((now - prev.t) / 1000)
+    if (id !== null) {
+      if (!live) {
+        seen.delete(id)
+      } else if (tokens !== null) {
+        const prev = seen.get(id)
+        if (prev && now - prev.t >= 1000 && tokens - prev.k >= 0) {
+          rate = (tokens - prev.k) / ((now - prev.t) / 1000)
+        }
+        if (!prev || now - prev.t >= 2000) {
+          seen.set(id, { t: now, k: tokens })
+          if (seen.size > 256) {
+            for (const [k, v] of seen) {
+              if (now - v.t > 600_000) seen.delete(k)
+            }
+          }
+        }
       }
-      if (!prev || now - prev.t >= 2000) seen.set(p.id, { t: now, k: tokens })
     }
 
     const parts: string[] = []
@@ -122,17 +134,22 @@ export const register: Register = on => {
     }
 
     const tail = parts.join(' · ')
-    const tag = st !== '' && st !== 'running' && st !== 'pending' ? ` [${st}]` : ''
+    // 与 bash 面板同口径：只有 running / 空状态不加标签，pending 也要标出来（它是排队，不是运行）
+    const tag = st !== '' && st !== 'running' ? ` [${st}]` : ''
 
     // ── 描述按剩余显示宽度截断 ──
     const desc = oneLine(p.label) || oneLine(p.description)
-    const cols = num(p.columns) ?? 120
+    const rawCols = num(p.columns)
+    const cols = rawCols !== null && rawCols > 0 ? rawCols : 120
     const sepTail = tail ? `  — ${tail}` : ''
     const desc2 = desc ? cut(desc, cols - dw(sepTail) - dw(tag)) : ''
     // 描述放不下时不留一个孤零零的分隔符
     const body = (desc2 ? desc2 + sepTail : tail) + tag
 
+    // body 为空串等于「隐藏该行」：什么都没有可显示时原样放行，让引擎画自己的行
+    if (!body) return next(e)
+
     // label 交给正文：否则引擎会在行首再画一遍同名摘要
-    return next({ ...e, props: { ...p, body, label: '', isHidden: p.isHidden } })
+    return next({ ...e, props: { ...p, body, label: '' } })
   })
 }

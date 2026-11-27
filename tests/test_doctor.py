@@ -1433,7 +1433,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('刷新会先清掉它再抢锁', self.sb.detail(r, '缓存/锁'))
 
     def test_nonempty_lock_dir_fails(self):
-        """渲染侧只用 rmdir，非空锁目录永远删不掉：不能报「下次会自动清除」。"""
+        """锁目录含 owner 之外的异常文件时，渲染侧清 owner 后 rmdir 仍删不掉：必须报 FAIL。"""
         self.sb.healthy()
         d = os.path.join(self.sb.cache, 'claude-sl-lock-doctor')
         os.makedirs(d)
@@ -1442,6 +1442,45 @@ class Doctor(unittest.TestCase):
         r = self.sb.run()
         self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
         self.assertIn('非空', self.sb.detail(r, '缓存/锁'))
+
+    def test_lock_dir_with_only_owner_is_healthy(self):
+        """1.0.9+ 刷新锁目录内写入普通文件 owner：活跃锁报「有刷新正在进行」，超龄锁报「残锁」，
+        均不得误报 FAIL；但 owner 为符号链接时仍判异常 FAIL。"""
+        self.sb.healthy()
+        d = os.path.join(self.sb.cache, 'claude-sl-lock-live')
+        os.makedirs(d)
+        owner = os.path.join(d, 'owner')
+        with open(owner, 'w') as f:
+            f.write('12345.1\n')
+        r = self.sb.run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'PASS')
+        self.assertIn('正在进行', self.sb.detail(r, '缓存/锁'))
+        old = time.time() - LOCK_STALE - 60
+        os.utime(d, (old, old))
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'PASS')
+        self.assertIn('残锁', self.sb.detail(r, '缓存/锁'))
+        os.unlink(owner)
+        os.symlink('/nonexistent', owner)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+
+    def test_future_timestamps_match_renderer_staleness(self):
+        """时钟回拨产生的未来时间戳：渲染侧 not_future 按 0（陈旧）处理并隐藏派生项与服务状态，
+        doctor 也必须报 WARN，不能报 PASS 或打印负秒数。"""
+        env = self.sb.healthy()
+        future = int(time.time()) + 3600
+        with open(os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache.ts'), 'w') as f:
+            f.write(f'{future}\n')
+        stf = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(stf, 'w') as f:
+            f.write(f'{future}\tminor\n')
+        os.chmod(stf, 0o600)
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN', r.stdout)
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN', r.stdout)
+        self.assertNotIn('-', self.sb.detail(r, '缓存/状态页').split('未更新')[0])
 
     def test_credentials_in_base_url_are_stripped(self):
         self.sb.healthy(relay=True)

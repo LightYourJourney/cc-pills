@@ -29,7 +29,7 @@ def test_ids(mods):
 
 
 def run(ids):
-    r = subprocess.run([sys.executable, '-m', 'unittest', *ids], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, '-m', 'unittest', *ids], capture_output=True, text=True, timeout=600)
     return r.returncode, r.stderr + r.stdout
 
 

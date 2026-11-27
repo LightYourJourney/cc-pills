@@ -73,6 +73,7 @@ jobs:
         run: |
           sudo curl -fsSL -o /usr/local/bin/jq \
             https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
+          echo 'af986793a515d500ab2d35f8d2aecd656e764504b789b66d7e1a0b727a124c44  /usr/local/bin/jq' | sha256sum -c -
           sudo chmod +x /usr/local/bin/jq
           jq --version | grep -qx 'jq-1.6'
       - name: 跑测试（全量；并发用例除外）

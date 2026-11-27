@@ -64,7 +64,8 @@ else
         "等下一轮刷新；若一直不变，看 缓存/退避"
     fi
   elif [ "$COLOUR_OK" = 1 ]; then
-    age=$(( NOW - $(mtime "$tc") ))
+    tm=$(mtime "$tc"); tm=${tm:-$NOW}; [ "$tm" -gt "$NOW" ] && tm=0
+    age=$(( NOW - tm ))
     if [ "$age" -ge "$THEME_TTL" ]; then
       res PASS 缓存/色板 "${want}；上次重算 ${age}s 前（后台按需触发，没有活跃会话时不上涨是正常的）"
     else
@@ -114,12 +115,13 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
     tv=""; read -r tv < "$ts"
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
-      *) t=$((10#$tv)); [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=old_ts ;;
+      *) t=$((10#$tv)); [ "$t" -gt "$NOW" ] && t=0
+         [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=old_ts ;;
     esac
   elif [ -e "$ts" ] || [ -L "$ts" ]; then
     tok_tsbad=$((tok_tsbad + 1)); t=0
   else
-    t=$(( $(mtime "$f") ))
+    t=$(( $(mtime "$f") )); [ "$t" -gt "$NOW" ] && t=0
     [ $(( NOW - t )) -gt "$TOK_STALE" ] && stale=no_ts
   fi
   if [ -n "$stale" ]; then
@@ -204,7 +206,7 @@ if [ -z "$git" ]; then
   res SKIP 缓存/git "git 不可用（见 环境/git）"
 elif [ ! -d "$DIR" ]; then
   res WARN 缓存/git "--dir 指向的目录不存在：$DIR" "传一个存在的项目目录"
-elif ( cd "$DIR" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel >/dev/null 2>&1 ); then
+elif ( cd "$DIR" 2>/dev/null && git --no-optional-locks -c core.fsmonitor=false rev-parse --show-toplevel >/dev/null 2>&1 ); then
   badnote=""
   [ "$gcache_link" -gt 0 ] && badnote="（${gcache_link} 个符号链接会被后台原子替换）"
   [ "$gcache_bad" -gt 0 ] && badnote="${badnote}（${gcache_bad} 个格式异常，后台会重算）"
@@ -235,7 +237,8 @@ else
     *) if [ -z "$st_ind" ]; then
          res WARN 缓存/状态页 "状态缓存缺少 indicator：服务状态项会被隐藏" "删掉它，后台会重新拉取"
        else
-         age=$(( NOW - 10#$st_ts ))
+         st_t=$((10#$st_ts)); [ "$st_t" -gt "$NOW" ] && st_t=0
+         age=$(( NOW - st_t ))
          if [ "$age" -gt "$STATUS_STALE" ]; then
            res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
              "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
@@ -252,19 +255,30 @@ lock_n=0; lock_old=""; lock_bad=""; lock_full=""
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
   if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
-  # 不递归、不跟随符号链接；空锁目录就是正常的锁
-  if [ -n "$(find "$l" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+  # 不递归、不跟随符号链接；空目录或仅含普通文件 owner（1.0.9+ 属主标记，残锁回收会先清
+  # owner 再 rmdir）都是正常的锁；出现其他文件 / 子目录 / 符号链接才永远删不掉（旧副本不删 owner）。
+  bad_entry=0
+  while IFS= read -r _le; do
+    [ -n "$_le" ] || continue
+    if [ "$COPY_OLD" != 1 ] && [ "$_le" = "$l/owner" ] && [ -f "$_le" ] && [ ! -L "$_le" ]; then
+      continue
+    fi
+    bad_entry=1; break
+  done <<EOF
+$(find "$l" -mindepth 1 -maxdepth 1 2>/dev/null)
+EOF
+  if [ "$bad_entry" = 1 ]; then
     lock_full="$lock_full ${l##*/}"; continue
   fi
   lock_n=$((lock_n + 1))
-  lt=$(mtime "$l"); lt=${lt:-$NOW}
+  lt=$(mtime "$l"); lt=${lt:-$NOW}; [ "$lt" -gt "$NOW" ] && lt=0
   age=$(( NOW - lt ))
   if [ "$age" -ge "$LOCK_STALE" ]; then lock_old="$lock_old ${l##*/}(${age}s)"; fi
 done
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/锁 "缓存根不可用"
 elif [ -n "$lock_full" ]; then
-  res FAIL 缓存/锁 "锁目录非空${lock_full}：渲染侧只用 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
+  res FAIL 缓存/锁 "锁目录非空（含异常文件）${lock_full}：渲染侧只清 owner 后 rmdir，永远删不掉，后台刷新会一直退出（不会自愈）" \
     "rm -rf \"$SLT\"/claude-sl-lock-*"
 elif [ -n "$lock_bad" ]; then
   res WARN 缓存/锁 "锁路径不是目录（普通文件或符号链接）${lock_bad}：刷新会先清掉它再抢锁" \
@@ -298,7 +312,8 @@ elif [ ! -O "$sstate" ]; then
 else
   smode=$(stat_mode "$sstate")
   if [ "$smode" = 600 ]; then
-    res PASS 缓存/面板状态 "0600，$(( NOW - $(mtime "$sstate") ))s 前写入"
+    sm=$(mtime "$sstate"); sm=${sm:-$NOW}; sage=$(( NOW - sm )); [ "$sage" -lt 0 ] && sage=0
+    res PASS 缓存/面板状态 "0600，${sage}s 前写入"
   else
     res WARN 缓存/面板状态 "面板状态权限 ${smode}，应为 600（同机其他用户可读你的 agent 活动）" \
       "chmod 600 \"$sstate\""
@@ -321,7 +336,7 @@ elif [ -L "$pmark" ] || { [ -e "$pmark" ] && [ ! -f "$pmark" ]; }; then
 elif [ -e "$pmark" ]; then
   ft=""; why=""; { read -r ft why < "$pmark"; } 2>/dev/null
   # 读不出 / 非数字 / 写在未来的时间戳都按「刚刚」算；10# 免得前导 0 被当成八进制
-  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)) ;; esac
+  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)); [ "$ft" -gt "$NOW" ] && ft=$NOW ;; esac
   age=$(( NOW - ft )); [ "$age" -lt 0 ] && age=0
   case "$why" in
     busy)  why="抢锁超时" ;;
@@ -346,7 +361,7 @@ if [ -L "$failf" ]; then
   res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
 elif [ -e "$failf" ]; then
   ft=""; [ -f "$failf" ] && read -r ft < "$failf" 2>/dev/null   # 非普通文件（FIFO 会挂住）不读，按「刚刚」
-  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)) ;; esac
+  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)); [ "$ft" -gt "$NOW" ] && ft=$NOW ;; esac
   if [ "$COLOUR_OK" = 1 ]; then
     # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染
     res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"

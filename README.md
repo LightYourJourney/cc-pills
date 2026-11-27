@@ -40,7 +40,8 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 - bash ≥ 4.2 — macOS ships 3.2, so `brew install bash` (the script re-execs into a ≥4.2
   build at `/opt/homebrew/bin/bash` and friends when it finds one; the installer does not, so
   run it with that bash if `bash` on your PATH is still 3.2: `/opt/homebrew/bin/bash install.sh`)
-- `jq`, `python3` ≥ 3.9 (`str.removesuffix`), `git`; `curl` is only used when `status_page = on`
+- `jq` ≥ 1.6 (what Debian 12 / Ubuntu 22.04 ship), `python3` ≥ 3.9 (`str.removesuffix`), `git`;
+  `curl` is only used when `status_page = on`
 
 | Environment | Supported | Notes |
 |---|---|---|
@@ -51,6 +52,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
 | python3 ≥ 3.9 | yes | CI runs the full suite on Python 3.9 (except the concurrent panel-write case); below 3.9 the installer refuses and the diagnostic reports FAIL |
+| jq 1.6 | yes | What Debian 12 / Ubuntu 22.04 ship; CI runs the full suite on it in its own job. jq 1.7 relaxed object-literal syntax — 1.6 rejects `{k: $n + 1}` outright |
 
 ## Cache
 
@@ -110,7 +112,7 @@ script with `--with-subagent`, or when it is already installed) and prints wheth
 `mods/agent-row` is the same panel as a mod, drawn at the engine's `AgentRow` render point: one
 row per subagent, same content (description · model · effort · tokens with a measured rate ·
 context left · duration), fed straight from the engine's `AgentInfo` — no transcript parsing, no
-shared state, no lock. Needs Claude Code ≥ 2.1.330.
+shared state, no lock. Needs Claude Code ≥ 2.1.330 (earlier builds were not checked for `AgentRow`).
 
 At the Claude Code prompt:
 
@@ -118,8 +120,10 @@ At the Claude Code prompt:
 /plugin install cc-pills-agent-row --marketplace LightYourJourney/cc-pills
 ```
 
-Then remove `subagentStatusLine` from `settings.json`: with both active you get two rows. The
-bash panel stays for one more version as a transition, so you can switch back at any time.
+Then retire the bash panel: remove `subagentStatusLine` from `settings.json` and delete the
+installed `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh` (`install.sh --check`
+keys off that file, and reports "panel installed but not configured" while it is there). The bash
+panel stays for one more version as a transition — reinstall to switch back.
 
 Copy-install means the repo is the source of truth and the installed files are snapshots:
 re-run `bash install.sh` after pulling. `--with-conf` writes the example config only when you
@@ -222,7 +226,7 @@ The render path never calls the diagnostic, so refreshes do not get slower.
 | Token cache in another format version (left by an older install, or truncated) | WARN | `缓存/token` |
 | Token cache is a symlink (ignored) | WARN | `缓存/token` |
 | Refresh lock occupied by a plain file / symlink (cleared and retried on the next pass; self-heals) | WARN | `缓存/锁` |
-| Refresh lock is a non-empty dir (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
+| Refresh lock is a non-empty dir containing unexpected files beyond `owner` (never self-heals, refresh exits forever) | FAIL | `缓存/锁` |
 | Panel lock path occupied by a plain file / symlink (the panel clears and retries each pass; self-heals) | WARN | `缓存/面板锁` |
 | Panel's last write failed (reason code and age; past 1 day it is treated as possibly stopped) | WARN | `缓存/面板锁` |
 | Panel's write-failure marker is not a regular file (directory or symlink, reason unreadable) | WARN | `缓存/面板锁` |
@@ -243,13 +247,17 @@ Exit code: 0 = no FAIL, 1 = some FAIL or diagnostic modules cannot load, 2 = bad
 src/statusline-command.sh     main renderer (bash)
 src/statusline-tokens.py      transcript aggregation, rates, quota pacing, relay ledger
 src/statusline-theme.py       palette generation and contrast validation
-src/subagent-statusline.sh    the agent panel's per-subagent lines
+src/subagent-statusline.sh    the agent panel's per-subagent lines (deprecated upstream; transition copy)
+mods/agent-row/               AgentRow mod replacing subagentStatusLine
+.claude-plugin/               marketplace manifest for /plugin install
+config/                       example user configuration
+docs/                         DECISIONS.md (current rules) and HISTORY.md (audit trail)
 tools/preview.sh              side-by-side style preview
 tools/doctor.sh               read-only diagnostics (entry point)
 tools/doctor/*.sh             check groups: env / install / cache / data
 tools/lib/points_to.sh        settings-command matching shared by install and doctor
 tests/                        unit + golden + property + contrast-matrix tests
-.github/workflows/tests.yml   CI: full suite on macOS, Linux, bash 4.2 and Python 3.9, plus shellcheck
+.github/workflows/tests.yml   CI: full suite on macOS, Linux, bash 4.2, Python 3.9 and jq 1.6, plus shellcheck
 install.sh  run_tests.sh
 ```
 
@@ -258,12 +266,14 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # parallel shards; ~1 min on an 8-core machine, fully isolated (no live caches, no network)
 bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
+claude plugin test mods/agent-row          # the mod's 9 tests (run_tests.sh runs them too when `claude` is on PATH)
 UPDATE_GOLDEN=1 bash run_tests.sh render   # after an intentional rendering change
 ```
 
 CI runs the full suite on macOS and on `ubuntu-latest`, plus once more with a source-built
-bash 4.2.0 first in PATH and once on Python 3.9. Linux, bash 4.2 and Python 3.9 results are in the
-compatibility matrix above; the concurrent panel-write case is skipped on the three ubuntu
+bash 4.2.0 first in PATH, once on Python 3.9, and once on jq 1.6 (the mod's tests are not in CI:
+the runners have no `claude` CLI). Linux, bash 4.2, Python 3.9 and jq 1.6 results are in the
+compatibility matrix above; the concurrent panel-write case is skipped on the four ubuntu
 jobs because that runner's cross-process `mkdir` visibility is not POSIX-consistent
 (evidence in [docs/DECISIONS.md](docs/DECISIONS.md)).
 
