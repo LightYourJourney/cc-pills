@@ -154,3 +154,83 @@ test('kfmt never emits a four-digit mantissa and negative inputs are ignored', a
   expect(text).not.toContain('ctx')
   expect(text).toContain('审查这个模块的并发写')
 })
+
+test('zero tokenCount hides context even with windowSize, strips controls and handles bad effort', async ($, on) => {
+  const text = await harness($, on)({
+    tokenCount: 0,
+    contextWindowSize: 1_000_000,
+    description: 'clean\x1b[31m\u009btext\nline2',
+    effort: { bad: 1 },
+  })
+  expect(text).not.toContain('tok')
+  expect(text).not.toContain('ctx')
+  expect(text).not.toContain('\x1b')
+  expect(text).not.toContain('[object Object]')
+  expect(text).toContain('clean[31mtext line2')
+})
+
+test('clock rollback resets rate baseline and narrow CJK cut emits no bare ellipsis', async ($, on) => {
+  let now = 1_700_000_010_000
+  on('clock.now', () => ({ value: now }))
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+
+    return Text({ children: String(e.props.body ?? '') })
+  })
+  const render = async (over: Record<string, unknown>) => {
+    const ui = await $.ui.mount({ ...row(over), surface: 'terminal' })
+    const text = (await ui.find({ type: 'Text' }))?.text ?? ''
+    await ui.unmount()
+
+    return text
+  }
+
+  await render({ id: 'rb1', tokenCount: 100_000 })
+  // 时钟回拨后基线重置，之后推进 2s 能正常算出速率（不冻结）
+  now -= 5000
+  expect(await render({ id: 'rb1', tokenCount: 100_000 })).not.toContain('↑')
+  now += 2000
+  expect(await render({ id: 'rb1', tokenCount: 104_000 })).toContain('↑2.0k/s')
+
+  // 预算恰剩 2 列遇宽字符时，不得拼出孤零零的「…  — 」
+  const tight = await render({
+    id: 'rb2',
+    description: '中文描述',
+    model: 'opus-5',
+    effort: undefined,
+    tokenCount: 0,
+    contextWindowSize: undefined,
+    startTime: undefined,
+    columns: 12,
+  })
+  expect(tight.startsWith('…')).toBe(false)
+})
+
+test('waiting status is treated as live and durations >=24h format as XdYh', async ($, on) => {
+  let now = 1_700_000_100_000
+  on('clock.now', () => ({ value: now }))
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+
+    return Text({ children: String(e.props.body ?? '') })
+  })
+  const render = async (over: Record<string, unknown>) => {
+    const ui = await $.ui.mount({ ...row(over), surface: 'terminal' })
+    const text = (await ui.find({ type: 'Text' }))?.text ?? ''
+    await ui.unmount()
+
+    return text
+  }
+
+  await render({ id: 'wt1', status: 'waiting', tokenCount: 100_000 })
+  now += 2000
+  const text = await render({
+    id: 'wt1',
+    status: 'waiting',
+    tokenCount: 104_000,
+    startTime: now - 90_000_000,
+  })
+  expect(text).toContain('↑2.0k/s')
+  expect(text).toContain('1d1h')
+  expect(text).toContain('[waiting]')
+})

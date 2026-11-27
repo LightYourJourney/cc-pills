@@ -116,8 +116,8 @@ FAIL）；面板抢锁在输出之后，竞争时进程最多晚 1 s 退出。
 | 发布 1.0.4 | 见 tag `v1.0.4` | 274 | 无 | `VERSION=1.0.4`：1.0.3 之后两轴复审修复（中转站字段形状守卫等）与 /simplify 之后的状态 |
 | 遗留项 · nonneg 与 iso_utc | 452ce5c | 274 | token 数校验直接调用比生成器表达式快（3.15：263→146 ns；3.9.6：507→414 ns，每行四个值） | 此前以「热路径上抽函数不值得」为由没抽，前提不成立；补负数 token 用例（删掉 `v >= 0` 的变异此前存活）。测试的 UTC 时间戳写法抽成 `_util.iso_utc`，替换 5 处 |
 | 遗留项 · 逐行取值整体兜底 | 0fc9a7b | 274→275 | 120k 行合成 transcript 上最终状态与 1.0.4 逐字节相同；中转站模式下重复 message.id 的行会各多解析一次时间戳（约 18 µs/行，只在 track_unl 时、选项里已写明） | 用户裁定「取值段包 try」：每行取值（含中转站未入账行）挪到改状态之前、整段兜底，守卫之外的意外只丢这一行；字段守卫保留、仍决定坏值语义。去掉兜底与各守卫的变异逐个被杀 |
-| 复审（max）补的测试与文档 | 见本条后续提交 | 275→276 | 无（只改测试与文档） | 「只丢一行」用例补上 `last_id`/`msgs` 与游标推到文件尾的断言（此前把消息计数挪到取值之前也能通过）；补零用量合成消息不进未入账集合的用例（`any(vals)` 变异此前存活）；DECISIONS 记下变异前先清 `src/__pycache__`（同秒同大小的改写会被当成字节码未变） |
 | 发布 1.0.5 | 见 tag `v1.0.5` | 275 | 无 | `VERSION=1.0.5`：遗留项（nonneg、逐行取值整体兜底、iso_utc）之后的状态 |
+| 复审（max）补的测试与文档 | 9b49a1e | 275→276 | 无（只改测试与文档） | 「只丢一行」用例补上 `last_id`/`msgs` 与游标推到文件尾的断言（此前把消息计数挪到取值之前也能通过）；补零用量合成消息不进未入账集合的用例（`any(vals)` 变异此前存活）；DECISIONS 记下变异前先清 `src/__pycache__`（同秒同大小的改写会被当成字节码未变） |
 
 ### 两轴复审（规范 / 规格）
 
@@ -248,6 +248,7 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 | 五：变异用例补强 | 5d06824 | 332→339 | 上一轮 9 个存活变异里 7 个补了用例并逐个验证被杀（见下） |
 | 六：全量审查修复 | 1dc7eed | 339→342 + 9 | doctor 放行合法 `owner` 锁目录并同步 `not_future` 未来时间戳；每日清理删超龄 `owner` 当轮 `rmdir`；主栏 jq 拦截负数输入；mod 修 `kfmt("1000M")`、`num()` 负数过滤与 `seen` 剪枝并补至 9 项测试；`preview.sh` 加 `CLAUDE_SL_NO_REFRESH=1` 与配置尾换行；CI `jq16` 补固定 sha256 校验；`test_theme.py` 清理临时目录并补齐 30 处测试子进程超时；README / DECISIONS 对齐 |
 | 发布 1.0.10 | 见 tag `v1.0.10` | 342 + 9 | `VERSION=1.0.10`（含 `mods/agent-row` 0.1.1、变异用例补强与全量审查修复） |
+| 七：二阶全量审查加固 | 待提交 | 342→366 + 12 | 主栏 256 色色板三段校验与 `10#`、`COLUMNS` 十进制、`hit_ratio` 非负与小数首位进位、`money` 溢出保护、中转站缺 `r_today` 与 `io` 缺 `t_out`、模型缩略边界、`cd` 失败不投毒 git 缓存、持锁后再迁移与回填、清理 `mtime` fail-safe、配置数值 9 位封顶、`.fail` 记 `$THEME_WANT` 改配即绕过退避、`CLAUDE_SL_TMP` 尾斜杠归一；tokens `valid_state` 有限数与字段类型全校验、`track`/`rate` 时钟回拨与非有限参数保护、`find_pricing` `LIKE` 转义、拒布尔限额、全零替换清 `unl`、`today_global` 叠加 `usage_daily_rollups`；theme Display P3 分量钳制与 `defaults` 超时；bash 面板与 mod 对齐（`waiting` 活态/速率/持久化、`tokenCount==0` 隐 `tok`/`ctx`、`kfmt`、`↑x.yk/s`、`XdYh`）+ 空 `label` 回退/控制字符剔除/坏 `t` 自愈/窄屏截断；doctor 重定向顺序与 `-r` 校验、`<1.0.9` `owner` 锁判 FAIL、软链根不穿透、`scrub` 补全大写/引号空格/URL 斜杠及 `PAT=` 边界收紧、`points_to` 补 `$CLAUDE_CONFIG_DIR/` 与 `${HOME}/.claude/`；`install.sh` 缺 jq/目录目标/断链；`preview.sh` 免联网与 JSON 转义；CI 补 `permissions`、bash 3.2 语法与插件 JSON 校验；文档对齐 |
 
 ### mod 迁移（11-27 决定）
 

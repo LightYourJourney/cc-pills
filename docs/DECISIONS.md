@@ -100,7 +100,7 @@
 - **面板状态并入主栏缓存根**（10-31）：默认 `${TMPDIR:-/tmp}/claude-sl-<uid>/claude-subagent-sl-<uid>.json`；
   设了 `CLAUDE_SL_TMP` 时跟随它，预览 / 测试只设一个变量就能同时隔离主栏与面板。
   `CLAUDE_SUBAGENT_SL_STATE` 是最高优先级的单文件覆盖。
-- **显式根不创建、不清理**（10-31）：`CLAUDE_SL_TMP` 是预览 / 测试 / 高级用法，目录必须已存在，
+- **显式根不创建、不清理**（10-31）：`CLAUDE_SL_TMP` 是预览 / 测试 / 高级用法，目录必须已存在（两处入口均去掉末尾多余 `/` 保持键与锁路径一致），
   渲染不代为创建（doctor 判 FAIL 并给出 `mkdir` 命令），生命周期完全归调用方。
 - **只读缓存根只降级、不报错**：目录不可写时同步路径仍读已缓存的值，`--refresh` 静默退出，
   doctor 的 `缓存/后台刷新` 报 FAIL。
@@ -143,6 +143,7 @@
   色板文件不迁移、不删（每日清理不碰色板），新键下一轮重算一次。
 - **色板失败退避**：生成失败后 `THEME_TTL` 内不再重跑；成功 = python 正常退出且写出的首行相符
   （只看首行时，「首行相符、只是过期」的旧色板失败了也算成功，每轮刷新都会重跑 python）。
+  `.fail` 记录 `$now\t$THEME_WANT`（11-28 用户裁定）：配置改了主题或风格时立即绕过旧退避、当轮重生成。
 
 ## 外观
 
@@ -197,7 +198,8 @@
   上一次账本读数，不能当现值输出。
 - 网关 `rate_limits.spend_limit` 存在时优先于 CC Switch 的日限额。
 - **「今日花费」按 `app_type = 'claude'` 直查数据库**：无头会话（`claude -p`）从不渲染状态栏，
-  靠「渲染过的会话」列表会漏掉。Codex 等其它 app_type 不计入。
+  靠「渲染过的会话」列表会漏掉。Codex 等其它 app_type 不计入；若存在 `usage_daily_rollups`
+  滚动汇总表，则叠加当天同 `app_type='claude'` 的汇总金额（缺表时按 0，11-28 用户裁定）。
 - **中转站日限额按「当前供应商可归属」口径**（10-29，上游 CC Switch v4.0.21 的
   `check_provider_limits` 核实，出处见 HISTORY）：今日用量 =
   `proxy_request_logs` + `usage_daily_rollups` 中 `provider_id = 当前供应商` 的和；限额读
@@ -229,9 +231,11 @@
   - **宽度用引擎实测的 `columns`**（嵌套行的连接符已由它扣掉），截断与 `dw` 同 bash 那份；
     落不到 `columns` 的 surface 按 120。
   - **最低版本 2.1.330**：`AgentRow` 在该版本的二进制里首次确认；更早的版本未核实。
-  - **测试**：`claude plugin test mods/agent-row`（9 项，引擎那一层由测试钩子代替，断言
+  - **测试**：`claude plugin test mods/agent-row`（12 项，引擎那一层由测试钩子代替，断言
     写进 `body` 的字符串）。`run_tests.sh` 在 PATH 里有 `claude` 时顺带跑，CI runner 没有
     这个 CLI，所以 CI 不覆盖 mod。
+  - **bash 面板与 mod 口径对齐**（11-28 用户裁定）：`waiting` 均视为活跃并参与速率与状态持久化；
+    `tokenCount == 0` 时双方同时隐藏 `tok` 与 `ctx`；`kfmt` 与 `↑x.yk/s` 速率格式统一，且时长 `>= 24h` 均显示 `XdYh`。
 - **截断按显示宽度算**（11-27）：`length` 数的是码点，CJK / emoji 在终端占两列——80 列实测中文
   描述让整行宽 99 列，面板把行尾（tok、ctx 剩余、时长）裁掉。jq 侧 `cw` / `dw` / `cut` 与主栏
   `dw()` 同一模型（1/2 字节字符 1 列，3/4 字节 2 列，…↑↓↺↻⇡⇣ 除外），预算用各段实际拼出的
@@ -250,7 +254,8 @@
   `owner`，EXIT trap 只在属主仍是自己时才 `rm` + `rmdir`。此前无条件 `rmdir`，刷新超过
   `LOCK_STALE` 被接管后，先退出的进程会删掉新锁，同一会话能并发跑好几轮（8 个并发 git status
   实测最多 3 个同时跑）。残锁回收要连 `owner` 一起清，否则 `rmdir` 与 `mkdir` 都失败、该会话
-  后台永久退出；每日清理按同一阈值先删超龄 `owner`、再按空目录收走。
+  后台永久退出；每日清理按同一阈值删掉超龄 `owner` 后当轮 `rmdir` 空锁目录（不顺手删会把目录
+  `mtime` 重置成现在、得多等 30 天）。
   - 回收有竞态窗口，接受（11-25 记下）：两个实例都判定同一把残锁已死时，先回收的那个 `mkdir` 拿到新锁
     之后，后到的那个的 `rm -rf` 会删掉这把新锁、自己也拿到——同时持锁，可能互相覆盖速率条目（插桩
     实测 8 个并发实例最多 4 个同时持锁）。残锁只在持有者被 SIGKILL 时出现（bash 3.2 / 5.x 在 SIGTERM
@@ -269,12 +274,12 @@
   打印建议写法；uninstall 只警告仍指向已删除文件的键。这样 JSON 写坏、符号链接写穿这类风险整类
   不存在。
 - **安装器不碰 mod**（11-27）：`cc-pills-agent-row` 由 Claude Code 的 `/plugin install` 自己管
-  （启用状态、版本与更新都在那边），`install.sh` 只装两个 bash 脚本，`--check` 与 doctor 都不
+  （启用状态、版本与更新都在那边），`install.sh` 只装主栏与过渡期面板脚本（含两个 Python 助手），`--check` 与 doctor 都不
   检查 mod。代价是迁移到 mod 后要手动删掉已安装的面板脚本——`--check` 以那个文件为准，留着会
   报「面板脚本已安装但未配置」（11-27 全量审查发现，README 已写明）。
 - **「指向已安装副本」的判定**（`tools/lib/points_to.sh`，安装器与 doctor 共用）：命令里有
-  `<DEST>/<脚本>`（DEST 去掉尾斜杠），或 `${CLAUDE_CONFIG_DIR}` / `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
-  （及 `~`、展开后的家目录写法）开头的建议写法；`${CLAUDE_CONFIG_DIR:-/别处}` 不算——变量未设时
+  `<DEST>/<脚本>`（DEST 去掉尾斜杠），或 `${CLAUDE_CONFIG_DIR}` / `$CLAUDE_CONFIG_DIR` / `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
+  （及 `~`、`${HOME}`、展开后的家目录写法）开头的建议写法；`${CLAUDE_CONFIG_DIR:-/别处}` 不算——变量未设时
   跑的是别处的脚本。默认目录（`DEST` 是 `$HOME/.claude`）时 `$HOME/.claude/` 与 `~/.claude/` 也算，
   但目录后必须紧跟脚本名（11-25：此前中间多一个 `*`，子目录里的同名脚本也算指向）。只是文件名相同、
   路径不明按 rc=2 报出，命令里没有脚本名是 rc=1。`.bak` 等后缀黏住的文件名不算引用。
@@ -299,11 +304,11 @@
   stdin（如计费模式）。没有「差不多正常」这种中间态。
 - **FAIL 只留给「状态栏很可能不工作」**：环境依赖不满足、安装目录或副本缺失、settings
   缺失 / 不可读 / 非普通文件 / 语法错误 / 未指向、缓存根不可用、主栏刷新锁目录含 `owner` 之外的
-  异常文件（只清 `owner` 后 `rmdir`，不会自愈；仅有合法普通文件 `owner` 是 1.0.9+ 正常的锁）、
+  异常文件（只清 `owner` 后 `rmdir`，不会自愈；仅有合法普通文件 `owner` 在已安装版本 `>= 1.0.9` 时为正常锁，`< 1.0.9` 仍判 FAIL，11-28 用户裁定）、
   显式 `--transcript` 不存在或不可读、冒烟失败。副本与仓库不一致、配置文件
   不可读、面板状态权限或类型不对是 WARN（能跑，只是跑的不是那一版 / 少一段）。主栏与面板的锁路径
   被普通文件 / 符号链接占住也是 WARN（11-22 用户裁定，此前 FAIL）：两边都先 `rm -f` 再抢锁，下一轮
-  自愈；超过 `LOCK_STALE` 的空锁是 PASS 附说明（活跃会话下一轮抢掉，已结束的由每日清理删，
+  自愈；超过 `LOCK_STALE` 的空锁或仅含合法 `owner` 的锁是 PASS 附说明（活跃会话下一轮抢掉，已结束的由每日清理删，
   天数经 `--facts` 的 `cache_max_age` 取，不在诊断侧另抄）。
 - **判「能不能用」而不是「新不新」**：色板能上色（主题部分相同且 `P_CTX` 合法）就是 PASS，
   chroma / 风格 / 格式版本不符只会触发后台重算；token 缓存超过 `TOK_STALE` 会让派生项消失，
@@ -350,7 +355,7 @@
   （`10#`）。`缓存/token` / `缓存/git` / `缓存/色板` / `缓存/状态页` / `缓存/退避` 都有符号链接分支。`缓存/面板状态` 只判归属、类型与 0600 权限，不读内容；
   显式 `CLAUDE_SUBAGENT_SL_STATE` 时两项都 SKIP。
 - **凭据过滤在显示层**：`scrub()` 抹 `sk-…` / `ghp_…` 等 GitHub 令牌前缀 / `*_KEY=…` / `*_TOKEN=…` /
-  `*PASSWORD=…` / `*SECRET=…` / `*PAT=…` / `--api-key|--token|--password|--secret` 后的值 / URL 里的
+  `*PASSWORD=…` / `*SECRET=…` / `PAT=`・`*_PAT=`・`*-PAT=`（收紧前缀边界避免误伤 `COMPAT=` / `EXPAT=`）/ `--api-key|--token|--password|--secret` 后的值 / URL 里的
   `user:pass@` 与 query 参数值 / `x-api-key: …` / `api-key: …` / `X-Auth-Token: …` / `Authorization: …`
   （scheme 可有可无）/ `Bearer …`，路径与其余结构保留——不保留就没人能照着修（PASSWORD 及之后几种
   是 11-25 用户裁定扩充的）。`*_KEY=` 的值到空白、`; " ' &` 为止（`&` 在 shell 里结束这个词、

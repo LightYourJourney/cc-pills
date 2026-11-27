@@ -1,6 +1,6 @@
 {
   "name": "cc-pills-agent-row",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Subagent rows with model, tokens, rate, context left and duration",
   "author": { "name": "LightYourJourney" }
 }

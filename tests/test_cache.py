@@ -505,6 +505,20 @@ class Lifecycle(CacheBase):
         self.refresh(self.env)
         self.assertTrue(os.path.exists(again), '同一天内又跑了一次清理')
 
+    def test_prune_stamps_before_running(self):
+        """清理节流戳必须在 find 之前写下，否则并发刷新在清理进行期间会重复跑整轮。"""
+        p = self.private()
+        os.makedirs(p, mode=0o700)
+        stamp = os.path.join(p, 'claude-sl-prune.stamp')
+        b = os.path.join(self.d, 'fakebin')
+        os.makedirs(b, exist_ok=True)
+        saw = os.path.join(self.d, 'saw-stamp')
+        with open(os.path.join(b, 'find'), 'w') as f:
+            f.write(f'#!/bin/sh\n[ -f "{stamp}" ] && echo yes > "{saw}"\nexec {shutil.which("find")} "$@"\n')
+        os.chmod(os.path.join(b, 'find'), 0o755)
+        self.refresh(dict(self.env, PATH=b + os.pathsep + self.env['PATH']))
+        self.assertTrue(os.path.isfile(saw), 'find 启动时节流戳还没落盘')
+
     def test_explicit_cache_dir_is_never_pruned(self):
         slt = os.path.join(self.d, 'slt')
         os.makedirs(slt, mode=0o700)
@@ -756,6 +770,28 @@ class RefreshState(unittest.TestCase):
         self.assertEqual(self.git_cache()[1], 'stale', '锁还新鲜时不该再跑一轮刷新')
         self.assertTrue(os.path.isfile(os.path.join(lock, 'owner')), '别人的锁被删了')
 
+    def test_release_lock_keeps_other_owners_lock(self):
+        """持锁期间若 owner 已被别的接管进程改写，本进程退出时绝不能删掉新锁。"""
+        lock = os.path.join(self.sb.tmp, 'claude-sl-lock-own')
+        b = os.path.join(self.sb.dir, 'fakegit')
+        os.makedirs(b, exist_ok=True)
+        with open(os.path.join(b, 'git'), 'w') as f:
+            f.write(f'#!/bin/sh\nprintf "999999.9\\n" > "{lock}/owner"\nexec {shutil.which("git")} "$@"\n')
+        os.chmod(os.path.join(b, 'git'), 0o755)
+        self.plant_git_cache('stale', age=60)
+        self.sb.refresh(self.sb.repo, sid='own', env=dict(self.sb.env, PATH=b + os.pathsep + self.sb.env['PATH']))
+        self.assertTrue(os.path.isdir(lock), '退出时删掉了属主已变更的新锁')
+        with open(os.path.join(lock, 'owner')) as f:
+            self.assertEqual(f.read().strip(), '999999.9')
+
+    def test_refresh_missing_dir_does_not_poison_git_cache(self):
+        """目标目录已不存在时跳过 git 缓存，不能把原工作目录的分支写进它的缓存键。"""
+        missing = os.path.join(self.sb.dir, 'deleted-repo')
+        before = set(os.listdir(self.sb.tmp))
+        self.sb.refresh(missing, sid='gone')
+        added = [f for f in set(os.listdir(self.sb.tmp)) - before if f.startswith('claude-sl-git-')]
+        self.assertEqual(added, [], f'不存在的目录写出了 git 缓存：{added}')
+
     def test_index_change_invalidates_git_cache_within_ttl(self):
         """git add 只改 .git/index、不动 HEAD：TTL 内也要重算，否则暂存的新文件最多晚 5 秒才显示。"""
         self.sb.refresh(self.sb.repo, sid='ix')
@@ -825,6 +861,20 @@ class RefreshState(unittest.TestCase):
         for _ in range(3):
             self.sb.refresh(self.sb.repo, env=env)
         self.assertEqual(self.calls(marker), 1, '色板生成失败后没有退避，每轮刷新都在重跑')
+
+    def test_theme_config_change_bypasses_stale_backoff(self):
+        """退避期间用户切换 theme / pill_style 配置后，跳过旧配置的退避立即重算。"""
+        tc = next(os.path.join(self.sb.tmp, f) for f in os.listdir(self.sb.tmp)
+                  if f.startswith('claude-sl-theme-') and f.endswith('.cache'))
+        with open(tc, 'w') as f:
+            f.write('THEME=bogus\n')
+        with open(tc + '.fail', 'w') as f:
+            f.write(f'{self.now - 5}\tTHEME=dracula/12/tint/v4\n')
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('theme = nord\nstatus_page = off\n')
+        env, marker = self.fake_python('exit 1')
+        self.sb.refresh(self.sb.repo, env=env)
+        self.assertEqual(self.calls(marker), 1, '切换主题后仍被旧配置的退避拦住')
 
     # ── token 助手节流 ───────────────────────────────────────────────────
     def test_token_helper_skipped_when_inputs_unchanged(self):

@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   macos:
     runs-on: macos-latest
@@ -25,7 +28,10 @@ jobs:
         run: |
           BASH=/bin/bash
           for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH=$b && break; done
+          [ "$(bash -c 'echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))')" -ge 402 ]
           for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh; do "$BASH" -n "$f"; done
+          # 承诺兼容 macOS 自带 bash 3.2 的工具脚本用系统 /bin/bash 全文件静态语法检查
+          for f in tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh install.sh; do /bin/bash -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
       - name: 跑测试（隔离沙箱，不联网）
         run: bash run_tests.sh
@@ -46,6 +52,7 @@ jobs:
         run: |
           for f in src/*.sh install.sh run_tests.sh tools/preview.sh tools/doctor.sh tools/doctor/*.sh tools/lib/*.sh; do bash -n "$f"; done
           python3 -m py_compile src/*.py tests/*.py
+          for j in .claude-plugin/marketplace.json mods/agent-row/.claude-plugin/plugin.json mods/agent-row/hooks/hooks.json; do jq empty "$j"; done
       # SC2034 / SC2154（未用 / 未赋值）整类关掉：变量靠 read 名单、printf -v 与跨文件 source 赋值，
       # shellcheck 跟不到；其余 warning 要么改掉，要么在行内写明理由后豁免。
       - name: shellcheck

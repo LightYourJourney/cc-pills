@@ -134,6 +134,8 @@ class Install(unittest.TestCase):
                     'bash $HOME/.claude/statusline-tokens.py; bash /opt/x/statusline-command.sh'):
             self.assertEqual(self.points_to(cmd, home_dest), 2, cmd)
         self.assertEqual(self.points_to('bash $HOME/.claude/statusline-command.sh', home_dest), 0)
+        self.assertEqual(self.points_to('bash ${HOME}/.claude/statusline-command.sh', home_dest), 0)
+        self.assertEqual(self.points_to('bash "$CLAUDE_CONFIG_DIR/statusline-command.sh"', self.dest), 0)
         # 设了 CLAUDE_CONFIG_DIR=/别处 时，$HOME/.claude/… 跑的是默认目录里的另一份
         self.assertEqual(self.points_to('bash $HOME/.claude/statusline-command.sh', self.dest), 2)
 
@@ -288,10 +290,34 @@ class Install(unittest.TestCase):
         self.assertEqual(self.run_sh('--check', settings=s).returncode, 0, '建议写法被误判')
 
     def test_check_accepts_config_dir_with_trailing_slash(self):
-        env = dict(self.env, CLAUDE_CONFIG_DIR=self.dest + '/')
+        env = dict(self.env, CLAUDE_CONFIG_DIR=self.dest + '//')
         self.assertEqual(self.run_sh(env=env).returncode, 0)
         r = self.run_sh('--check', settings=self.cmds(sub=False), env=env)
         self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_points_to_rejects_dir_suffix_and_parent_prefix(self):
+        """同名目录后接子路径与父目录前缀均不能误判为 rc=0 指向已安装副本。"""
+        self.assertEqual(self.points_to(f'bash {self.dest}/statusline-command.sh/other.sh', self.dest), 1)
+        self.assertEqual(self.points_to(f'bash /tmp/backup{self.dest}/statusline-command.sh', self.dest), 2)
+
+    def test_install_refuses_directory_target_and_check_handles_missing_jq(self):
+        """目标位置是目录时拒绝覆盖；缺少 jq 时 --check 报缺依赖而不是误报 JSON 语法错误。"""
+        os.makedirs(os.path.join(self.dest, 'statusline-command.sh'))
+        r = self.run_sh()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('是目录', r.stderr)
+        os.rmdir(os.path.join(self.dest, 'statusline-command.sh'))
+        self.assertEqual(self.run_sh().returncode, 0)
+        b = os.path.join(self.d, 'nojq')
+        os.makedirs(b)
+        for n in ('bash', 'cmp', 'sed', 'dirname'):
+            p = shutil.which(n)
+            if p:
+                os.symlink(p, os.path.join(b, n))
+        r = self.run_sh('--check', settings=self.cmds(sub=False), env=dict(self.env, PATH=b))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('缺少依赖 jq', r.stdout)
+        self.assertNotIn('不是合法 JSON', r.stdout)
 
 
 if __name__ == '__main__':

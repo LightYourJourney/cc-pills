@@ -116,8 +116,8 @@ if [ "$relay" = 0 ]; then
 elif [ ! -e "$CCSWITCH_DB" ]; then
   res WARN 数据/CCSwitch库 "未找到 ${CCSWITCH_DB}（${note}）：中转站费用会回落为 \$x*（标价估算），日限额不显示" \
     "安装 CC Switch 并让它记录用量，或忽略（只是估算口径不同）"
-elif [ -z "$py" ]; then
-  res SKIP 数据/CCSwitch库 "python3 缺失，无法只读校验"
+elif [ -z "$py" ] || ! ver_ge "$pver" "$PY_MIN"; then
+  res SKIP 数据/CCSwitch库 "python3 缺失或低于 ${PY_MIN}，无法只读校验（见 环境/python3）"
 elif [ ! -r "$CCSWITCH_DB" ]; then
   res WARN 数据/CCSwitch库 "${CCSWITCH_DB} 不可读：中转站费用会回落为 \$x*" "chmod 644 \"$CCSWITCH_DB\"（只读访问需要读权限）"
 else

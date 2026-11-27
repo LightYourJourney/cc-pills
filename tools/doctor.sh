@@ -19,8 +19,9 @@
 #   且只在中转站模式下打开。WAL 模式的库即使只读打开，SQLite 也可能在库旁建 -wal / -shm
 #   旁文件——生产脚本是同样的访问方式，诊断不额外写库内容。
 # - 不打印环境变量全集；中转站备注里的 ANTHROPIC_BASE_URL 只给 host（连 user:pass@ 一并去掉）；
-#   settings 里的命令行经 scrub() 抹掉 sk-… / *_KEY=… / *_TOKEN=… / URL 凭据与 query 参数 /
-#   Bearer … 后显示。
+#   settings 里的命令行经 scrub() 抹掉 sk-… / ghp_… / *_KEY=… / *_TOKEN=… / *PASSWORD=… /
+#   *SECRET=… / *PAT=… / --api-key|--token|--password|--secret / URL 凭据与 query 参数 /
+#   API-key 与 Authorization 请求头 / Bearer … 后显示。
 # - 正常渲染路径不调用本脚本（statusline-command.sh 与 subagent-statusline.sh 都不引用它，
 #   由 tests/test_doctor.py 的契约测试守护）。
 #
@@ -46,8 +47,8 @@ DIR=$PWD
 TRANSCRIPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir)        [ $# -ge 2 ] || { echo "--dir 需要一个路径" >&2; exit 2; }; DIR=$2; shift 2 ;;
-    --transcript) [ $# -ge 2 ] || { echo "--transcript 需要一个路径" >&2; exit 2; }; TRANSCRIPT=$2; shift 2 ;;
+    --dir)        [ $# -ge 2 ] && [ -n "$2" ] || { echo "--dir 需要一个非空路径" >&2; exit 2; }; DIR=$2; shift 2 ;;
+    --transcript) [ $# -ge 2 ] && [ -n "$2" ] || { echo "--transcript 需要一个非空路径" >&2; exit 2; }; TRANSCRIPT=$2; shift 2 ;;
     -h|--help)    sed -n '2,/^set -u$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "未知参数：${1}（--help 看用法）" >&2; exit 2 ;;
   esac
@@ -76,13 +77,14 @@ scrub() {
   sed -E \
     -e 's/sk-[A-Za-z0-9_-]{8,}/sk-***/g' \
     -e 's/(gh[opusr])_[A-Za-z0-9]{16,}/\1_***/g' -e 's/github_pat_[A-Za-z0-9_]{16,}/github_pat_***/g' \
-    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Tt])=)([\"'][^\"']*[\"']|[^ ;\"&']+)/\\1***/g" \
+    -e "s/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt])=)([\"'][^\"']*[\"']|[^ ;\"&']+)/\\1***/g" \
+    -e "s/((^|[ ;\"'&_-])[Pp][Aa][Tt]=)([\"'][^\"']*[\"']|[^ ;\"&']+)/\\1***/g" \
     -e "s/(--(api-key|token|password|secret)[ =])([\"'][^\"']*[\"']|[^ ;\"']+)/\\1***/g" \
-    -e 's#//[^/@ ]+@#//***@#g' \
-    -e "s/([Xx]-[Aa]pi-[Kk]ey[ ]*:?[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
-    -e "s/(([Aa]pi-[Kk]ey|[Xx]-[Aa]uth-[Tt]oken)[ ]*:[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
-    -e "s/([Aa]uthorization[ ]*:[ ]*([A-Za-z]+[ ]+)?)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
-    -e "s/([Bb]earer )([\"']?)[^ \"';]+/\\1\\2***/g" \
+    -e "s#//[^ \"';]+@#//***@#g" \
+    -e "s/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy][ ]*:?[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/(([Aa][Pp][Ii]-[Kk][Ee][Yy]|[Xx]-[Aa][Uu][Tt][Hh]-[Tt][Oo][Kk][Ee][Nn])[ ]*:[ ]*)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][ ]*:[ ]*([A-Za-z]+[ ]+)?)([\"'][^\"']*[\"']|[^ \";']+)/\\1***/g" \
+    -e "s/([Bb][Ee][Aa][Rr][Ee][Rr] )([\"'][^\"']*[\"']|[^ \"';]+)/\\1***/g" \
     -e "s/([?&#])([A-Za-z0-9_.-]+)=[^ ;\"&#']+/\\1\\2=***/g"
 }
 
@@ -91,11 +93,16 @@ if [ "${OSTYPE#darwin}" != "$OSTYPE" ] && [ -x /usr/bin/stat ]; then
   mtimes() { /usr/bin/stat -f %m "$@" 2>/dev/null; }     # 一次取多个文件，每行一个（文件须都存在）
   stat_mode() { /usr/bin/stat -f %Lp "$1" 2>/dev/null; }
   fsize() { /usr/bin/stat -f %z "$1" 2>/dev/null; }
+elif stat -c %Y / >/dev/null 2>&1; then
+  mtime() { stat -c %Y "$1" 2>/dev/null; }
+  mtimes() { stat -c %Y "$@" 2>/dev/null; }
+  stat_mode() { stat -c %a "$1" 2>/dev/null; }
+  fsize() { stat -c %s "$1" 2>/dev/null; }
 else
-  mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
-  mtimes() { stat -c %Y "$@" 2>/dev/null || stat -f %m "$@" 2>/dev/null; }
-  stat_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
-  fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
+  mtime() { stat -f %m "$1" 2>/dev/null; }
+  mtimes() { stat -f %m "$@" 2>/dev/null; }
+  stat_mode() { stat -f %Lp "$1" 2>/dev/null; }
+  fsize() { stat -f %z "$1" 2>/dev/null; }
 fi
 
 # 点分版本比较：ver_ge <实际> <最低>；无法解析时返回 1（当作不达标，宁可报出来）
@@ -108,6 +115,22 @@ ver_ge() {
   b2=${2#*.}; [ "$b2" = "$2" ] && b2=0; b2=${b2%%.*}
   case "$a2$b2" in ''|*[!0-9]*) return 1 ;; esac
   [ "$a2" -ge "$b2" ]
+}
+
+# 三段点分版本比较：ver3_ge <实际> <最低>（如 1.0.9 >= 1.0.9；解析失败返回 1）
+ver3_ge() {
+  local a1 a2 a3 b1 b2 b3 IFS=.
+  read -r a1 a2 a3 <<EOF
+$1
+EOF
+  read -r b1 b2 b3 <<EOF
+$2
+EOF
+  a2=${a2:-0}; a3=${a3:-0}; b2=${b2:-0}; b3=${b3:-0}
+  case "$a1$a2$a3$b1$b2$b3" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$a1" -ne "$b1" ] && { [ "$a1" -gt "$b1" ]; return; }
+  [ "$a2" -ne "$b2" ] && { [ "$a2" -gt "$b2" ]; return; }
+  [ "$a3" -ge "$b3" ]
 }
 
 # ── 诊断模块：每组检查一个文件，入口只负责共享状态、加载顺序与汇总 ──────

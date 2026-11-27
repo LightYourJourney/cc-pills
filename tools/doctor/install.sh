@@ -58,7 +58,9 @@ if [ "$SJ_OK" = 1 ]; then
   sub_cmd=$(jq -r '.subagentStatusLine.command // empty' "$sj" 2>/dev/null)
   [ -n "$sub_cmd" ] && sub_cfg=1
 fi
-if [ "$sub_installed" = 0 ] && [ "$sub_cfg" = 0 ]; then
+if [ "$sub_installed" = 0 ] && [ "$SJ_OK" != 1 ]; then
+  res "$SJ_STATE" 安装/subagentStatusLine "settings.json 不可用，无法校验"
+elif [ "$sub_installed" = 0 ] && [ "$sub_cfg" = 0 ]; then
   res SKIP 安装/subagentStatusLine "面板脚本未安装、也未配置"
 elif [ "$sub_installed" = 0 ] && { points_to "$sub_cmd" subagent-statusline.sh "$DEST"; [ $? = 1 ]; }; then
   # 配的是别的面板程序（命令里根本没有本项目的脚本名）：与本项目无关，不是故障
@@ -91,6 +93,8 @@ elif [ ! -f "$CONF" ]; then
     "修好该路径：删除它，或让 $CONF 指向一个普通文件"
 elif [ "$CFG_READABLE" = 0 ]; then
   res WARN 安装/配置文件 "$CONF 存在但不可读；渲染会静默改用内置默认，状态栏照常工作" "chmod 600 \"$CONF\""
+elif [ -n "$CFG_UNKNOWN" ] && [ -n "$CFG_BAD" ]; then
+  res WARN 安装/配置文件 "存在未知键（${CFG_UNKNOWN# }）与非法值（${CFG_BAD# }），均会被静默忽略" "核对 config/claude-statusline.conf.example"
 elif [ -n "$CFG_UNKNOWN" ]; then
   res WARN 安装/配置文件 "这些键不认识、会被静默忽略：$CFG_UNKNOWN" "删掉它们，或核对 config/claude-statusline.conf.example"
 elif [ -n "$CFG_BAD" ]; then

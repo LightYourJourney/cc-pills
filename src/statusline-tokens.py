@@ -276,6 +276,8 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
             pend[mid] = (vals, stop)
             if row:
                 st['unl'][mid] = row
+            elif track_unl:
+                st['unl'].pop(mid, None)
     return caught_up
 
 
@@ -366,11 +368,20 @@ def find_pricing(conn, model, cache):
     if not row:
         for c in cands:
             if prefix_ok(c):
-                row = conn.execute(sel + 'WHERE model_id LIKE ? ORDER BY LENGTH(model_id) LIMIT 1',
-                                   (c + '-%',)).fetchone()
+                esc = c.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                row = conn.execute(sel + "WHERE model_id LIKE ? ESCAPE '\\' ORDER BY LENGTH(model_id) LIMIT 1",
+                                   (esc + '-%',)).fetchone()
                 if row:
                     break
-    cache[model] = [float(x) for x in row] if row else None
+    prices = None
+    if row:
+        try:
+            vals = [float(x) for x in row]
+            if all(math.isfinite(x) and x >= 0 for x in vals):
+                prices = vals
+        except (TypeError, ValueError):
+            prices = None
+    cache[model] = prices
     return cache[model]
 
 
@@ -382,7 +393,9 @@ def msg_cost(p, e):
 
 
 def _limit_usd(v):
-    """限额字符串 → 正数；空 / 非数字 / 0 与负数视为未设置（不猜）。"""
+    """限额字符串 → 正数；空 / 布尔 / 非数字 / 0 与负数视为未设置（不猜）。"""
+    if isinstance(v, bool):
+        return None
     try:
         f = float(v)
     except (TypeError, ValueError):
@@ -461,6 +474,11 @@ def provider_probe(db):
         conn.close()
 
 
+def _finite(v):
+    f = float(v)
+    return f if math.isfinite(f) else 0.0
+
+
 def provider_today(conn, pid, midnight, day):
     """当前供应商今日可归属费用 = 明细行 + 当日 rollup（与上游 check_provider_limits 同口径）。
     明细按 provider_id 精确过滤；provider_id='_session' 的会话日志不可归属，天然不在内。"""
@@ -479,7 +497,7 @@ def provider_today(conn, pid, midnight, day):
         if 'no such table: usage_daily_rollups' not in str(e):
             raise
         roll = 0.0
-    return float(detail) + float(roll)
+    return _finite(detail) + _finite(roll)
 
 
 def relay_ledger(db, sid, st, now, midnight):
@@ -520,8 +538,9 @@ def relay_ledger(db, sid, st, now, midnight):
                 e[U_DIRECT] = 1                       # 久未匹配：定为直连，之后只等会话日志入账
         cost, unpriced = conn.execute(
             'SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0), '          # CC Switch 以 TEXT 存 Decimal
-            'COALESCE(SUM(CAST(total_cost_usd AS REAL) = 0 AND input_tokens + output_tokens > 0), 0) '
+            'COALESCE(SUM(COALESCE(CAST(total_cost_usd AS REAL), 0) = 0 AND input_tokens + output_tokens > 0), 0) '
             'FROM proxy_request_logs WHERE session_id = ?', (sid,)).fetchone()
+        cost = _finite(cost)
         tail = tail_today = 0.0
         cache = {}
         for e in unl.values():
@@ -546,7 +565,14 @@ def relay_ledger(db, sid, st, now, midnight):
         today_all = conn.execute(
             "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM proxy_request_logs "
             "WHERE created_at >= ? AND app_type = 'claude'", (int(midnight),)).fetchone()[0]
-        today_global = today_all + tail_today
+        today_roll = 0.0
+        try:
+            today_roll = conn.execute(
+                "SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) FROM usage_daily_rollups "
+                "WHERE app_type = 'claude' AND date = ?", (day,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            today_roll = 0.0
+        today_global = _finite(today_all) + _finite(today_roll) + tail_today
         return {
             'cost': cost + tail,
             'unpriced': int(unpriced),
@@ -560,12 +586,15 @@ def relay_ledger(db, sid, st, now, midnight):
 
 
 def track(st, key, value, now, epoch=None):
-    """把 value 并入 key 追踪器的 EWMA 斜率。所属窗口（epoch）变化或 value 回落过半时
+    """把 value 并入 key 追踪器的 EWMA 斜率。所属窗口（epoch）变化、时钟回拨或 value 回落过半时
     重新起算；小幅回落（/restart 后 Claude Code 重算费用，实测会略降）只挪基准、不重置——
     此前任何回落都重置，重启后 $/h 要重新预热。"""
+    if not (num(value) and value >= 0 and num(now)):
+        return
     hl = TRACK[key][0]
     t = st['trk'].get(key)
-    if t is None or t.get('ep') != epoch or value < t['lv'] * RESET_DROP:
+    if (t is None or t.get('ep') != epoch or value < t['lv'] * RESET_DROP
+            or now < t['t0'] or now < t['lt']):
         st['trk'][key] = {'ew': 0.0, 'lt': now, 'lv': value, 't0': now, 'ep': epoch}
         return
     if value < t['lv']:                        # 小幅回落：这段时间按斜率 0 衰减，再挪基准
@@ -581,13 +610,16 @@ def track(st, key, value, now, epoch=None):
 
 
 def rate(st, key, now):
-    """key 追踪器经偏差校正的速率（单位/秒）；预热未满返回 None。"""
+    """key 追踪器经偏差校正的速率（单位/秒）；预热未满或时钟异常返回 None。"""
     t = st['trk'].get(key)
     hl, warm = TRACK[key]
-    if t is None or now - t['t0'] < warm:
+    if t is None or now < t['t0'] or t['lt'] < t['t0'] or now - t['t0'] < warm:
         return None
     w = 1 - math.exp(-(t['lt'] - t['t0']) * math.log(2) / hl)
-    return max(t['ew'] / w, 0) if w > 0 else None
+    if w <= 0:
+        return None
+    r = t['ew'] / w
+    return r if math.isfinite(r) and r >= 0 else None
 
 
 def dur(sec):
@@ -642,7 +674,11 @@ def day_bounds(now):
 
 
 def num(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def nn_int(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
 def valid_state(d):
@@ -653,13 +689,16 @@ def valid_state(d):
     「助手没有输出」，于是该会话永久不出数，且没有任何提示。重扫最多多花几秒。"""
     if not isinstance(d, dict):
         return False
-    if not all(num(d.get(k, 0)) for k in KEYS) or not num(d.get('comp', 0)):
+    if not all(nn_int(d.get(k, 0)) for k in KEYS) or not nn_int(d.get('comp', 0)):
         return False
     files = d.get('files', {})
     if not isinstance(files, dict):
         return False
-    for fs in files.values():
-        if not isinstance(fs, dict) or not num(fs.get('off')) or not num(fs.get('fp')):
+    for p, fs in files.items():
+        if not (isinstance(p, str) and isinstance(fs, dict)
+                and nn_int(fs.get('off')) and nn_int(fs.get('fp'))
+                and nn_int(fs.get('msgs', 0))
+                and (fs.get('last_id') is None or isinstance(fs.get('last_id'), str))):
             return False
     pend = d.get('pend', [])
     if not isinstance(pend, list):
@@ -668,19 +707,24 @@ def valid_state(d):
         if not (isinstance(e, list) and len(e) == 2 and isinstance(e[0], str)
                 and isinstance(e[1], list) and len(e[1]) == 2
                 and isinstance(e[1][0], list) and len(e[1][0]) == len(KEYS)
-                and all(num(x) for x in e[1][0])):
+                and all(nn_int(x) for x in e[1][0])):
             return False
     trk = d.get('trk', {})
     if not isinstance(trk, dict):
         return False
     for t in trk.values():                     # track() / rate() 直接取这四个键
-        if not (isinstance(t, dict) and all(num(t.get(x)) for x in ('ew', 'lt', 'lv', 't0'))):
+        if not (isinstance(t, dict) and all(num(t.get(x)) for x in ('ew', 'lt', 'lv', 't0'))
+                and t['lt'] >= t['t0'] and t['lv'] >= 0):
             return False
     unl = d.get('unl', {})
     if not isinstance(unl, dict):
         return False
     for row in unl.values():                   # 按位置存 8 列，见 U_*
-        if not (isinstance(row, list) and len(row) == 8):
+        if not (isinstance(row, list) and len(row) == 8
+                and isinstance(row[U_MODEL], str)
+                and all(nn_int(row[i]) for i in range(U_IN, U_CW1 + 1))
+                and num(row[U_TS])
+                and isinstance(row[U_DIRECT], (int, bool))):
             return False
     return True
 
@@ -695,12 +739,15 @@ def main():
 
     def nums(k):
         try:
-            return [float(x) for x in kv[k].split(',')]
+            vals = [float(x) for x in kv[k].split(',')]
         except (KeyError, ValueError):
             return None
+        return vals if all(math.isfinite(x) for x in vals) else None
 
-    cost = (nums('cost') or [None])[0]
-    th = nums('th') or [50, 80]
+    cost_v = nums('cost')
+    cost = cost_v[0] if cost_v and cost_v[0] >= 0 else None
+    th_v = nums('th')
+    th = th_v if th_v and len(th_v) >= 2 else [50, 80]
     db = kv.get('relay')
     db = db if db and os.path.isfile(db) else None
     if not os.path.isfile(path):
@@ -775,7 +822,9 @@ def main():
     sp = None
     if len(spv) == 3 and spv[2] in SP_WINDOW:
         try:
-            sp = (float(spv[0]), float(spv[1]), spv[2])
+            s0, s1 = float(spv[0]), float(spv[1])
+            if math.isfinite(s0) and math.isfinite(s1) and s0 >= 0:
+                sp = (s0, s1, spv[2])
         except ValueError:
             sp = None
     if sp and SP_WINDOW[sp[2]][2]:

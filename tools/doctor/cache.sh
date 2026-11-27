@@ -46,11 +46,13 @@ elif [ ! -e "$tc" ]; then
     "若持续无色，检查 环境/python3 与 缓存/退避"
 elif [ -L "$tc" ] || [ ! -f "$tc" ] || [ ! -O "$tc" ]; then
   res WARN 缓存/色板 "色板缓存不是属于本人的普通文件（目录或符号链接），渲染会拒绝读取（整行无色）" "删掉它：rm -f \"$tc\""
+elif [ ! -r "$tc" ]; then
+  res WARN 缓存/色板 "色板缓存不可读（权限），渲染会拒绝读取（整行无色）" "chmod 600 \"$tc\""
 else
   # 上色条件由渲染脚本判（主题部分与当前 theme 相同且有合法的 P_CTX）；chroma / 风格 /
   # 格式版本不符只触发后台重算，本轮照常上色。
   COLOUR_OK=$F_palette_usable
-  line=""; read -r line < "$tc"
+  line=""; { read -r line < "$tc"; } 2>/dev/null
   line=${line//[[:cntrl:]]/}                       # 与渲染侧约束 16 一致：别把控制字符打上屏
   want=$F_theme_want
   # 装着旧副本（COPY_OLD）时色板是它按自己的格式版本写的：只比主题 / 彩度 / 风格
@@ -64,12 +66,16 @@ else
         "等下一轮刷新；若一直不变，看 缓存/退避"
     fi
   elif [ "$COLOUR_OK" = 1 ]; then
-    tm=$(mtime "$tc"); tm=${tm:-$NOW}; [ "$tm" -gt "$NOW" ] && tm=0
-    age=$(( NOW - tm ))
-    if [ "$age" -ge "$THEME_TTL" ]; then
-      res PASS 缓存/色板 "${want}；上次重算 ${age}s 前（后台按需触发，没有活跃会话时不上涨是正常的）"
+    tm=$(mtime "$tc"); tm=${tm:-$NOW}
+    if [ "$tm" -gt "$NOW" ]; then
+      res PASS 缓存/色板 "${want}；时间戳在未来（疑似时钟回拨），后台会按过期重算"
     else
-      res PASS 缓存/色板 "${want}，${age}s 前写入"
+      age=$(( NOW - tm ))
+      if [ "$age" -ge "$THEME_TTL" ]; then
+        res PASS 缓存/色板 "${want}；上次重算 ${age}s 前（后台按需触发，没有活跃会话时不上涨是正常的）"
+      else
+        res PASS 缓存/色板 "${want}，${age}s 前写入"
+      fi
     fi
   else
     res WARN 缓存/色板 "首行匹配但 P_CTX 缺失或非法（文件损坏）：本轮无色，后台会重算" "等下一轮刷新"
@@ -87,32 +93,34 @@ fi
 sess_paths() {  # sess_paths <token 缓存路径> → 全局 SP：transcript 路径（换行分隔）；判断不了返回 1
   local k v sid st
   SP=""
-  while IFS='=' read -r k v; do [ "$k" = tp ] && SP=$v; done < "$1"
+  { while IFS='=' read -r k v; do [ "$k" = tp ] && SP=$v; done < "$1"; } 2>/dev/null
   [ -n "$SP" ] && return 0
   sid=${1##*/claude-sl-tok-}; sid=${sid%.cache}
   st="$SLT/claude-statusline-$sid.json"
   [ -L "$st" ] && return 1
-  [ -f "$st" ] || return 1                        # FIFO 之类会让 jq 挂住；不在时同样判断不了
+  [ -f "$st" ] && [ -r "$st" ] || return 1        # FIFO 之类会让 jq 挂住；不在或不可读时同样判断不了
   SP=$(jq -r '.files | if type == "object" and length > 0 then keys[] else error end' "$st" 2>/dev/null)
 }
-tok_newest=-1; tok_n=0; tok_notmine=0; tok_tsbad=0; tok_malformed=0; tok_link=0
+tok_newest=-1; tok_n=0; tok_notmine=0; tok_unreadable=0; tok_tsbad=0; tok_malformed=0; tok_link=0
 tok_old_ts=0; tok_no_ts_old=0; tok_idle=0
 n_stale=0                                         # 陈旧缓存：种类 / transcript 路径（? = 判断不了）
+if [ "$SLT_OK" = 1 ]; then
 for f in "$SLT"/claude-sl-tok-*.cache; do
   stale=""                                        # 陈旧时是哪一种：old_ts（有 .ts）/ no_ts（按 mtime）
   if [ -L "$f" ]; then tok_link=$((tok_link + 1)); continue; fi
   [ -f "$f" ] || continue
   tok_n=$((tok_n + 1))
   [ -O "$f" ] || tok_notmine=$((tok_notmine + 1))
+  if [ ! -r "$f" ]; then tok_unreadable=$((tok_unreadable + 1)); continue; fi
   # 首行是格式版本；不符的缓存渲染侧整份不读，所以也不参与下面的新鲜度统计。装着旧副本
   # （COPY_OLD）时不判：那些缓存是它写的、它照常读，仓库这一版的格式不适用。
-  _first=""; read -r _first < "$f" 2>/dev/null
+  _first=""; { read -r _first < "$f"; } 2>/dev/null
   if [ "$COPY_OLD" != 1 ] && [ "$_first" != "TOK=$F_tok_v" ]; then
     tok_malformed=$((tok_malformed + 1)); continue
   fi
   ts=$f.ts
-  if [ -f "$ts" ] && [ ! -L "$ts" ] && [ -O "$ts" ]; then
-    tv=""; read -r tv < "$ts"
+  if [ -f "$ts" ] && [ -r "$ts" ] && [ ! -L "$ts" ] && [ -O "$ts" ]; then
+    tv=""; { read -r tv < "$ts"; } 2>/dev/null
     case "$tv" in
       ''|*[!0-9]*) tok_tsbad=$((tok_tsbad + 1)); t=0 ;;
       *) t=$((10#$tv)); [ "$t" -gt "$NOW" ] && t=0
@@ -130,6 +138,7 @@ for f in "$SLT"/claude-sl-tok-*.cache; do
   fi
   [ "$t" -gt "$tok_newest" ] && tok_newest=$t
 done
+fi
 # 全部陈旧会话的 transcript 一次 stat 取完（不逐条 fork）。先用内建 -e 筛掉不存在的（transcript 已删 =
 # 会话已结束）；stat 与 -e 之间文件消失会让行数对不上，此时这些会话一律按活跃处理
 i=1; n_arg=0
@@ -174,6 +183,8 @@ else
   age=$(( NOW - tok_newest ))
   if [ "$tok_notmine" -gt 0 ]; then
     res WARN 缓存/token "$tok_n 个缓存里有 $tok_notmine 个不属于当前用户，会被跳过" "rm -f \"$SLT\"/claude-sl-tok-*"
+  elif [ "$tok_unreadable" -gt 0 ]; then
+    res WARN 缓存/token "$tok_n 个缓存里有 $tok_unreadable 个不可读（权限），会被跳过" "chmod 600 \"$SLT\"/claude-sl-tok-*"
   elif [ "$tok_tsbad" -gt 0 ]; then
     res WARN 缓存/token "有 $tok_tsbad 个新鲜度时间戳损坏或不属于本人：渲染侧会判陈旧，\$/h、out、hit、io、msgs 被隐藏" \
       "删掉对应的 .ts，让后台刷新重写"
@@ -189,19 +200,25 @@ else
       "回到那个会话让它刷新一次即可重写；已结束的会话留着无害"
   else
     idle_note=""; [ "$tok_idle" -gt 0 ] && idle_note="；其中 $tok_idle 个属已闲置的会话（transcript 超过 TOK_STALE 没写过），缓存陈旧是正常的"
-    res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前${idle_note}"
+    if [ "$tok_newest" = 0 ]; then
+      res PASS 缓存/token "$tok_n 个会话缓存（最新时间戳异常或位于未来）${idle_note}"
+    else
+      res PASS 缓存/token "$tok_n 个会话缓存，最新 ${age}s 前${idle_note}"
+    fi
   fi
 fi
 
 # git 缓存：缺失会同步回退（慢但正确），所以只做粗粒度提示；格式坏了也会被后台重算
 gcache_n=0; gcache_bad=0; gcache_link=0
+if [ "$SLT_OK" = 1 ]; then
 for f in "$SLT"/claude-sl-git-*.cache; do
   if [ -L "$f" ]; then gcache_link=$((gcache_link + 1)); continue; fi
   [ -f "$f" ] || continue
   gcache_n=$((gcache_n + 1))
-  IFS=$'\t' read -r _r _b _s _t < "$f" 2>/dev/null    # 4 段：根 / 分支 / 旗标 / 写入时刻
+  _t=""; { IFS=$'\t' read -r _r _b _s _t < "$f"; } 2>/dev/null    # 4 段：根 / 分支 / 旗标 / 写入时刻
   case "$_t" in ''|*[!0-9]*) gcache_bad=$((gcache_bad + 1)) ;; esac
 done
+fi
 if [ -z "$git" ]; then
   res SKIP 缓存/git "git 不可用（见 环境/git）"
 elif [ ! -d "$DIR" ]; then
@@ -230,20 +247,27 @@ elif [ -L "$stf" ] || [ ! -f "$stf" ]; then
     "rm -rf \"$stf\""
 elif [ ! -O "$stf" ]; then
   res WARN 缓存/状态页 "状态缓存不属于当前用户，会被忽略" "rm -f \"$stf\""
+elif [ ! -r "$stf" ]; then
+  res WARN 缓存/状态页 "状态缓存不可读（权限）：服务状态项会被隐藏" "chmod 600 \"$stf\""
 else
-  st_ts=""; st_ind=""; IFS=$'\t' read -r st_ts st_ind < "$stf" 2>/dev/null
+  st_ts=""; st_ind=""; { IFS=$'\t' read -r st_ts st_ind < "$stf"; } 2>/dev/null
   case "$st_ts" in
     ''|*[!0-9]*) res WARN 缓存/状态页 "状态缓存格式损坏：服务状态项会被隐藏" "删掉它，后台会重新拉取" ;;
     *) if [ -z "$st_ind" ]; then
          res WARN 缓存/状态页 "状态缓存缺少 indicator：服务状态项会被隐藏" "删掉它，后台会重新拉取"
        else
-         st_t=$((10#$st_ts)); [ "$st_t" -gt "$NOW" ] && st_t=0
-         age=$(( NOW - st_t ))
-         if [ "$age" -gt "$STATUS_STALE" ]; then
-           res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
-             "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
+         st_t=$((10#$st_ts))
+         if [ "$st_t" -gt "$NOW" ]; then
+           res WARN 缓存/状态页 "状态缓存时间戳在未来（疑似时钟回拨），按过期处理：服务状态项被隐藏" \
+             "确认系统时钟与网络可用；后台每分钟会重试"
          else
-           res PASS 缓存/状态页 "${age}s 前更新"
+           age=$(( NOW - st_t ))
+           if [ "$age" -gt "$STATUS_STALE" ]; then
+             res WARN 缓存/状态页 "状态缓存 ${age}s 未更新（超过 STATUS_STALE=${STATUS_STALE}）：服务状态项被隐藏" \
+               "确认网络与 curl 可用（见 环境/curl）；后台每分钟会重试"
+           else
+             res PASS 缓存/状态页 "${age}s 前更新"
+           fi
          fi
        fi ;;
   esac
@@ -252,15 +276,18 @@ fi
 # 刷新锁：活跃会话的残锁下一轮就被抢掉，已结束会话的由每日清理删；锁路径被普通文件 / 符号链接占住时，渲染侧会先
 # rm -f 再重试、下一轮自愈，但私有目录里出现这种占位不正常，报 WARN 提醒
 lock_n=0; lock_old=""; lock_bad=""; lock_full=""
+lock_owns_file=0
+[ "$COPY_OLD" != 1 ] && ver3_ge "${F_version:-}" 1.0.9 && lock_owns_file=1
+if [ "$SLT_OK" = 1 ]; then
 for l in "$SLT"/claude-sl-lock-*; do
   { [ -e "$l" ] || [ -L "$l" ]; } || continue
   if [ -L "$l" ] || [ ! -d "$l" ]; then lock_bad="$lock_bad ${l##*/}"; continue; fi
   # 不递归、不跟随符号链接；空目录或仅含普通文件 owner（1.0.9+ 属主标记，残锁回收会先清
-  # owner 再 rmdir）都是正常的锁；出现其他文件 / 子目录 / 符号链接才永远删不掉（旧副本不删 owner）。
+  # owner 再 rmdir）都是正常的锁；1.0.8 及更早副本不删 owner，仍判非空 FAIL。
   bad_entry=0
   while IFS= read -r _le; do
     [ -n "$_le" ] || continue
-    if [ "$COPY_OLD" != 1 ] && [ "$_le" = "$l/owner" ] && [ -f "$_le" ] && [ ! -L "$_le" ]; then
+    if [ "$lock_owns_file" = 1 ] && [ "$_le" = "$l/owner" ] && [ -f "$_le" ] && [ ! -L "$_le" ]; then
       continue
     fi
     bad_entry=1; break
@@ -271,10 +298,15 @@ EOF
     lock_full="$lock_full ${l##*/}"; continue
   fi
   lock_n=$((lock_n + 1))
-  lt=$(mtime "$l"); lt=${lt:-$NOW}; [ "$lt" -gt "$NOW" ] && lt=0
-  age=$(( NOW - lt ))
-  if [ "$age" -ge "$LOCK_STALE" ]; then lock_old="$lock_old ${l##*/}(${age}s)"; fi
+  lt=$(mtime "$l"); lt=${lt:-$NOW}
+  if [ "$lt" -gt "$NOW" ]; then
+    lock_old="$lock_old ${l##*/}(未来时间戳)"
+  else
+    age=$(( NOW - lt ))
+    if [ "$age" -ge "$LOCK_STALE" ]; then lock_old="$lock_old ${l##*/}(${age}s)"; fi
+  fi
 done
+fi
 if [ "$SLT_OK" != 1 ]; then
   res SKIP 缓存/锁 "缓存根不可用"
 elif [ -n "$lock_full" ]; then
@@ -357,17 +389,19 @@ else
 fi
 
 failf=$tc.fail
-if [ -L "$failf" ]; then
-  res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
-elif [ -e "$failf" ]; then
-  ft=""; [ -f "$failf" ] && read -r ft < "$failf" 2>/dev/null   # 非普通文件（FIFO 会挂住）不读，按「刚刚」
-  case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)); [ "$ft" -gt "$NOW" ] && ft=$NOW ;; esac
-  if [ "$COLOUR_OK" = 1 ]; then
-    # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染
-    res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"
-  else
-    res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前），且没有可用色板：整行无色，后台按 THEME_TTL 重试" \
-      "手工重跑看报错：python3 \"$DEST/statusline-theme.py\" $C_THEME /tmp/palette.txt $C_CHROMA $C_STYLE ${F_theme_want##*/v}"
+if [ "$SLT_OK" = 1 ]; then
+  if [ -L "$failf" ]; then
+    res WARN 缓存/退避 "退避文件是符号链接，渲染不会读取：色板生成失败时会每轮重试" "rm -f \"$failf\""
+  elif [ -e "$failf" ]; then
+    ft=""; [ -f "$failf" ] && { IFS=$'\t' read -r ft _ < "$failf"; } 2>/dev/null   # 非普通文件（FIFO 会挂住）不读，按「刚刚」
+    case "$ft" in ''|*[!0-9]*) ft=$NOW ;; *) ft=$((10#$ft)); [ "$ft" -gt "$NOW" ] && ft=$NOW ;; esac
+    if [ "$COLOUR_OK" = 1 ]; then
+      # 渲染侧只有「首行与配置不符」时才让 .fail 阻止重试；色板有效时退避不影响任何渲染
+      res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前）；当前色板缓存有效，渲染不受影响，后台按 THEME_TTL 重试"
+    else
+      res WARN 缓存/退避 "色板生成上次失败（$(( NOW - ft ))s 前），且没有可用色板：整行无色，后台按 THEME_TTL 重试" \
+        "手工重跑看报错：python3 \"$DEST/statusline-theme.py\" $C_THEME /tmp/palette.txt $C_CHROMA $C_STYLE ${F_theme_want##*/v}"
+    fi
   fi
 fi
 

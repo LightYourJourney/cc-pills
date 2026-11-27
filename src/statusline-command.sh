@@ -133,8 +133,8 @@
 #      不跑 status——大仓库的 status 要几秒，期间每帧都会卡住）；状态旗标等后台刷新写出缓存
 #  18. 外部输入一律容错：stdin 任一字段类型不符只影响该项（jq 里先 objects 过滤）；
 #      配置数值按十进制规范化（10#，免得 08 被当成非法八进制）
-#  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根的第一层删普通文件与超龄的空锁目录，
-#      不递归、不碰色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
+#  19. 缓存读取拒绝符号链接（-L）；生命周期清理只在默认私有根清普通文件与超龄的空/仅含 owner 锁目录，
+#      不递归任意子目录、不碰色板 / 状态页，显式 CLAUDE_SL_TMP 不清理。会话状态
 #      （claude-statusline-*.json）另加 transcript 守卫，见 docs/DECISIONS.md
 #  20. --facts（自述模式）分支及其之前的全部代码保持 bash 3.2 可跑、且没有副作用：仓库里的
 #      诊断工具靠它取配置解析结果、路径与阈值，不另抄一份（判据只在本脚本一处）
@@ -183,7 +183,7 @@ THEME_TTL=300            # 色板重算间隔（秒）：跟随 iTerm profile / 
 TOK_MIN_GAP=10           # 输入都未变时，token 助手最少间隔（秒）
 TOK_STALE=900            # token 缓存超过此秒数判陈旧：派生项隐藏（宁缺勿假）
 LOCK_STALE=30            # 后台刷新锁超过此秒数视为残锁
-CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存、残留临时文件与空刷新锁目录的保留天数
+CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存、残留临时文件与空/仅含 owner 刷新锁目录的保留天数
                          # （会话状态另外要求记录里的 transcript 已不存在；后台每天清一次）
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
@@ -198,6 +198,7 @@ root_ok() { [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }
 SLT_OK=0
 if [ -n "${CLAUDE_SL_TMP:-}" ]; then
   SLT=$CLAUDE_SL_TMP
+  while [ "${SLT%/}" != "$SLT" ] && [ "$SLT" != "/" ]; do SLT=${SLT%/}; done
 else
   tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}
   SLT=$tmpdir/claude-sl-${UID:-0}
@@ -241,7 +242,7 @@ if [ -f "$SL_CONF" ] && [ -r "$SL_CONF" ]; then
       status_page) case "$v" in on|off) STATUS_PAGE=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
       pill_style) case "$v" in tint|cool|jewel|glass|mono|pastel|tokyo-glass) PILL_STYLE=$v ;; *) CONF_BAD="$CONF_BAD $k" ;; esac ;;
       safe_margin|truncate_length|warn_at|bad_at|ctx_warn|ctx_bad|crit_at|pill_chroma)
-        case "$v" in ''|*[!0-9]*) CONF_BAD="$CONF_BAD $k" ;; *) v=$((10#$v)); case "$k" in   # 约束 18：08 不当八进制
+        case "$v" in ''|*[!0-9]*|??????????*) CONF_BAD="$CONF_BAD $k" ;; *) v=$((10#$v)); case "$k" in   # 约束 18：08 不当八进制，限 ≤9 位防 64 位回绕
           safe_margin) SAFE_MARGIN=$v ;; truncate_length) TRUNCATE_LENGTH=$v ;;
           warn_at) WARN_AT=$v ;; bad_at) BAD_AT=$v ;;
           ctx_warn) CTX_WARN=$v ;; ctx_bad) CTX_BAD=$v ;; crit_at) CRIT_AT=$v ;;
@@ -344,12 +345,14 @@ load_palette() {
   local k v
   NC=1; cache_theme=""
   if [ "$SLT_OK" = 1 ] && cache_ok "$THEME_CACHE"; then
-    while IFS='=' read -r k v; do
+    while IFS='=' read -r k v || [ -n "$k" ]; do
       case "$k" in
         *[!A-Z0-9_]*) ;;                            # 键要当 printf -v 的目标名：下标里的 $(…) 会被求值
         THEME)   cache_theme=$v ;;                  # 不可直接赋给 THEME：会覆盖脚本设定
-        P_*|T_*|L_*|W_*)                            # W_ = 字重 SGR，不经 sgr 换算
-          case "$v" in ''|*[!0-9\;]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # 只认 R;G;B / 字重
+        W_*)     case "$v" in ''|*[!0-9]*) ;; *) printf -v "$k" '%s' "$v" ;; esac ;;   # W_ = 字重 SGR
+        P_*|T_*|L_*)                                # 严格三段 R;G;B，防止 256 色算术报错
+          case "$v" in ''|*[!0-9\;]*|*\;\;*|\;*|*\;|*\;*\;*\;*) ;;
+            *\;*\;*) printf -v "$k" '%s' "$v" ;; esac ;;
       esac
     done < "$THEME_CACHE"
     # 只改了 pill_chroma / pill_style 时先沿用旧色板（后台按首行不符重算），免得闪一次无色
@@ -425,7 +428,7 @@ git_data() {
 # ── 后台刷新模式（--refresh <dir> <tp> <sid> <mode> <cost> <q5> <q7> <sp>）──────
 if [ "${1:-}" = "--refresh" ]; then
   dir=${2:-}; tp=${3:-}; sid=${4:-}; mode=${5:-sub}; costraw=${6:--}; q5arg=${7:--}; q7arg=${8:--}; sparg=${9:--}
-  now=${EPOCHSECONDS:-$(date +%s)}
+  printf -v now '%(%s)T' -1
   skey=${sid//\//_}; skey=${skey// /_}
   # 私有缓存目录：默认位置不存在则创建（0700）；已存在但不是我们的就整轮放弃写缓存。
   # 显式 CLAUDE_SL_TMP 也要求目录存在且属于本人（预览 / 测试会自己建好）。
@@ -435,23 +438,6 @@ if [ "${1:-}" = "--refresh" ]; then
   fi
   [ "$SLT_OK" = 1 ] || exit 0
   [ -z "${CLAUDE_SL_TMP:-}" ] && chmod 700 "$SLT" 2>/dev/null
-  # 旧版本把缓存写在共享 /tmp：把本会话的 token / 跳过标记 / 状态迁到私有目录，
-  # 避免整段重扫。只搬自己的普通文件（非符号链接），目标已存在则不覆盖。
-  if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT" != "/tmp" ] && [ -d /tmp ]; then
-    sbase=${sid##*/}
-    for f in "claude-sl-tok-${skey}.cache" "claude-sl-tok-${skey}.cache.ts" \
-             "claude-sl-skip-${skey}" "claude-statusline-${sbase}.json"; do
-      src="/tmp/$f"; dst="$SLT/$f"
-      [ ! -e "$dst" ] && [ -f "$src" ] && [ ! -L "$src" ] && [ -O "$src" ] &&
-        mv -f "$src" "$dst" 2>/dev/null && chmod 600 "$dst" 2>/dev/null
-    done
-  fi
-  # 升级迁移来的旧 token 缓存没有 .ts：用缓存自身的 mtime 补一个（一次）。否则同步
-  # 路径会一直按「无时间戳 = 新鲜」展示，长期失效时等于没修。
-  tokf0="${SLT}/claude-sl-tok-${skey}.cache"
-  if cache_ok "$tokf0" && [ ! -e "${tokf0}.ts" ]; then
-    m=$(mtime "$tokf0"); not_future "${m:-$now}" m; put "${tokf0}.ts" "tokts-${skey}" "$m"
-  fi
   # 约束 9：同会话刷新互斥；残锁（被杀进程遗留）超时后清除再抢
   lock="${SLT}/claude-sl-lock-${skey}"
   owner="$$.${RANDOM:-0}"                  # 本轮刷新的属主标记，退出时只删自己的锁
@@ -477,12 +463,35 @@ if [ "${1:-}" = "--refresh" ]; then
   }
   trap release_lock EXIT
 
+  # 旧版本把缓存写在共享 /tmp：在持锁后把本会话的 token / 跳过标记 / 状态迁到私有目录，
+  # 避免跨文件系统并发拷贝与整段重扫。只搬自己的普通文件（非符号链接），目标已存在则不覆盖。
+  tokf0="${SLT}/claude-sl-tok-${skey}.cache"
+  if [ -n "$sid" ] && [ "$sid" != "-" ]; then
+    if [ -z "${CLAUDE_SL_TMP:-}" ] && [ "$SLT" != "/tmp" ] && [ -d /tmp ]; then
+      sbase=${sid##*/}
+      for f in "claude-sl-tok-${skey}.cache" "claude-sl-tok-${skey}.cache.ts" \
+               "claude-sl-skip-${skey}" "claude-statusline-${sbase}.json"; do
+        src="/tmp/$f"; dst="$SLT/$f"
+        [ ! -e "$dst" ] && [ -f "$src" ] && [ ! -L "$src" ] && [ -O "$src" ] &&
+          mv -f "$src" "$dst" 2>/dev/null && chmod 600 "$dst" 2>/dev/null
+      done
+    fi
+    # 升级迁移来的旧 token 缓存没有 .ts：用缓存自身的 mtime 补一个（一次）。否则同步
+    # 路径会一直按「无时间戳 = 新鲜」展示，长期失效时等于没修。
+    if cache_ok "$tokf0" && [ ! -e "${tokf0}.ts" ]; then
+      m=$(mtime "$tokf0"); not_future "${m:-$now}" m; put "${tokf0}.ts" "tokts-${skey}" "$m"
+    fi
+  fi
+
   # 色板：缺失 / THEME、PILL_CHROMA 或 PILL_STYLE 改过 / 超过 THEME_TTL 时重算
   tline=""; cache_ok "$THEME_CACHE" && read -r tline < "$THEME_CACHE"
   tm=$(mtime "$THEME_CACHE"); not_future "$tm" tm; tage=$(( now - tm ))
-  failf="${THEME_CACHE}.fail"; ft=0; cache_ok "$failf" && read -r ft < "$failf"
+  failf="${THEME_CACHE}.fail"; ft=0; fw=""
+  cache_ok "$failf" && IFS=$'\t' read -r ft fw < "$failf"
   case "$ft" in ''|*[!0-9]*) ft=0 ;; *) ft=$((10#$ft)) ;; esac
   not_future "$ft" ft
+  # 退避期间用户改了主题/风格配置（THEME_WANT 变化）则跳过旧配置的退避，立即重算
+  [ -n "$fw" ] && [ "$fw" != "$THEME_WANT" ] && ft=0
   # 首行不符（含格式版本）立即重算，不等 THEME_TTL；失败后 THEME_TTL 内不再重跑。成功 = python
   # 正常退出且写出的首行相符——只看首行的话，「首行相符、只是过期」的旧色板失败了也算成功，
   # 退避标记被删掉，之后每轮刷新都重跑一次 python
@@ -493,30 +502,31 @@ if [ "${1:-}" = "--refresh" ]; then
       [ "$tline" = "$THEME_WANT" ] && pal_ok=1
     fi
     if [ "$pal_ok" = 1 ]; then rm -f "$failf" 2>/dev/null
-    else put "$failf" theme-fail "$now"          # 失败退避：THEME_TTL 内不再每轮重跑
+    else put "$failf" theme-fail "$now"$'\t'"$THEME_WANT"   # 失败退避：同配置 THEME_TTL 内不再每轮重跑
     fi
   fi
 
-  # shellcheck disable=SC2164  # cd 失败就留在原地：dir 是同步路径 cd -P 之后传来的，git_data 照样能跑
-  [ -n "$dir" ] && cd "$dir" 2>/dev/null
-  pathkey "$dir"; key=$PK
-  # git：缓存不足 GIT_TTL 秒且 .git/HEAD、.git/index 都没在缓存之后改过 → 跳过（本仓库
-  # git status 约 34 ms，每 2 秒一次是后台刷新里最贵的一项）。worktree 的 .git 是文件，只按 TTL。
-  # 缓存第 4 段是写入时刻（免 stat fork 取 mtime）；HEAD / index 新旧用内建 ! -ot 比较（同一秒也算新）。
-  gc="${SLT}/claude-sl-git-${key}.cache"; need=1
-  if cache_ok "$gc"; then
-    groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
-    case "$gts" in ''|*[!0-9]*) gts=0 ;; *) gts=$((10#$gts)) ;; esac
-    not_future "$gts" gts
-    if [ $((now - gts)) -lt "$GIT_TTL" ]; then
-      need=0
-      # -nt / -ot 在 bash 4.2 只比较到秒：同一秒内的切换会被当成「没变」而沿用旧缓存
-      # （5.3 精确到纳秒，所以 macOS 上看不出来）。改成「不比缓存旧」即算变，代价是
-      # HEAD / index 刚改过后的一秒内多算几次 git（仅后台）。
-      [ -d "$groot/.git" ] && { [ ! "$groot/.git/HEAD" -ot "$gc" ] || [ ! "$groot/.git/index" -ot "$gc" ]; } && need=1
+  # 切不到目标目录就跳过 git 缓存写入，免得把原目录的分支写进 $dir 的缓存键
+  if [ -n "$dir" ] && cd "$dir" 2>/dev/null; then
+    pathkey "$dir"; key=$PK
+    # git：缓存不足 GIT_TTL 秒且 .git/HEAD、.git/index 都没在缓存之后改过 → 跳过（本仓库
+    # git status 约 34 ms，每 2 秒一次是后台刷新里最贵的一项）。worktree 的 .git 是文件，只按 TTL。
+    # 缓存第 4 段是写入时刻（免 stat fork 取 mtime）；HEAD / index 新旧用内建 ! -ot 比较（同一秒也算新）。
+    gc="${SLT}/claude-sl-git-${key}.cache"; need=1
+    if cache_ok "$gc"; then
+      groot=""; gts=0; IFS=$'\t' read -r groot _ _ gts < "$gc"
+      case "$gts" in ''|*[!0-9]*) gts=0 ;; *) gts=$((10#$gts)) ;; esac
+      not_future "$gts" gts
+      if [ $((now - gts)) -lt "$GIT_TTL" ]; then
+        need=0
+        # -nt / -ot 在 bash 4.2 只比较到秒：同一秒内的切换会被当成「没变」而沿用旧缓存
+        # （5.3 精确到纳秒，所以 macOS 上看不出来）。改成「不比缓存旧」即算变，代价是
+        # HEAD / index 刚改过后的一秒内多算几次 git（仅后台）。
+        [ -d "$groot/.git" ] && { [ ! "$groot/.git/HEAD" -ot "$gc" ] || [ ! "$groot/.git/index" -ot "$gc" ]; } && need=1
+      fi
     fi
+    [ "$need" = 1 ] && put "$gc" "git-${key}" "$(git_data)"$'\t'"$now"
   fi
-  [ "$need" = 1 ] && put "$gc" "git-${key}" "$(git_data)"$'\t'"$now"
 
   relayarg="-"
   [ "$mode" = relay ] && [ -r "$CCSWITCH_DB" ] && relayarg=$CCSWITCH_DB
@@ -558,7 +568,7 @@ if [ "${1:-}" = "--refresh" ]; then
   fi
 
   # 缓存生命周期（约束 19）：只清默认私有根，每天最多一次。find -type f 不跟随符号
-  # 链接，-maxdepth 1 不递归；锁目录只删超龄的空目录，色板、状态页与面板状态不在清理范围。缓存都可
+  # 链接，不递归任意子目录；锁目录只删超龄的空目录或仅含超龄 owner 的目录，色板、状态页与面板状态不在清理范围。缓存都可
   # 重建，误删最多丢一轮加速；会话状态另由 transcript 是否存在把关（见下）。只读根
   # 连时间戳都写不了，直接跳过，避免每轮重复扫描。
   # 阈值用 -mmin（精确到分钟）而不是 -mtime：后者按整天取整，+30 实际要超过 31 天才
@@ -591,7 +601,7 @@ if [ "${1:-}" = "--refresh" ]; then
       cutoff=$((now - CACHE_MAX_AGE * 86400))
       for f in "$SLT"/claude-statusline-*.json; do
         [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || continue
-        m=$(mtime "$f"); [ "${m:-0}" -lt "$cutoff" ] || continue
+        m=$(mtime "$f"); [ -n "$m" ] && [ "$m" -lt "$cutoff" ] || continue
         paths=$(jq -r '.files | keys[]?' "$f" 2>/dev/null) || continue
         keep=0
         while IFS= read -r p; do
@@ -658,9 +668,9 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
      # [ -ge ] 超出 64 位范围直接报错，整条 cache 项连同 stderr 一起坏掉
      else "\([($p.expires_at - $now | floor), 31536000] | min) \(if $p.ttl == "1h" then 3600 else 300 end)" end),
     (if ($p.recache_tokens_if_cold | nn) == null then "-" else ($p.recache_tokens_if_cold | hfmt) end),
-    (if ($p.hit_ratio | num) == null then "-"
+    (if ($p.hit_ratio | nn) == null then "-"
      else ($p.hit_ratio * 1000 | round) as $h | "\($h / 10 | floor).\($h % 10)" end),
-    (if ($p.hit_ratio | num) == null then "-" else ($p.hit_ratio * 100 | round | tostring) end),
+    (if ($p.hit_ratio | nn) == null then "-" else ($p.hit_ratio * 100 | round | tostring) end),
     ($in.transcript_path // "-"),
     ($in.session_id // "-"),
     # 网关花费限额 rate_limits.spend_limit（官方 schema：已用可超过 100；resets_at 已过则不出现）
@@ -697,8 +707,10 @@ c6() { if [ "$1" -lt 48 ]; then C6=0; elif [ "$1" -lt 115 ]; then C6=1; else C6=
 sgr() {   # sgr <变量名>：把 "R;G;B" 改写成当前色深的 SGR 片段
   local v=${!1} r g b ri gi bi cd gl gv gd
   [ -z "$v" ] && return
-  if [ "$CDEPTH" = 2 ]; then printf -v "$1" '2;%s' "$v"; return; fi
   r=${v%%;*}; v=${v#*;}; g=${v%%;*}; b=${v#*;}
+  r=$((10#${r:-0})); g=$((10#${g:-0})); b=$((10#${b:-0}))
+  [ "$r" -gt 255 ] && r=255; [ "$g" -gt 255 ] && g=255; [ "$b" -gt 255 ] && b=255
+  if [ "$CDEPTH" = 2 ]; then printf -v "$1" '2;%d;%d;%d' "$r" "$g" "$b"; return; fi
   c6 "$r"; ri=$C6; cd=$(( (r - L6) * (r - L6) ))
   c6 "$g"; gi=$C6; cd=$(( cd + (g - L6) * (g - L6) ))
   c6 "$b"; bi=$C6; cd=$(( cd + (b - L6) * (b - L6) ))
@@ -762,7 +774,7 @@ if [ "$tok_ok" = 1 ] && [ "$SLT_OK" = 1 ] && [ -n "$sid" ] && cache_ok "$tokf"; 
   # pl / al / risky 只认四个已知值，其余等同于没有。
   {
     read -r k
-    [ "$k" = "TOK=$TOK_V" ] && while IFS='=' read -r k v; do
+    [ "$k" = "TOK=$TOK_V" ] && while IFS='=' read -r k v || [ -n "$k" ]; do
       case "$k" in
         ''|*[!a-z0-9]*) continue ;;
         *) case "$v" in 用尽) ;; *[!A-Za-z0-9.\$/]*) continue ;; esac ;;
@@ -814,6 +826,8 @@ money() {   # money <小数字符串> → MONEY="$x.yy"
   case "$v" in *[eE]*|''|*[!0-9.]*|*.*.*) v=0 ;; esac   # 多个小数点进算术会报错、整组消失
   case "$v" in *.*) i=${v%%.*}; f=${v#*.}000 ;; *) i=$v; f=000 ;; esac
   i=${i:-0}; f=${f:0:3}
+  while [ "${#i}" -gt 1 ] && [ "${i#0}" != "$i" ]; do i=${i#0}; done
+  if [ "${#i}" -gt 16 ]; then printf -v MONEY '$%s.%s' "$i" "${f:0:2}"; return; fi
   local c=$(( 10#$i * 100 + (10#$f + 5) / 10 ))
   printf -v MONEY '$%d.%02d' $((c / 100)) $((c % 100))
 }
@@ -890,11 +904,12 @@ setlv() {
 # 前面那些牺牲就不必要了。从倒数第二步起逆序逐步撤销——越晚被牺牲的越重要、越先恢复——
 # 撤销后仍在预算内才保留；最后一步正是让它放得下的那一步，撤销必然超宽，不试。
 fit() {
-  local st act id old new i ok=0 budget
+  local st act id old new i ok=0 budget cols
   local -a applied=()
-  # 先判是不是整数再进算术：COLUMNS=80x 时 $(( )) 报错写 stderr（[ -gt ] 不求值）
-  { [ -n "${COLUMNS:-}" ] && [ "$COLUMNS" -gt 10 ] 2>/dev/null; } || return
-  budget=$(( COLUMNS - SAFE_MARGIN ))
+  # 先判纯数字再按十进制规范化：COLUMNS=80x 或 080 进 $(( )) 会报错，0100 会被当八进制 64
+  case "${COLUMNS:-}" in ''|*[!0-9]*) return ;; esac
+  cols=$((10#$COLUMNS)); [ "$cols" -gt 10 ] || return
+  budget=$(( cols - SAFE_MARGIN ))
   calc_width; [ "$W" -le "$budget" ] && return
   for st in "${STEPS[@]}"; do
     act=${st%% *}; id=${st#* }
@@ -1034,13 +1049,14 @@ m1=${mbase%% *}; mshort=$mbase
 if [ "$m1" != "$mbase" ]; then
   mshort="${m1:0:1}${mbase#* }"
 elif [ "$mbase" != "${mbase%%-*}" ]; then
-  mtail=""; case "$mbase" in *'['*) mtail="[${mbase#*[}" ;; esac
+  mrest=${mbase#*-}; mtail=""
+  case "$mrest" in *'['*) mtail="[${mrest#*[}" ;; esac
   mshort="${mbase%%-*}${mtail}"
 fi
 case "$eff" in low) e1=L ;; medium) e1=M ;; high) e1=H ;; xhigh) e1=XH ;; max) e1=MAX ;; *) e1=$eff ;; esac
 mv=(); pv=""
 for v in "${model}${eff:+ ${eff}}" "${mbase}${eff:+ ${eff}}" "${mshort}${eff:+ ${eff}}" "${mshort}${e1:+·${e1}}"; do
-  [ "$v" != "$pv" ] && mv+=("$v"); pv=$v                 # 去掉与上一级相同的写法
+  [ -n "$v" ] && [ "$v" != "$pv" ] && mv+=("$v"); pv=$v   # 去掉空串与重复写法
 done
 [ -n "$model" ] && item model model MODEL "${mv[@]}"
 
@@ -1074,12 +1090,12 @@ if [ "$mode" = relay ] && [ -n "$r_cost" ]; then
   item rate usd SEC "$p_rate"
   if [ -n "$sp" ]; then
     :                                          # 网关花费限额优先于 CC Switch 日限额（见下）
-  elif [ -n "$r_limit" ]; then
+  elif [ -n "$r_limit" ] && [ -n "$r_today" ]; then
     money "$r_today"; t1=$MONEY; money "$r_limit"
     pl "$dlv"; item day  day "$R" "${t1}/${MONEY}"
     al "$dlv"; outtxt "$dout"; item dout day "$R" "$OT" "!"
     risky "$dlv" && NODROP[day]=1
-  else
+  elif [ -n "$r_today" ]; then
     money "$r_today"
     item today usd SEC "${MONEY}"
   fi
@@ -1125,10 +1141,13 @@ esac
 
 # 辅助尾段（同一胶囊；标签弱化色、值次值灰）。hit 用会话级累计（statusline-tokens.py），拿不到再回落 stdin
 case "$st_ind" in minor|maintenance) item claudem tail MUTED "claude ${st_ind}" "$st_ind" ;; esac
-if [ -n "$t_hit" ]; then hit=$t_hit; hit0=${t_hit%.*}; [ "${t_hit#*.}" -ge 5 ] 2>/dev/null && hit0=$((10#$hit0 + 1)); fi
+if [ -n "$t_hit" ]; then
+  hit=$t_hit; hit0=$((10#${t_hit%.*})); _hf=${t_hit#*.}
+  [ "${_hf:0:1}" -ge 5 ] 2>/dev/null && hit0=$((hit0 + 1))
+fi
 item cachet tail TER "${ct:+cache ${ct}}" "$ct"; LB[cachet]=cache
 item hit    tail TER "${hit:+hit ${hit}%}" "${hit0}%"; LB[hit]=hit
-item io     tail TER "${t_in:+↑${t_in} ↓${t_out}}" "${t_in:+↑${t_in}}"
+item io     tail TER "${t_in:+↑${t_in}${t_out:+ ↓${t_out}}}" "${t_in:+↑${t_in}}"
 item api    tail TER "${apidur:+api ${apidur}}" "$apidur"; LB[api]=api
 item msgs   tail TER "${msgs:+m${msgs}}"
 

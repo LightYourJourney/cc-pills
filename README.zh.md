@@ -47,7 +47,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 | BSD `stat` / `mktemp` | 是 | `mktemp` 模板带 6 个 X，原子 `mv` |
 | `TMPDIR` 未设置 / 带尾斜杠 / 含空格与中文 | 是 | 归一后落到同一个私有根 |
 | python3 ≥ 3.9 | 是 | CI 在 Python 3.9 上跑全量（并发写面板用例除外）；低于 3.9 安装会拒绝，doctor 报 FAIL |
-| jq 1.6 | 是 | Debian 12 / Ubuntu 22.04 自带的版本，CI 单独一个作业跑全量。1.7 才放宽对象字面量语法，1.6 对 `{k: $n + 1}` 直接报语法错误 |
+| jq 1.6 | 是 | Debian 12 / Ubuntu 22.04 自带的版本，CI 单独一个作业跑全量（并发写面板用例除外）。1.7 才放宽对象字面量语法，1.6 对 `{k: $n + 1}` 直接报语法错误 |
 
 ## 缓存
 
@@ -63,8 +63,10 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 
 **自动清理**：默认根里 30 天没动过的 token 缓存、跳过标记、git 缓存与残留临时文件，
 由后台刷新每天清一次。会话状态（`claude-statusline-*.json`，躲开整段重扫的断点）另加一道
-条件：只有它记录里的 transcript 全部不存在时才删；已结束会话留下的空刷新锁目录同样 30 天后删。
-用 `find -maxdepth 1`，不递归、不跟随符号链接，不碰色板、状态页与面板状态。阈值写死 30 天，不提供配置项。
+条件：只有它记录里的 transcript 全部不存在时才删；已结束会话留下的空刷新锁或仅含超龄
+`owner` 的刷新锁目录同样 30 天后删（删掉 `owner` 后当轮 `rmdir`）。用 `find -maxdepth 1`
+（仅对 `claude-sl-lock-*/owner` 查到深度 2），不递归任意子目录、不跟随符号链接，不碰色板、
+状态页与面板状态。阈值写死 30 天，不提供配置项。
 
 **迁移**：旧版写在 `/tmp` 的本会话 token / 跳过标记 / 会话状态在首次刷新时搬入；旧的面板
 状态不迁移（只有速率基线，丢失代价是一帧）。**回滚**：删掉整个缓存目录即回到冷启动，
@@ -91,8 +93,8 @@ bash install.sh --with-subagent --with-conf
 
 > **面板已被上游弃用。** Claude Code 2.1.330–2.1.332 的提示原文是
 > `subagentStatusLine is deprecated in favor of mods and will stop working in a future
-> release`，每个会话警告一次，官方文档也已删掉这一节。脚本本身照常工作，本仓库继续维护；
-> 替代品是 mod 的 `AgentRow` 渲染点，迁移说明见 `docs/DECISIONS.md`。
+> release`，每个会话警告一次，官方文档也已删掉这一节。脚本本身照常工作、保留一个版本作过渡；
+> 替代品是下面的 `cc-pills-agent-row` mod（`AgentRow` 渲染点），说明见 `docs/DECISIONS.md`。
 
 ### 面板的替代品：`cc-pills-agent-row`（mod）
 
@@ -153,7 +155,7 @@ bash tools/preview.sh tint tokyo-glass
 
 状态栏少了一项、整行无色、或者干脆不显示时，先跑诊断。它不改写你的配置 / 缓存 / 数据库
 内容，不联网，不打印环境变量全集；`settings.json` 里的命令行会先抹掉
-`sk-…` / `ghp_…` / `*_KEY=…` / `*_TOKEN=…` / `*PASSWORD=…` / `*SECRET=…`（大小写不敏感、值可带
+`sk-…` / `ghp_…` / `*_KEY=…` / `*_TOKEN=…` / `*PASSWORD=…` / `*SECRET=…` / `*PAT=…`（大小写不敏感、值可带
 引号）/ `--api-key …` / URL 凭据与 query 参数 / API key 与 `Authorization` 请求头 / `Bearer …` 再显示。唯一的写是冒烟用的临时目录（跑完即删）；WAL 模式的 SQLite 只读打开时
 可能生成 `-wal`/`-shm` 旁文件，与渲染脚本自己的读取方式相同。
 
@@ -245,7 +247,7 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # 并行分片，8 核机器约 1 分钟；全隔离（不读线上缓存、不联网）
 bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
-claude plugin test mods/agent-row          # mod 的 9 项（run_tests.sh 在 PATH 里有 claude 时顺带跑）
+claude plugin test mods/agent-row          # mod 的 12 项（run_tests.sh 在 PATH 里有 claude 时顺带跑）
 UPDATE_GOLDEN=1 bash run_tests.sh render   # 有意改变渲染结果后更新金样
 ```
 

@@ -23,7 +23,7 @@ if [ "${1:-}" = --doctor ]; then
   shift
   [ -f "$REPO/tools/doctor.sh" ] || {
     echo "找不到 tools/doctor.sh：诊断脚本在仓库里，不随安装副本分发" >&2; exit 1; }
-  exec bash "$REPO/tools/doctor.sh" "$@"
+  exec "$BASH" "$REPO/tools/doctor.sh" "$@"
 fi
 for a in "$@"; do
   case $a in
@@ -36,8 +36,8 @@ for a in "$@"; do
     *) echo "未知参数：${a}（--help 看用法）" >&2; exit 2 ;;
   esac
 done
-# 面板脚本：--with-subagent 指定、或已经装过（重装时一起更新，否则它悄悄停在旧版）
-if [ "$WITH_SUB" = 1 ] || [ -e "$DEST/subagent-statusline.sh" ]; then
+# 面板脚本：--with-subagent 指定、或已经装过（含断链；重装时一起更新，否则它悄悄停在旧版）
+if [ "$WITH_SUB" = 1 ] || [ -e "$DEST/subagent-statusline.sh" ] || [ -L "$DEST/subagent-statusline.sh" ]; then
   FILES+=(subagent-statusline.sh)
 fi
 
@@ -68,13 +68,14 @@ check_deps() {
   return "$miss"
 }
 
+HAS_JQ=0; command -v jq >/dev/null 2>&1 && HAS_JQ=1
 settings_cmd() {  # settings_cmd <settings.json 路径> <键> → 打印该键的 command
-  [ -r "$1" ] || return 1
+  [ "$HAS_JQ" = 1 ] && [ -r "$1" ] || return 1
   jq -r --arg k "$2" '.[$k].command // empty' "$1" 2>/dev/null || return 1
 }
 # settings.json 存在却解析失败：两个键都无从判断，要说它坏了，而不是报「尚未配置」
 SJ="$DEST/settings.json"; SJ_BAD=0
-[ -r "$SJ" ] && ! jq empty "$SJ" >/dev/null 2>&1 && SJ_BAD=1
+[ "$HAS_JQ" = 1 ] && [ -r "$SJ" ] && ! jq empty "$SJ" >/dev/null 2>&1 && SJ_BAD=1
 SJ_BAD_MSG="settings.json 不是合法 JSON（jq 解析失败）：先修好它，statusLine / subagentStatusLine 无法检查：$SJ"
 has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
@@ -89,6 +90,9 @@ install)
   rc=0
   for f in "${FILES[@]}"; do
     src=$REPO/src/$f; dst=$DEST/$f
+    if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+      echo "  安装失败：${dst} 是目录（不覆盖）" >&2; rc=1; continue
+    fi
     if [ -f "$dst" ] && ! cmp -s "$src" "$dst"; then
       bak=$dst.bak.$(date +%Y%m%d%H%M%S)
       if cp -p "$dst" "$bak"; then echo "  备份旧副本 → $bak"
@@ -104,7 +108,7 @@ install)
     fi
   done
   if [ "$WITH_CONF" = 1 ]; then
-    if [ -e "$CONF" ]; then
+    if [ -e "$CONF" ] || [ -L "$CONF" ]; then
       echo "  配置已存在，未覆盖：$CONF"
     else
       if mkdir -p "$(dirname "$CONF")" && cp "$REPO/config/claude-statusline.conf.example" "$CONF"; then
@@ -150,6 +154,9 @@ check)
     elif cmp -s "$REPO/src/$f" "$dst"; then echo "  一致：$f"
     else echo "  不一致：${f}（仓库改过但没重新安装）"; rc=1; fi
   done
+  if [ "$HAS_JQ" != 1 ]; then
+    echo "  缺少依赖 jq，无法检查 settings.json：$SJ"; exit 1
+  fi
   [ "$SJ_BAD" = 1 ] && { echo "  $SJ_BAD_MSG"; exit 1; }
   cmd=$(settings_cmd "$SJ" statusLine)
   points_to "$cmd" statusline-command.sh "$DEST"; st=$?
@@ -180,22 +187,34 @@ uninstall)
   rc=0; removed=()
   for f in "${FILES[@]}"; do
     dst=$DEST/$f
-    [ -e "$dst" ] || continue
-    if [ "$FORCE" != 1 ] && ! cmp -s "$REPO/src/$f" "$dst"; then
-      echo "  线上 $f 与本仓库不同（可能被手工改过），未删除；确认要删加 --force" >&2; rc=1; continue
+    [ -e "$dst" ] || [ -L "$dst" ] || continue
+    if [ "$FORCE" != 1 ] && { [ ! -f "$dst" ] || ! cmp -s "$REPO/src/$f" "$dst"; }; then
+      echo "  线上 $f 与本仓库不同（可能被手工改过或非普通文件），未删除；确认要删加 --force" >&2; rc=1; continue
     fi
-    rm -f "$dst" && { echo "  已删除 $dst"; removed+=("$dst"); }
+    if rm -f "$dst" 2>/dev/null; then
+      echo "  已删除 $dst"; removed+=("$dst")
+    else
+      echo "  删除失败：${dst}" >&2; rc=1
+    fi
   done
   # 不自动改用户 settings：只指出仍指向已删除脚本的键，避免每次渲染都执行失败。
   if [ ${#removed[@]} -gt 0 ]; then
-    for key in statusLine subagentStatusLine; do
-      c=$(settings_cmd "$SJ" "$key")
-      [ -n "$c" ] || continue
-      for dst in "${removed[@]}"; do
-        points_to "$c" "${dst##*/}" "$DEST"; st=$?
-        [ "$st" != 1 ] && echo "⚠ settings.json 的 $key 仍指向已删除的 ${dst}；请改回或删除该键" >&2
+    if [ "$SJ_BAD" = 1 ]; then
+      echo "⚠ $SJ_BAD_MSG" >&2
+    elif [ "$HAS_JQ" = 1 ]; then
+      for key in statusLine subagentStatusLine; do
+        c=$(settings_cmd "$SJ" "$key")
+        [ -n "$c" ] || continue
+        for dst in "${removed[@]}"; do
+          points_to "$c" "${dst##*/}" "$DEST"; st=$?
+          if [ "$st" = 0 ]; then
+            echo "⚠ settings.json 的 $key 仍指向已删除的 ${dst}；请改回或删除该键" >&2
+          elif [ "$st" = 2 ]; then
+            echo "⚠ settings.json 的 $key 仍指向已删除的 ${dst}（路径不是安装副本：${c}）；请改回或删除该键" >&2
+          fi
+        done
       done
-    done
+    fi
   fi
   echo "  配置保留：${CONF}（要删请手工处理）"
   exit "$rc"

@@ -35,7 +35,7 @@ export function cut(s: string, n: number): string {
     out += ch
     w += c
   }
-  return out + '…'
+  return out ? out + '…' : ''
 }
 
 // 与 statusline-tokens.py 的 fmt() 同口径：999.5k 起按 M，999.5M 起按 B，三位数 M 不留小数
@@ -57,7 +57,8 @@ export function dfmt(sec: number): string {
   const s = Math.max(0, Math.floor(sec))
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
-  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
+  return `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`
 }
 
 // 非数字、负数、NaN 一律按「没有」——字段缺失就整段隐藏（与主栏同一原则）
@@ -65,8 +66,11 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
 }
 
+// 折叠空白并剔除 C0/C1 控制字符（含 ESC \x1b）：AgentRow 的 body 会解析 ANSI，不能透传外部转义
 function oneLine(v: unknown): string {
-  return typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : ''
+  return typeof v === 'string'
+    ? v.replace(/\s+/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim()
+    : ''
 }
 
 const LIVE = new Set(['pending', 'running', 'waiting'])
@@ -95,11 +99,11 @@ export const register: Register = on => {
         if (prev && now - prev.t >= 1000 && tokens - prev.k >= 0) {
           rate = (tokens - prev.k) / ((now - prev.t) / 1000)
         }
-        if (!prev || now - prev.t >= 2000) {
+        if (!prev || now < prev.t || now - prev.t >= 2000) {
           seen.set(id, { t: now, k: tokens })
           if (seen.size > 256) {
             for (const [k, v] of seen) {
-              if (now - v.t > 600_000) seen.delete(k)
+              if (v.t > now || now - v.t > 600_000) seen.delete(k)
             }
           }
         }
@@ -111,10 +115,15 @@ export const register: Register = on => {
     const model = oneLine(p.model).replace(/^claude-/, '').replace(/\[1m\]$/, '')
     if (model) parts.push(model)
 
-    const effort = p.effort === undefined || p.effort === null ? '' : oneLine(String(p.effort))
+    const effort =
+      typeof p.effort === 'string'
+        ? oneLine(p.effort)
+        : typeof p.effort === 'number' && Number.isFinite(p.effort)
+          ? String(p.effort)
+          : ''
     if (effort) parts.push(effort)
 
-    // token 为 0 = 还没读到第一次用量，不显示「tok 0」
+    // token 为 0 = 还没读到第一次用量，不显示「tok 0」或「ctx 剩100%」
     if (tokens !== null && tokens > 0) {
       let s = `tok ${kfmt(tokens)}`
       if (rate !== null && rate >= 1) {
@@ -123,7 +132,7 @@ export const register: Register = on => {
       parts.push(s)
     }
 
-    if (tokens !== null && windowSize !== null && windowSize > 0) {
+    if (tokens !== null && tokens > 0 && windowSize !== null && windowSize > 0) {
       const left = Math.max(0, Math.min(100, Math.floor((1 - tokens / windowSize) * 100)))
       parts.push(left < 20 ? `ctx 剩${left}%⚠` : `ctx 剩${left}%`)
     }

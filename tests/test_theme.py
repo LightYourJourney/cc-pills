@@ -271,6 +271,25 @@ class AutoDetect(unittest.TestCase):
                 lines = f.read().split('\n')
             self.assertIn(f'NAME={want_theme}', lines, ('深色' if want_dark else '浅色') + '模式取错了那一套 ANSI')
 
+    def test_extended_srgb_components_clamped_and_bad_chroma_falls_back(self):
+        """Display P3 扩展 sRGB 越界分量（<0 或 >1）必须钳制到 0..255，且非法 pill_chroma 回落默认。"""
+        prof = self.ansi_profile('tokyonight', 'P3')
+        prof['Foreground Color'] = {'Red Component': -0.05, 'Green Component': 1.08, 'Blue Component': 0.8}
+        home = iterm_home(prof, guid='G-P3')
+        out = os.path.join(home, 'p3.cache')
+        subprocess.run([sys.executable, PATH, 'auto', out, 'notanint', 'tint', '4'],
+                       env=dict(os.environ, HOME=home, TERM_PROGRAM='iTerm.app', ITERM_PROFILE='P3'),
+                       capture_output=True, check=False, timeout=60)
+        with open(out) as f:
+            lines = f.read().splitlines()
+        self.assertTrue(lines[0].startswith('THEME=auto/12/tint/v4'))
+        for l in lines:
+            k, _, v = l.partition('=')
+            if k[:2] in ('P_', 'T_', 'L_'):
+                self.assertRegex(v, r'^\d+;\d+;\d+$', f'{k}={v} 含越界或非法分量')
+                for ch in map(int, v.split(';')):
+                    self.assertTrue(0 <= ch <= 255, f'{k}={v} 分量越界')
+
 
 if __name__ == '__main__':
     unittest.main()

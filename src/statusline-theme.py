@@ -227,12 +227,13 @@ def iterm_profile():
     suffix = ''
     if prof.get('Use Separate Colors for Light and Dark Mode'):
         dark = subprocess.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'],
-                              capture_output=True, text=True).stdout.strip() == 'Dark'
+                              capture_output=True, text=True, timeout=2).stdout.strip() == 'Dark'
         suffix = ' (Dark)' if dark else ' (Light)'
 
     def col(key):
         v = prof.get(key + suffix) or prof.get(key)
-        return [round(v[k] * 255) for k in ('Red Component', 'Green Component', 'Blue Component')]
+        return [max(0, min(255, round(v[k] * 255)))
+                for k in ('Red Component', 'Green Component', 'Blue Component')]
 
     return col('Background Color'), [col(f'Ansi {i} Color') for i in range(1, 7)], col('Foreground Color')
 
@@ -314,7 +315,10 @@ def glass_tokens(bgs, put):
 
 def main():
     want, out = sys.argv[1], sys.argv[2]
-    pc = int(sys.argv[3]) if len(sys.argv) > 3 else PILL_CHROMA
+    try:
+        pc = max(0, min(40, int(sys.argv[3]))) if len(sys.argv) > 3 else PILL_CHROMA
+    except ValueError:
+        pc = PILL_CHROMA
     ps = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] in STYLES else PILL_STYLE
     ver = sys.argv[5] if len(sys.argv) > 5 else '0'
     try:

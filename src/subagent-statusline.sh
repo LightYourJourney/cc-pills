@@ -15,8 +15,8 @@
 # ----------------------------------------------------------------------
 # ⚠️ 上游已弃用这个设置键：Claude Code 2.1.330–2.1.332 的二进制里有
 #   「subagentStatusLine is deprecated in favor of mods and will stop working in a
-#   future release」，每个会话都会提示一次，官方文档也已删掉这一节。替代品是 mod 的
-#   AgentRow 渲染点（同样的数据 + 面板实测的 columns）。在决定迁移前本脚本继续维护。
+#   future release」，每个会话都会提示一次，官方文档也已删掉这一节。替代品是本仓库的 mod
+#   `mods/agent-row`（AgentRow 渲染点）；本脚本仅作过渡保留一个版本。
 #   - stdin：每个刷新 tick 一个 JSON 对象：columns（行可用宽度）+ tasks[]，
 #     每个 task 含 id/name/type/status/description/label/startTime/model/
 #     effort/contextWindowSize/tokenCount/tokenSamples/cwd
@@ -73,7 +73,8 @@ if [ -n "${CLAUDE_SUBAGENT_SL_STATE:-}" ]; then
   STATE=$CLAUDE_SUBAGENT_SL_STATE; state_ok=1   # 显式文件：父目录由调用方负责
 else
   if [ -n "${CLAUDE_SL_TMP:-}" ]; then
-    sroot=${CLAUDE_SL_TMP%/}
+    sroot=$CLAUDE_SL_TMP
+    while [ "${sroot%/}" != "$sroot" ] && [ "$sroot" != "/" ]; do sroot=${sroot%/}; done
   else
     t=${TMPDIR:-/tmp}; t=${t%/}
     sroot="$t/claude-sl-${UID:-0}"; make_root=1
@@ -117,6 +118,18 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
               or . == 8673 or . == 8675;
   def cw: if narrow then 1 elif . > 2047 then 2 else 1 end;
   def dw: [explode[] | cw] | add // 0;
+  def clean: gsub("[\r\n\t]+"; " ") | gsub("\\p{Cc}"; "") | sub("^ +"; "") | sub(" +$"; "");
+  def kfmt:
+    if . >= 999500000 or ((. / 100000 | round) >= 9995) then
+      ((. / 100000000 | round) as $t |
+       if ($t % 10) == 0 then "\($t / 10 | floor)B" else "\($t / 10 | floor).\($t % 10)B" end)
+    elif . >= 999500 then
+      ((. / 100000 | round) as $t |
+       if $t >= 1000 then "\($t / 10 | round)M"
+       elif ($t % 10) == 0 then "\($t / 10 | floor)M"
+       else "\($t / 10 | floor).\($t % 10)M" end)
+    elif . >= 1000 then "\(. / 1000 | round)k"
+    else "\(round)" end;
   def cut($n):                                # 截到显示宽度 ≤ $n（含截断符 …）
     if dw <= $n then .
     elif $n < 2 then ""
@@ -126,55 +139,58 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
               | if .w + $w > $n - 1 then {s: .s, w: ($n + 1)}
                 else {s: (.s + $ch), w: (.w + $w)} end
             end)
-          | .s) + "…"
+          | .s) as $pre
+         | if $pre == "" then "" else ($pre + "…") end
     end;
-  (.columns | if type == "number" then . else 120 end) as $cols
+  (.columns | if type == "number" and . > 0 then . else 120 end) as $cols
   | (.tasks // [])[]
   # 逐行兜底：某个 task 的字段类型不对（tokenCount 是字符串、description 是数字……）只让那一行
   # 回到默认渲染；不兜的话整个 jq 中止，坏行之后的行全部丢失
   | try (
     select(.id | type == "string")             # 契约里 id 是字符串；别的类型拿去索引 $prev 会出错
-  | (.status // "" | tostring) as $st
-  | ($st == "" or $st == "running" or $st == "pending") as $live
+  | (.status // "" | tostring | clean) as $st
+  | ($st == "" or $st == "running" or $st == "pending" or $st == "waiting") as $live
+  | (.tokenCount | if . == null then null elif type == "number" then (if . < 0 then null else . end) else error end) as $tc
 
-  # ── ctx 剩余百分比（纯文本；<20% 追加 ⚠ 提醒）──────────────────────
-  | (if (.tokenCount != null) and ((.contextWindowSize // 0) > 0)
-     then ((100 - (.tokenCount * 100 / .contextWindowSize)) | floor
-           | if . < 0 then 0 else . end)
+  # ── ctx 剩余百分比（纯文本；token 为 0 视为尚无首次用量，隐藏；<20% 追加 ⚠）──
+  | (if ($tc != null) and ($tc > 0) and ((.contextWindowSize // 0) > 0)
+     then ((100 - ($tc * 100 / .contextWindowSize)) | floor
+           | if . < 0 then 0 elif . > 100 then 100 else . end)
      else null end) as $pct
   | (if $pct == null then null
      elif $pct < 20 then "ctx 剩\($pct)%⚠"
      else "ctx 剩\($pct)%" end) as $ctxS
 
-  # ── 运行时长（startTime 为 epoch 毫秒；非 running/pending 不显示）────
+  # ── 运行时长（startTime 为 epoch 毫秒；非活跃态不显示；≥24h 用 XdYh）────
   | (if $live and ((.startTime // null) | type == "number") and (.startTime > 1e12)
      then ((now - .startTime / 1000) | floor | if . < 0 then 0 else . end)
      else null end) as $dur
   | (if $dur == null then null
-     elif $dur < 60   then "\($dur)s"
-     elif $dur < 3600 then "\(($dur / 60) | floor)m\(("0" + (($dur % 60) | tostring))[-2:])s"
-     else "\(($dur / 3600) | floor)h\(("0" + ((($dur % 3600) / 60 | floor) | tostring))[-2:])m"
+     elif $dur < 60    then "\($dur)s"
+     elif $dur < 3600  then "\(($dur / 60) | floor)m\(("0" + (($dur % 60) | tostring))[-2:])s"
+     elif $dur < 86400 then "\(($dur / 3600) | floor)h\(("0" + ((($dur % 3600) / 60 | floor) | tostring))[-2:])m"
+     else "\(($dur / 86400) | floor)d\((($dur % 86400) / 3600) | floor)h"
      end) as $durS
 
-  # ── token 增速（自记状态实测：距上次 ≥1s、增量非负、≥1 tok/s 才显示）──
+  # ── token 增速（自记状态实测：活跃态、距上次 ≥1s、增量非负、≥1 tok/s 才显示）──
   | ($prev[.id] // null) as $p
-  | (if ($st == "running") and ($p | type == "object")
+  | (if $live and ($tc != null) and ($tc > 0) and ($p | type == "object")
         and (($p.t | type) == "number") and (($p.k | type) == "number")
-        and ((now - $p.t) >= 1) and (((.tokenCount // 0) - $p.k) >= 0)
-     then (((.tokenCount // 0) - $p.k) / (now - $p.t))
+        and ((now - $p.t) >= 1) and (($tc - $p.k) >= 0)
+     then (($tc - $p.k) / (now - $p.t))
      else null end) as $r
   | (if $r == null or $r < 1 then null
-     elif $r >= 1000 then "↑\((($r / 100) | floor) / 10)k/s"
+     elif $r >= 1000 then ((($r / 100) | floor) as $t | "↑\($t / 10 | floor).\($t % 10)k/s")
      else "↑\($r | round)/s" end) as $rateS
 
   # ── 其余各段（纯文本，无 ANSI——面板会把转义码当字面文本显示）─────────
-  | (if .tokenCount == null then ""
-     elif .tokenCount >= 1000 then "\(.tokenCount / 1000 | floor)k"
-     else "\(.tokenCount)" end) as $tok
-  | ((.model // "") | sub("^claude-"; "") | sub("\\[1m\\]$"; "")) as $model
-  | ((.effort // "") | tostring) as $eff
-  | ((.name // "") | tostring) as $rawname
-  | ((.label // .description // "")) as $desc
+  | (if $tc == null or $tc <= 0 then "" else ($tc | kfmt) end) as $tok
+  | (.model | if . == null then "" elif type == "string" then (clean | sub("^claude-"; "") | sub("\\[1m\\]$"; "")) else error end) as $model
+  | ((.effort // "") | tostring | clean) as $eff
+  | ((.name // "") | tostring | clean) as $rawname
+  | (.label | if . == null then "" elif type == "string" then clean else error end) as $lb
+  | (.description | if . == null then "" elif type == "string" then clean else error end) as $ds
+  | (if $lb != "" then $lb else $ds end) as $desc
   # name 通常是无信息量的 "agent"，只有携带真实名字时才显示
   | (if $rawname != "" and $rawname != "agent" and ($desc | contains($rawname) | not)
      then $rawname else "" end) as $name
@@ -195,8 +211,9 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
   # 「ctx 剩85%」这样的中文，按码点算预算会偏窄
   | ($cols - ($head | dw) - ($sepTail | dw) - ($stTag | dw)) as $budget
   | (if $desc == "" or $budget < 4 then "" else ($desc | cut($budget)) end) as $desc2
+  | (if ($head + $desc2) != "" then ($head + $desc2 + $sepTail) else $tail end) as $line
 
-  | { id: .id, content: ($head + $desc2 + $sepTail + $stTag) }
+  | { id: .id, content: ($line + $stTag) }
   ) catch empty
 ' 2>/dev/null
 
@@ -230,13 +247,13 @@ if [ -n "$input" ] && [ "$state_ok" = 1 ] && [ ! -d "$STATE" ] && [ -d "$sdir" ]
     if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; }; then
       rm -f "$lock" 2>/dev/null; continue
     fi
-    lt=$(mtime "$lock"); lt=${lt:-0}
-    if [ "$lt" -gt 0 ] && [ $((nowsec - lt)) -ge 5 ]; then
-      # 超 5 秒的残锁：持有者 PID 还活着就继续等（PID 复用最多让本次放弃），否则回收
+    lt=$(mtime "$lock"); lt=${lt:-0}; [ "$lt" -gt "$nowsec" ] && lt=0
+    if [ $((nowsec - lt)) -ge 5 ]; then
+      # 超 5 秒或未来 mtime 的残锁：持有者 PID 还活着就继续等（PID 复用最多让本次放弃），否则回收
       # （无 owner 说明创建者没走到写 owner 那步）。
       owner=""; [ -f "$lock/owner" ] && owner=$(< "$lock/owner")
       pid=${owner%%.*}
-      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then sleep 0.05; continue; fi
+      case "$pid" in ''|*[!0-9]*|0) ;; *) if kill -0 "$pid" 2>/dev/null; then sleep 0.05; continue; fi ;; esac
       rm -rf "$lock" 2>/dev/null; continue          # 残锁 / 非空异常目录（被杀的进程遗留）
     fi
     sleep 0.05
@@ -256,14 +273,17 @@ if [ "$got" = 1 ]; then
   new=$(printf '%s' "$input" | jq -c --argjson prev "$prev" '
     now as $n
     | ($prev | with_entries(select(
-        (.value | type == "object") and ((.value.t // 0) > ($n - 600))))) as $base
+        (.value | type == "object")
+        and (.value.t | type == "number")
+        and (.value.t <= $n)
+        and (.value.t > ($n - 600))))) as $base
     | reduce ((.tasks // [])[] | objects | select(.id | type == "string")
               | select((.status // "running" | tostring) as $s
-                       | $s == "running" or $s == "" or $s == "pending")) as $t
+                       | $s == "running" or $s == "" or $s == "pending" or $s == "waiting")) as $t
         ($base;
          $t.id as $i
          | if ((.[$i] | type) != "object") or (($n - .[$i].t) >= 2)
-           then .[$i] = {t: $n, k: ($t.tokenCount // 0)}
+           then .[$i] = {t: $n, k: (if ($t.tokenCount | type == "number") and ($t.tokenCount >= 0) then $t.tokenCount else 0 end)}
            else . end)
   ' 2>/dev/null)
   case $new in *$'\n'*) new="" ;; esac       # stdin 违约给了多个对象：多行结果不能落盘

@@ -68,7 +68,8 @@ class DoctorSandbox:
         self.cache = os.path.join(self.tmp, f'claude-sl-{os.getuid()}')
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ('TERM_PROGRAM', 'LC_TERMINAL', 'ITERM_PROFILE', 'CLAUDE_CONFIG_DIR',
-                                 'CLAUDE_SL_TMP', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY')}
+                                 'CLAUDE_SL_TMP', 'CLAUDE_SUBAGENT_SL_STATE',
+                                 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY')}
         self.env.update(HOME=self.home, TMPDIR=self.tmp, XDG_CONFIG_HOME=self.cfg,
                         PATH=BASE_PATH, COLORTERM='truecolor', TERM='xterm-256color')
 
@@ -200,7 +201,7 @@ class DoctorSandbox:
         b = os.path.join(self.d, 'bin')
         os.makedirs(b, exist_ok=True)
         for n in ('bash', 'sh', 'python3', 'git', 'uname', 'sw_vers', 'stat', 'mktemp',
-                  'rm', 'mv', 'mkdir', 'rmdir', 'chmod', 'sed', 'grep', 'tr', 'cut', 'head',
+                  'rm', 'mv', 'mkdir', 'rmdir', 'chmod', 'cmp', 'sed', 'grep', 'tr', 'cut', 'head',
                   'tail', 'sort', 'date', 'id', 'basename', 'dirname', 'cat', 'find',
                   'readlink', 'sleep', 'awk', 'env', 'wc', 'printf', 'test'):
             p = shutil.which(n)
@@ -318,6 +319,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '安装/settings.json'), 'FAIL')
         self.assertIn('解析', self.sb.detail(r, '安装/settings.json'))
 
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
     def test_unreadable_settings_reports_permission_not_syntax(self):
         """chmod 000 是读不到，不是 JSON 写错；原因与修复建议必须对得上。"""
         self.sb.install()
@@ -539,6 +541,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/权限'), 'WARN')
         self.assertIn('chmod 700', r.stdout)
 
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
     def test_read_only_cache_root_is_fail(self):
         """缓存目录不可写 → 后台刷新永远落不了盘，必须 FAIL（渲染本身仍能读旧缓存）。"""
         self.sb.healthy()
@@ -789,6 +792,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
         self.assertIn('时间戳', self.sb.detail(r, '缓存/token'))
 
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
     def test_unreadable_config_warns_not_fails(self):
         """渲染脚本对不可读配置只是静默用默认值，状态栏照常工作——不能判 FAIL。"""
         self.sb.install()
@@ -1378,11 +1382,7 @@ class Doctor(unittest.TestCase):
         self.assertIn('缺少诊断模块', r.stderr)
 
     def test_points_to_agrees_with_install_check(self):
-        """doctor 与 install.sh --check 对同一组命令写法必须给出同一结论。
-
-        两处各有一份 points_to（install.sh 不能 source），判据一旦漂移，用户会得到
-        「安装器说没问题、诊断说没指向」这种自相矛盾的结果。
-        """
+        """doctor 与 install.sh --check 共用 tools/lib/points_to.sh，对同一组命令写法必须给出同一结论。"""
         self.sb.install(subagent=False, settings=False)
         dest = self.sb.dest
         forms = [
@@ -1480,7 +1480,112 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env=env)
         self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN', r.stdout)
         self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN', r.stdout)
-        self.assertNotIn('-', self.sb.detail(r, '缓存/状态页').split('未更新')[0])
+        self.assertIn('未来', self.sb.detail(r, '缓存/状态页'))
+        self.assertNotIn('-', self.sb.detail(r, '缓存/状态页'))
+
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
+    def test_unreadable_caches_report_cleanly_without_stderr(self):
+        """不可读的色板 / token / 状态页缓存不泄漏 stderr 报错，且报可读 WARN。"""
+        self.sb.healthy()
+        tc = os.path.join(self.sb.cache, 'claude-sl-theme-term-other.cache')
+        tok = os.path.join(self.sb.cache, 'claude-sl-tok-doctor.cache')
+        stf = os.path.join(self.sb.cache, 'claude-sl-status.cache')
+        with open(stf, 'w') as f:
+            f.write(f'{int(time.time())}\tminor\n')
+        for p in (tc, tok, stf):
+            os.chmod(p, 0)
+            self.addCleanup(os.chmod, p, 0o600)
+        r = self.sb.run()
+        self.assertEqual(r.stderr, '', f'不可读缓存泄漏了 stderr：{r.stderr!r}')
+        self.assertEqual(self.sb.status(r, '缓存/色板'), 'WARN')
+        self.assertIn('不可读', self.sb.detail(r, '缓存/色板'))
+        self.assertEqual(self.sb.status(r, '缓存/token'), 'WARN')
+        self.assertEqual(self.sb.status(r, '缓存/状态页'), 'WARN')
+
+    def test_symlink_cache_root_does_not_leak_backoff_or_git(self):
+        """缓存根是符号链接时，绝不跟随读取其中的 .fail 退避或 git 缓存。"""
+        self.sb.install()
+        target = os.path.join(self.sb.d, 'target')
+        os.makedirs(target)
+        with open(os.path.join(target, 'claude-sl-theme-term-other.cache.fail'), 'w') as f:
+            f.write(f'{int(time.time())}\n')
+        with open(os.path.join(target, 'claude-sl-git-x.cache'), 'w') as f:
+            f.write('-\t-\t-\t1\n')
+        os.symlink(target, self.sb.cache)
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/根'), 'FAIL')
+        self.assertNotIn('缓存/退避', self.sb.checks(r))
+        self.assertIn('缓存 0 个', self.sb.detail(r, '缓存/git'))
+
+    def test_scrub_handles_uppercase_headers_quoted_bearer_and_url_slashes(self):
+        """全大写 header/scheme、引号内含空格的 Bearer、密码带 / 或 @ 的 URL 均须彻底脱敏。"""
+        self.sb.install()
+        self.sb.write_settings({'statusLine': {
+            'type': 'command',
+            'command': 'X-API-KEY: UPKEY111; API-KEY: UPKEY222; X-AUTH-TOKEN: UPTOK333; '
+                       'AUTHORIZATION: BASIC UPBASIC444; BEARER "tok with space 555"; '
+                       'https://usr:pa/ss@relay.example/v1 https://usr:p@ss@relay.example/v2 '
+                       'bash /wrong/statusline-command.sh'}})
+        r = self.sb.run()
+        for sec in ('UPKEY111', 'UPKEY222', 'UPTOK333', 'UPBASIC444', 'tok with space 555',
+                    'with space', 'pa/ss', 'p@ss'):
+            self.assertNotIn(sec, r.stdout, f'{sec!r} 泄露到了诊断输出')
+
+    def test_low_python_skips_ccswitch_db_check(self):
+        """python3 < PY_MIN 时中转站 DB 检查直接 SKIP，不误报数据库损坏/独占。"""
+        env = self.sb.healthy(relay=True)
+        self.sb.make_ccswitch([('p1', 'claude', 1, 50, '{"limitDailyUsd": 50}')])
+        b = self.sb.minimal_path()
+        self.sb.fake(b, 'python3', '#!/bin/sh\necho "Python 3.7.9"\n')
+        r = self.sb.run(env=dict(env, PATH=b))
+        self.assertEqual(self.sb.status(r, '数据/CCSwitch库'), 'SKIP')
+
+    def test_config_with_both_unknown_and_bad_reports_both(self):
+        """配置同时含未知键与非法值时两者都要报出来，不能只报前者吞掉后者。"""
+        self.sb.healthy()
+        with open(os.path.join(self.sb.cfg, 'claude-statusline.conf'), 'w') as f:
+            f.write('no_such_key = 1\nglyphs = fancy\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '安装/配置文件'), 'WARN')
+        d = self.sb.detail(r, '安装/配置文件')
+        self.assertIn('no_such_key', d)
+        self.assertIn('glyphs', d)
+
+    def test_empty_dir_arg_exits_2(self):
+        self.assertEqual(self.sb.run('--dir', '').returncode, 2)
+
+    def test_owner_lock_under_pre_109_copy_still_fails(self):
+        """1.0.8 及更早副本残锁回收只用 rmdir、不清 owner：含 owner 的锁目录仍必须报 FAIL。"""
+        self.sb.healthy()
+        self.sb.set_installed(lambda src: re.sub(r'(?m)^VERSION=\S+', 'VERSION=1.0.8', src, count=1))
+        d = os.path.join(self.sb.cache, 'claude-sl-lock-old')
+        os.makedirs(d)
+        with open(os.path.join(d, 'owner'), 'w') as f:
+            f.write('123.1\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/锁'), 'FAIL')
+
+    def test_scrub_pat_boundary_keeps_compat_and_strips_pat(self):
+        """scrub 对 PAT= 做边界匹配：不误伤 COMPAT=1 / EXPAT=1，同时抹掉 PAT= / GITHUB_PAT=。"""
+        self.sb.install()
+        self.sb.write_settings({'statusLine': {
+            'type': 'command',
+            'command': 'COMPAT=keep1 EXPAT=keep2 PAT=secretpat1 GH-PAT=secretpat2 '
+                       'GITHUB_PAT=secretpat3 bash /wrong/statusline-command.sh'}})
+        r = self.sb.run()
+        self.assertIn('COMPAT=keep1', r.stdout)
+        self.assertIn('EXPAT=keep2', r.stdout)
+        for sec in ('secretpat1', 'secretpat2', 'secretpat3'):
+            self.assertNotIn(sec, r.stdout)
+
+    def test_theme_fail_with_want_column_reports_clean_age(self):
+        """双列 .fail（epoch\\tTHEME_WANT）被 doctor 正常解码，年龄为整数秒。"""
+        self.sb.healthy()
+        with open(os.path.join(self.sb.cache, 'claude-sl-theme-term-other.cache.fail'), 'w') as f:
+            f.write(f'{int(time.time()) - 42}\tTHEME=auto/12/tint/v{PALETTE_V}\n')
+        r = self.sb.run()
+        self.assertEqual(self.sb.status(r, '缓存/退避'), 'WARN')
+        self.assertRegex(self.sb.detail(r, '缓存/退避'), r'（4[2-9]s 前）')
 
     def test_credentials_in_base_url_are_stripped(self):
         self.sb.healthy(relay=True)

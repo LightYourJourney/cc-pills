@@ -171,6 +171,58 @@ class Robustness(unittest.TestCase):
             for bad in ('-999', '$0.00', '+-500', 'api -12s', '$-1'):
                 self.assertNotIn(bad, o, f'负数输入渲染出了 {bad!r}：{o!r}')
 
+    def test_256_color_malformed_palette_and_edge_inputs(self):
+        """256 色畸形色板（08;09;10 / 缺段）、前导零 COLUMNS、负 hit_ratio、两位小数 t_hit、
+        超大费用、缺 r_today 与缺 t_out 均不得报错、溢出或伪造值。"""
+        with Sandbox() as sb:
+            tc = next(os.path.join(sb.tmp, f) for f in os.listdir(sb.tmp) if f.startswith('claude-sl-theme-'))
+            with open(tc, 'w') as f:
+                f.write('THEME=dracula/12/tint/v4\nP_NEU=08;09;10\nP_CTX=08;09;10\nT_NEU=250;250;250\nT_DIM=;\n')
+            r = sb.render(sb.stdin(), cols='080', env={'COLORTERM': ''}, raw=True)
+            self.assertEqual((r.returncode, r.stderr), (0, ''), '256 色前导零或 COLUMNS=080 报错')
+            self.assertIn('ctx 42%', strip(r.stdout))
+            # 负 hit_ratio 隐藏；大额费用不溢出为负；t_hit=98.05 窄屏不误进位成 99%；缺 t_out 不留悬空 ↓
+            d = sb.stdin('edge', cost=10 ** 17, cache=3000)
+            d['prompt_cache']['hit_ratio'] = -0.055
+            o = strip(sb.render(d))
+            self.assertNotIn('hit', o)
+            self.assertNotIn('$-', o)
+            sb.write_tok('edge', **{'in': '30M'}, hit='98.05')
+            o2 = strip(sb.render(sb.stdin('edge'), cols=40))
+            self.assertIn('98%', o2)
+            self.assertNotIn('99%', o2)
+            self.assertNotIn('↓', o2)
+            # 中转站缺 r_today 时不伪造 $0.00
+            sb.write_tok('rnotoday', rcost='3.2100', rlimit='50.0000')
+            o3 = strip(sb.render(sb.stdin('rnotoday'), env={'ANTHROPIC_BASE_URL': 'https://relay.example'}))
+            self.assertIn('$3.21', o3)
+            self.assertNotIn('$0.00', o3)
+
+    def test_model_abbrev_edges_remaining_pct_and_nodrop_protection(self):
+        """[ 在 - 前的模型名缩略不反向变长；-foo 不缩成空胶囊；remaining_percentage 回落生效；
+        网关 spend_limit 优先于 CC Switch 日限额；风险态额度在窄屏下不被 drop。"""
+        with Sandbox() as sb:
+            o = strip(sb.render(sb.stdin(model='glm[1M]-flash', effort=''), cols=35))
+            self.assertNotIn('[1M][1M]', o)
+            r = sb.render(sb.stdin(model='-foo', effort=''), cols=25, raw=True)
+            self.assertEqual((r.returncode, r.stderr), (0, ''))
+            self.assertIn('-foo', strip(r.stdout))
+            # remaining_percentage 回落
+            d = sb.stdin()
+            del d['context_window']['used_percentage']
+            d['context_window']['remaining_percentage'] = 30
+            self.assertIn('ctx 70%', strip(sb.render(d)))
+            # spend_limit 优先于 CC Switch 日限额
+            sb.write_tok('spwin', rcost='3.2100', rtoday='12.0000', rlimit='50.0000', splv='warn', spout='1h')
+            d2 = sb.stdin('spwin', spend={'used_percentage': 60, 'used_usd': 30, 'limit_usd': 50, 'period': 'daily'})
+            o2 = strip(sb.render(d2, cols=220, env={'ANTHROPIC_BASE_URL': 'https://gw.example'}))
+            self.assertIn('今日 $30.00/$50.00', o2)
+            self.assertNotIn('$12.00/$50.00', o2)
+            # 风险态 7d 与 spend 在窄屏下不可丢（NODROP 生效）
+            sb.write_tok('nd', q7lv='warn', q7out='3h')
+            o3 = strip(sb.render(sb.stdin('nd', q5=40, q7=60), cols=55))
+            self.assertIn('7d', o3, '风险态 7d 在窄屏被 drop 了')
+
     def test_empty_string_fields_do_not_shift(self):
         with Sandbox() as sb:
             d = sb.stdin(q5=58)
@@ -601,6 +653,17 @@ class Facts(unittest.TestCase):
             self.assertEqual(r.stderr, '')
             self.assertEqual(old, facts(sb)[0])
             self.assertEqual(old['bash_min'], '4.2')
+
+    def test_huge_config_integer_rejected_and_slt_trailing_slash_trimmed(self):
+        """配置数值超 9 位拒收进 conf_bad（防 64 位整数回绕）；显式 CLAUDE_SL_TMP 尾斜杠归一。"""
+        with Sandbox() as sb:
+            with open(os.path.join(sb.cfg, 'claude-statusline.conf'), 'w') as f:
+                f.write('pill_chroma = 9999999999999999999\nctx_bad = 9999999999999999999\n')
+            f_, _ = facts(sb, {'CLAUDE_SL_TMP': sb.tmp + '///'})
+            self.assertEqual(f_['slt'], sb.tmp)
+            self.assertIn('pill_chroma', f_['conf_bad'])
+            self.assertIn('ctx_bad', f_['conf_bad'])
+            self.assertEqual(f_['pill_chroma'], '12')
 
 
 if __name__ == '__main__':

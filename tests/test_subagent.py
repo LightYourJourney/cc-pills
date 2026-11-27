@@ -376,6 +376,59 @@ class SubagentState(unittest.TestCase):
         rows = self.panel(tasks, os.path.join(self.d, 'c.json'))
         self.assertEqual([row['content'] for row in rows], ['work'])
 
+    def test_empty_label_controls_negative_tokens_and_bad_state_self_heal(self):
+        """空 label 回退 description、窄屏无描述不留孤立分隔符、负 tokenCount 隐藏、换行/控制字符剔除、
+        状态中非数字 t 与未来时间戳自愈、未来 mtime 残锁可回收。"""
+        st = os.path.join(self.d, 'heal.json')
+        now = time.time()
+        with open(st, 'w') as f:
+            json.dump({'a1': {'t': 'bad', 'k': 10}, 'fut': {'t': now + 3600, 'k': 10}}, f)
+        lock = st + '.lock'
+        os.makedirs(lock)
+        os.utime(lock, (now + 3600, now + 3600))
+        tasks = {'columns': 120, 'tasks': [
+            {'id': 'a1', 'status': 'running', 'label': '', 'description': 'line1\n\x1b[31mline2',
+             'model': 'm', 'tokenCount': -50, 'contextWindowSize': 200000},
+            {'id': 'a2', 'status': 'running', 'label': '', 'description': '', 'model': 'opus-5'}]}
+        rows = {r['id']: r['content'] for r in self.panel(tasks, st)}
+        self.assertIn('line1', rows['a1'])
+        self.assertNotIn('\n', rows['a1'])
+        self.assertNotIn('\x1b', rows['a1'])
+        self.assertNotIn('tok', rows['a1'])
+        self.assertNotIn('ctx', rows['a1'])
+        self.assertEqual(rows['a2'], 'opus-5', '无描述时不该残留前导 "  — "')
+        self.assertFalse(os.path.exists(st + '.fail'), '坏 t 状态未自愈，写回仍报失败')
+        self.assertFalse(os.path.exists(lock), '未来 mtime 的残锁没有被回收')
+        with open(st) as f:
+            saved = json.load(f)
+        self.assertNotIn('fut', saved)
+        self.assertIsInstance(saved['a1']['t'], (int, float))
+
+    def test_panel_unifies_waiting_zero_token_kfmt_and_days(self):
+        """A3 口径统一：waiting 计入运行态（计时/算速/写回）、tokenCount=0 隐藏 tok 与 ctx、
+        kfmt 输出 1.2M / 1B 且无 1000M、速率固定 ↑x.yk/s、>24h 输出 XdYh。"""
+        now = time.time()
+        st = os.path.join(self.d, 'a3.json')
+        with open(st, 'w') as f:
+            json.dump({'w1': {'t': now - 10, 'k': 1_180_000}}, f)
+        tasks = {'columns': 160, 'tasks': [
+            {'id': 'w1', 'status': 'waiting', 'description': 'wait', 'model': 'm',
+             'startTime': (now - 90_000) * 1000, 'tokenCount': 1_200_000, 'contextWindowSize': 2_000_000},
+            {'id': 'z0', 'status': 'running', 'description': 'init', 'model': 'm',
+             'tokenCount': 0, 'contextWindowSize': 1_000_000},
+            {'id': 'b1', 'status': 'running', 'description': 'huge', 'model': 'm',
+             'tokenCount': 999_499_999, 'contextWindowSize': 1_000_000_000}]}
+        rows = {r['id']: r['content'] for r in self.panel(tasks, st)}
+        self.assertRegex(rows['w1'], r'1\.2M ↑\d+\.\dk/s')
+        self.assertIn('1d1h', rows['w1'])
+        self.assertTrue(rows['w1'].endswith(' [waiting]'), rows['w1'])
+        self.assertNotIn('tok', rows['z0'])
+        self.assertNotIn('ctx', rows['z0'])
+        self.assertIn('1B', rows['b1'])
+        self.assertNotIn('1000M', rows['b1'])
+        with open(st) as f:
+            self.assertIn('w1', json.load(f))
+
     def test_panel_line_fields(self):
         """面板行：名字、按宽度截断的描述、模型 / effort / tok 与增速 / ctx 剩余 / 时长，非运行态
         带 [状态] 且不计时长，剩余 < 20% 带 ⚠。"""

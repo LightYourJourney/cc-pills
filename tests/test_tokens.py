@@ -248,7 +248,11 @@ class Counting(Base):
         self.assertEqual(self.fields(self.run_tok(tp, 'b0').stdout)[IDX['in']], '30')
         cases = [('files', []), ('pend', [['x', [1, 2]]]), ('trk', [1]),
                  ('trk', {'cost': {'ew': 0.0, 'lt': 0, 't0': 0}}),   # 缺 lv
-                 ('in', 'abc'), ('unl', {'m': [1, 2]})]
+                 ('trk', {'cost': {'ew': 0.0, 'lt': 10, 'lv': 1.0, 't0': 100}}),   # lt < t0
+                 ('in', 'abc'), ('in', float('nan')),
+                 ('files', {tp: {'off': -1, 'fp': 0}}),
+                 ('files', {tp: {'off': 0, 'fp': 0, 'msgs': 'bad'}}),
+                 ('unl', {'m': [1, 2]}), ('unl', {'m': [None, 1, 1, 0, 0, 0, 0, 0]})]
         for i, (k, v) in enumerate(cases):
             sid = f'b{i + 1}'
             self.fields(self.run_tok(tp, sid).stdout)             # 先写出合法状态
@@ -418,6 +422,19 @@ class Trackers(Base):
         self.assertIsNone(self.t.rate(st, 'cost', 1110), '预热期（110s < 120s）就输出了速率')
         self.assertAlmostEqual(self.t.rate(st, 'cost', 1130) * 3600, 12, delta=0.5,
                                msg='预热期满后应给出真实速率')
+
+    def test_clock_rollback_and_nonfinite_cli_args_are_safe(self):
+        """时钟回拨（now < lt 或 now < t0）重新起算基线且不抛 OverflowError；cost=nan / th=50 不崩溃。"""
+        st = {'trk': {}}
+        self.t.track(st, 'cost', 10.0, 2000, epoch='stdin')
+        self.t.track(st, 'cost', 12.0, 2600, epoch='stdin')
+        # 时钟大幅回拨并伴随小幅回落：不得制造 lt < t0 或 OverflowError
+        self.t.track(st, 'cost', 11.9, 1000, epoch='stdin')
+        self.assertGreaterEqual(st['trk']['cost']['lt'], st['trk']['cost']['t0'])
+        self.assertIsNone(self.t.rate(st, 'cost', 1000))
+        tp = self.write('nan.jsonl', [line('m1', 10, 1, 'end_turn')])
+        out = self.fields(self.run_tok(tp, 'nan', 'cost=nan', 'th=50').stdout)
+        self.assertEqual(out[IDX['rate']], '-', 'cost=nan 不得污染 rate 输出')
 
 
 class Pace(Base):
@@ -720,6 +737,28 @@ class Relay(Base):
                                msg='前提：旧消息仍在未入账尾部里')
         self.assertEqual(out[IDX['rtoday']], '0.0000', '昨天的尾部被算进了今日')
 
+    def test_find_pricing_escapes_like_wildcards_and_zero_replacement_clears_unl(self):
+        """LIKE 前缀匹配必须转义 _ / %；重复 mid 被全零行替换时从 st['unl'] 移除；布尔日限额被拒。"""
+        now = int(time.time())
+        db = self.make_db(now)
+        c = sqlite3.connect(db)
+        c.execute("insert into model_pricing values('qwen-2x5-coder-instruct', 9, 9, 0, 0)")
+        c.commit()
+        c.close()
+        conn = sqlite3.connect(db)
+        try:
+            self.assertIsNone(self.t.find_pricing(conn, 'qwen-2_5-coder', {}),
+                              '_ 被当作 SQLite LIKE 单字符通配符误匹配了其他模型')
+        finally:
+            conn.close()
+        self.assertEqual(self.t.limit_state(None, '{"limitDailyUsd": true}'), ('bad', None))
+        ts = iso_utc(now - 60)
+        tp = self.write('zrep.jsonl', [line('m1', 100, 10, None, ts=ts),
+                                       line('m1', 0, 0, 'end_turn', ts=ts)])
+        st = json.loads(json.dumps(self.t.EMPTY))
+        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, {}, [], True, True)
+        self.assertNotIn('m1', st['unl'], '被全零行替换后 st[unl] 仍残留旧非零行')
+
 
 class DailyLimit(Base):
     """日限额口径：与 CC Switch check_provider_limits 一致——只算当前供应商可归属的行。
@@ -860,6 +899,14 @@ class DailyLimit(Base):
         self.assertAlmostEqual(r['today_cur'], 5.0, places=6)
         self.assertAlmostEqual(r['today_global'] - r['today_cur'], 37.0, places=6,
                                msg='不可归属 = 全局 - 当前供应商（其它供应商 + _session + 尾部）')
+
+    def test_today_global_includes_daily_rollups(self):
+        """无日限额时 today_global 同样累加当日 usage_daily_rollups，与 provider_today 同口径。"""
+        now = int(time.time())
+        db = self.provider_db(now, b_meta='{}', rollup=11.5)
+        tp = self.write('glob_roll.jsonl', [])
+        out = self.fields(self.run_tok(tp, 'gr1', f'relay={db}').stdout)
+        self.assertEqual(out[IDX['rtoday']], '53.5000', 'today_global 漏算了当日 usage_daily_rollups')
 
     def probe(self, db):
         return subprocess.run([sys.executable, PATH, '--provider-state', db],

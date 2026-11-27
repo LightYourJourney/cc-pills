@@ -52,7 +52,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 | BSD `stat` / `mktemp` | yes | 6-X `mktemp` templates, atomic `mv` |
 | `TMPDIR` unset / trailing slash / spaces or CJK | yes | normalised to the same private root |
 | python3 ≥ 3.9 | yes | CI runs the full suite on Python 3.9 (except the concurrent panel-write case); below 3.9 the installer refuses and the diagnostic reports FAIL |
-| jq 1.6 | yes | What Debian 12 / Ubuntu 22.04 ship; CI runs the full suite on it in its own job. jq 1.7 relaxed object-literal syntax — 1.6 rejects `{k: $n + 1}` outright |
+| jq 1.6 | yes | What Debian 12 / Ubuntu 22.04 ship; CI runs the full suite on it in its own job (except the concurrent panel-write case). jq 1.7 relaxed object-literal syntax — 1.6 rejects `{k: $n + 1}` outright |
 
 ## Cache
 
@@ -71,10 +71,11 @@ is `mktemp` (O_EXCL) + atomic `mv`; the Python side uses `mkstemp` + `os.replace
 stray temp files untouched for 30 days are removed once a day by the background refresh.
 Session state (`claude-statusline-*.json`, the resume checkpoint that avoids a full
 re-scan) has one extra guard: it is deleted only when every transcript it records is gone.
-Empty refresh-lock directories left behind by ended sessions are removed after 30 days too.
-The scan uses `find -maxdepth 1`: no recursion, no symlink following, and it never
-touches the palette, status page, or panel state. The 30-day threshold is a
-constant — there is no config knob.
+Empty or `owner`-only refresh-lock directories left behind by ended sessions are removed
+after 30 days too (removing stale `owner` and `rmdir`-ing in the same pass). The scan uses
+`find -maxdepth 1` (and `-mindepth 2 -maxdepth 2` only for `claude-sl-lock-*/owner`): no
+arbitrary recursion, no symlink following, and it never touches the palette, status page, or
+panel state. The 30-day threshold is a constant — there is no config knob.
 
 **Migration**: the legacy `/tmp` token / skip-marker / session-state files for a live session
 move into the private root on the first refresh; the legacy panel state is *not* migrated
@@ -104,8 +105,8 @@ script with `--with-subagent`, or when it is already installed) and prints wheth
 > **The subagent panel is deprecated upstream.** Claude Code 2.1.330–2.1.332 ships
 > `subagentStatusLine is deprecated in favor of mods and will stop working in a future
 > release`, warns once per session, and has dropped the section from the official docs. The
-> script itself still works and this repo keeps maintaining it; the replacement is a mod's
-> `AgentRow` render point. See `docs/DECISIONS.md` for the migration note.
+> script itself still works and stays for one transition release; the replacement is the
+> `cc-pills-agent-row` mod below (`AgentRow` render point). See `docs/DECISIONS.md` for details.
 
 ### The replacement: `cc-pills-agent-row` (a mod)
 
@@ -172,7 +173,7 @@ live session's caches.
 When an item disappears, the line loses its colours, or nothing renders at all, run the
 diagnostic first. It never modifies your config, cache or database content, makes no network
 requests, never dumps the environment, and scrubs `sk-…` / `ghp_…` / `*_KEY=…` / `*_TOKEN=…` /
-`*PASSWORD=…` / `*SECRET=…` (case-insensitive, quoted values included) / `--api-key …` /
+`*PASSWORD=…` / `*SECRET=…` / `*PAT=…` (case-insensitive, quoted values included) / `--api-key …` /
 URL credentials and query parameters / API-key and `Authorization` headers / `Bearer …` out of the `settings.json` command before printing it. Its only write is a throwaway temp dir;
 a WAL-mode SQLite database may get `-wal`/`-shm` sidecars on read-only open, exactly as the
 renderer's own read does.
@@ -266,7 +267,7 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # parallel shards; ~1 min on an 8-core machine, fully isolated (no live caches, no network)
 bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
-claude plugin test mods/agent-row          # the mod's 9 tests (run_tests.sh runs them too when `claude` is on PATH)
+claude plugin test mods/agent-row          # the mod's 12 tests (run_tests.sh runs them too when `claude` is on PATH)
 UPDATE_GOLDEN=1 bash run_tests.sh render   # after an intentional rendering change
 ```
 
