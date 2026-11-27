@@ -244,6 +244,8 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 | 二：面板宽度 | 9c0f3a1 | 330→332 | jq 侧 `cw` / `dw` / `cut` 与主栏 `dw()` 同模型；预算用各段实际拼出的字符串算，去掉魔法数 5；表头注明弃用 |
 | 三：文档与测试/CI 加固 | ae02145 | 332 | README 两版写弃用现状与 `refreshInterval`；install.sh 装面板时提示；DECISIONS 记四处新裁定；35 处子进程超时；jq 1.6 作业 |
 | 发布 1.0.9 | 见 tag `v1.0.9` | 332 | `VERSION=1.0.9` |
+| 四：面板迁移到 mod | bbe9213 | 332 + 5 | `mods/agent-row` + 仓库根 marketplace；bash 面板保留一个版本作过渡 |
+| 五：变异用例补强 | 本阶段 | 332→339 | 上一轮 9 个存活变异里 7 个补了用例并逐个验证被杀（见下） |
 
 ### mod 迁移（11-27 决定）
 
@@ -251,6 +253,21 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 速率基线）替掉 286 行 bash 与它背后的共享状态。5 项测试通过 `claude plugin test` 跑，
 `run_tests.sh` 在 PATH 里有 `claude` 时顺带跑。分发走仓库根的 marketplace 文件。
 bash 面板保留一个版本作过渡。
+
+### 上一轮存活变异的收口（11-27）
+
+| 变异 | 新用例 | 结论 |
+|---|---|---|
+| 色板 pill 的「提亮」循环 | `test_every_theme_lifts_its_surface_off_the_background` | 杀掉。onedark / nord 的 SURFACE 与本主题背景 ΔE 只有 11.5 / 11.1，矩阵只跑 auto（tokyonight）时没被覆盖 |
+| tokyo-glass 浅底把主题背景也算进验收 | `test_light_terminal_glass_pills_follow_the_actual_background` | 杀掉。白底上胶囊 L 从 90 掉到 4（近纯黑） |
+| 状态页 try 写在拉取之后 | `test_status_fetch_stamps_try_before_running` | 杀掉。假 curl 在启动时读 try 文件，内容仍是旧的 |
+| 不查 `.git/index` | `test_index_change_invalidates_git_cache_within_ttl` | 杀掉。`git add` 后状态旗标仍为 `-` |
+| 迁移覆盖私有副本 | `test_migration_does_not_overwrite_the_private_copy` | 杀掉。`/tmp` 的 777M 盖掉了私有根的 30M |
+| 清理递归进子目录 | 修正 `test_prune_skips_symlinks_and_subdirectories` | 杀掉。原来的子目录内文件叫 `nested`，根本不匹配清理模式，递归进去也删不到 |
+| 缓存根权限 | `test_new_private_dir_is_0700_under_permissive_umask` / `test_existing_private_dir_is_tightened` | 杀掉。前者 umask 000，后者预置 0755 |
+
+剩下两个是等价变异，不补用例：迁移的 `-O` 只有以另一个用户身份在 `/tmp` 建文件才测得出（同一行为已由
+`-L` 与「不覆盖」两条覆盖）；中转站库的 `-r` 去掉后 python 侧同样会失败并被吞掉，没有可观察差异。
 
 ### 没有改的
 

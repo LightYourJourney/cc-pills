@@ -145,6 +145,28 @@ class ContrastMatrix(unittest.TestCase):
                     bad.append(f'{bg} {st}: 基础胶囊 ΔE {de:.1f} < {floor}')
         self.assertFalse(bad, '\n'.join(bad))
 
+    def test_every_theme_lifts_its_surface_off_the_background(self):
+        """onedark / nord 的 SURFACE 与本主题标准背景的 ΔE 只有 11.5 / 11.1，低于 12：pill 的
+        「提亮」循环就是为它们存在的。矩阵只跑 auto（= tokyonight）时这两套没被覆盖。"""
+        home = make_home('#1e1f29', '#e6e6e6')
+        for t in THEMES:
+            kv, _ = palette(home, 'tint', theme_name=t)
+            base = level(kv['P_NEU'])
+            de = math.dist(theme.lab(base), theme.lab(rgb(theme.THEMES[t]['bg'])))
+            self.assertGreaterEqual(de, MIN_PILL_DE, f'{t}: 基础胶囊与本主题背景 ΔE {de:.1f}')
+
+    def test_light_terminal_glass_pills_follow_the_actual_background(self):
+        """浅色终端上 tokyo-glass 的胶囊往暗处偏，基准是终端背景，不是内置主题的深色底。
+        把主题背景也算进验收集会让胶囊围着那个深底往更暗处走：白底上 L 从 90 掉到 4，
+        几乎纯黑。"""
+        home = make_home('#ffffff', '#1e1e1e')
+        kv, _ = palette(home, 'tokyo-glass')
+        theme_bg = theme.lab(rgb(theme.THEMES['tokyonight']['bg']))[0]
+        for k in ('P_NEU', 'P_MODEL', 'P_CTX'):
+            L = theme.lab(level(kv[k]))[0]
+            self.assertGreater(L, theme_bg + 30,
+                               f'{k}: 浅底胶囊 L={L:.0f}，贴着内置深色背景（L={theme_bg:.0f}）')
+
     def test_light_terminal_pills_do_not_collapse(self):
         """浅底曾把胶囊全截成 #ffffff（ΔE 与背景为 0）——每块胶囊至少三种不同颜色。"""
         home = make_home('#ffffff', '#1e1e1e')

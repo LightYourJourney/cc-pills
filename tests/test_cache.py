@@ -74,6 +74,46 @@ class DefaultDir(CacheBase):
         self.assertEqual(stat.S_IMODE(st.st_mode), 0o700)
         self.assertEqual(st.st_uid, os.getuid())
 
+    def test_new_private_dir_is_0700_under_permissive_umask(self):
+        """权限不能指望调用方的 umask：umask 000 时 mkdir 默认给 0777，同机其他用户就能读。"""
+        p = self.private()
+        self.assertFalse(os.path.exists(p))
+        subprocess.run(['bash', '-c', 'umask 000; exec "$@"', 'x', 'bash', SCRIPT,
+                        '--refresh', self.d, '-', 'cachetest', 'sub'],
+                       env=self.env, capture_output=True, timeout=60)
+        self.assertTrue(os.path.isdir(p), '没有创建私有缓存目录')
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o700, 'umask 000 下缓存根不是 0700')
+
+    def test_existing_private_dir_is_tightened(self):
+        """上次被杀在 mkdir 与 chmod 之间、或旧版本留下的宽松权限：每次刷新都要收紧。"""
+        p = self.private()
+        os.makedirs(p, mode=0o755)
+        os.chmod(p, 0o755)
+        self.refresh(self.env)
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o700, '已存在的宽松缓存根没有被收紧')
+
+    def test_migration_does_not_overwrite_the_private_copy(self):
+        """私有根已有同名文件时不迁入：共享 /tmp 里旧版本留下的值不能盖掉新值。"""
+        sid = f'ccpills-mig2-{os.getpid()}-{time.time_ns()}'
+        name = f'claude-sl-tok-{sid}.cache'
+        src = os.path.join('/tmp', name)
+
+        def cleanup():
+            if os.path.exists(src):
+                os.unlink(src)
+        self.addCleanup(cleanup)
+        with open(src, 'w') as f:
+            f.write(tok_line(**{'in': '777M'}, msgs='999'))
+        p = self.private()
+        os.makedirs(p, mode=0o700, exist_ok=True)
+        dst = os.path.join(p, name)
+        with open(dst, 'w') as f:
+            f.write(tok_line(**{'in': '30M'}, msgs='1'))
+        subprocess.run(['bash', SCRIPT, '--refresh', self.d, '-', sid, 'sub'],
+                       env=self.env, capture_output=True, timeout=60)
+        with open(dst) as f:
+            self.assertNotIn('777M', f.read(), '共享 /tmp 的旧文件覆盖了私有根里的新值')
+
     def test_legacy_tmp_files_are_migrated(self):
         """旧版写在共享 /tmp 的本会话文件要迁入私有目录（唯一名字，跑完清理）。"""
         sid = f'ccpills-mig-{os.getpid()}-{time.time_ns()}'
@@ -405,7 +445,8 @@ class Lifecycle(CacheBase):
         sub = os.path.join(p, 'claude-sl-tok-sub.cache')
         os.makedirs(sub)
         self.old(sub)
-        inside = os.path.join(sub, 'nested')
+        # 名字必须匹配清理模式，否则即使真的递归进去也删不到它，测不出 -maxdepth 1
+        inside = os.path.join(sub, 'claude-sl-tok-old.cache')
         with open(inside, 'w') as f:
             f.write('x')
         self.old(inside)
@@ -709,6 +750,36 @@ class RefreshState(unittest.TestCase):
         self.sb.refresh(self.sb.repo, sid='lk')
         self.assertEqual(self.git_cache()[1], 'stale', '锁还新鲜时不该再跑一轮刷新')
         self.assertTrue(os.path.isfile(os.path.join(lock, 'owner')), '别人的锁被删了')
+
+    def test_index_change_invalidates_git_cache_within_ttl(self):
+        """git add 只改 .git/index、不动 HEAD：TTL 内也要重算，否则暂存的新文件最多晚 5 秒才显示。"""
+        self.sb.refresh(self.sb.repo, sid='ix')
+        self.assertEqual(self.git_cache()[2], '-', '干净的仓库状态不该有旗标')
+        with open(os.path.join(self.sb.repo, 'staged.txt'), 'w') as f:
+            f.write('x')
+        subprocess.run(['git', 'add', 'staged.txt'], cwd=self.sb.repo, check=True, timeout=60)
+        self.sb.refresh(self.sb.repo, sid='ix')          # TTL 内
+        self.assertIn('+', self.git_cache()[2], '暂存后 .git/index 变了，缓存却没有重算')
+
+    def test_status_fetch_stamps_try_before_running(self):
+        """先写尝试时刻再拉取：否则并发的会话都看到旧的 last、各拉一次（最多重复 N 次）。"""
+        with Sandbox(conf_extra='status_page = on') as sb:
+            tryf = os.path.join(sb.tmp, 'claude-sl-status.try')
+            stale = int(time.time()) - 3600
+            with open(tryf, 'w') as f:
+                f.write(f'{stale}\n')
+            b = os.path.join(sb.dir, 'bin')
+            os.makedirs(b, exist_ok=True)
+            mark = os.path.join(sb.dir, 'saw-try')
+            with open(os.path.join(b, 'curl'), 'w') as f:
+                f.write('#!/bin/sh\ncat "%s" > "%s"\n'
+                        'printf \'{"status":{"indicator":"minor"}}\'\n' % (tryf, mark))
+            os.chmod(os.path.join(b, 'curl'), 0o755)
+            sb.refresh(sb.repo, env=dict(sb.env, PATH=b + os.pathsep + sb.env['PATH']))
+            with open(mark) as f:
+                seen = f.read().strip()
+            self.assertNotEqual(seen, str(stale), 'curl 启动时尝试时刻还没写：并发会话会各拉一次')
+            self.assertGreaterEqual(int(seen), int(time.time()) - 60)
 
     def test_future_git_cache_timestamp_is_refreshed(self):
         """写入时刻落在未来（时钟回拨）：按 0 处理并重算，否则 git 分支会冻结到回拨结束。"""
