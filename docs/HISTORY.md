@@ -250,6 +250,8 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 | 发布 1.0.10 | 见 tag `v1.0.10` | 342 + 9 | `VERSION=1.0.10`（含 `mods/agent-row` 0.1.1、变异用例补强与全量审查修复） |
 | 七：二阶全量审查加固 | 1652bde | 342→366 + 12 | 主栏 256 色色板三段校验与 `10#`、`COLUMNS` 十进制、`hit_ratio` 非负与小数首位进位、`money` 溢出保护、中转站缺 `r_today` 与 `io` 缺 `t_out`、模型缩略边界、`cd` 失败不投毒 git 缓存、持锁后再迁移与回填、清理 `mtime` fail-safe、配置数值 9 位封顶、`.fail` 记 `$THEME_WANT` 改配即绕过退避、`CLAUDE_SL_TMP` 尾斜杠归一；tokens `valid_state` 有限数与字段类型全校验、`track`/`rate` 时钟回拨与非有限参数保护、`find_pricing` `LIKE` 转义、拒布尔限额、全零替换清 `unl`、`today_global` 叠加 `usage_daily_rollups`；theme Display P3 分量钳制与 `defaults` 超时；bash 面板与 mod 对齐（`waiting` 活态/速率/持久化、`tokenCount==0` 隐 `tok`/`ctx`、`kfmt`、`↑x.yk/s`、`XdYh`）+ 空 `label` 回退/控制字符剔除/坏 `t` 自愈/窄屏截断；doctor 重定向顺序与 `-r` 校验、`<1.0.9` `owner` 锁判 FAIL、软链根不穿透、`scrub` 补全大写/引号空格/URL 斜杠及 `PAT=` 边界收紧、`points_to` 补 `$CLAUDE_CONFIG_DIR/` 与 `${HOME}/.claude/`；`install.sh` 缺 jq/目录目标/断链；`preview.sh` 免联网与 JSON 转义；CI 补 `permissions`、bash 3.2 语法与插件 JSON 校验；文档对齐 |
 | 发布 1.0.11 | 见 tag `v1.0.11` | 366 + 12 | `VERSION=1.0.11`（二阶全量审查加固与七项定夺收口，含 `mods/agent-row` 0.1.2） |
+| 八：三阶全量审查加固 | c2831a5 | 366→377 + 13 | tokens 记 `ledger_db` 切换重扫、限 `app_type='claude'`、`O_NONBLOCK` + `S_ISREG` 拒 FIFO、`OrderedDict` 与 `monotonic()`、`valid_state` 校验 `ledger_db`；主栏报 `JQ_MIN=1.6`、订阅/中转站口径与速率对齐（14 份金样更新）、过期 `spend_limit` 不遮蔽日限额、`put` 拒目录；theme 写失败返回退出码 1；bash 面板与 `AgentRow` 0.1.3 统一 600 s 速率窗口且 `ctx 剩20%` 不误告警；抽取 `tools/lib/version.sh`（bash 3.2 `ver_ge`），`install.sh` / `doctor` 加强 `jq >= 1.6`、单 JSON 对象与目录软链/FIFO 检查，同秒备份改 `mktemp` 防覆盖；`preview.sh` 校验样式并 `jq` 转义路径；`_parallel.py` 校验 `CCPILLS_JOBS`；README 与 DECISIONS 对齐 |
+| 发布 1.0.12 | 见 tag `v1.0.12` | 377 + 13 | `VERSION=1.0.12`（三阶全量审查加固，含 `mods/agent-row` 0.1.3） |
 
 ### mod 迁移（11-27 决定）
 
