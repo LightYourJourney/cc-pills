@@ -407,6 +407,15 @@ class Semantics(unittest.TestCase):
             self.assertIn('用尽', o)
             self.assertIn('↺', o)
 
+    def test_expired_spend_limit_does_not_mask_current_provider_limit(self):
+        with Sandbox() as sb:
+            sb.write_tok('t1', rcost='12', rtoday='8', rlimit='20')
+            data = sb.stdin(spend={'period': 'weekly', 'used_percentage': 100,
+                                   'resets_at': sb.now - 10})
+            out = strip(sb.render(data, env={'ANTHROPIC_BASE_URL': 'https://gw.example'}))
+            self.assertNotIn('用尽', out)
+            self.assertIn('$8.00/$20.00', out)
+
     def test_spend_limit(self):
         base = {'ANTHROPIC_BASE_URL': 'https://gw.example'}
         with Sandbox() as sb:

@@ -289,6 +289,49 @@ class Install(unittest.TestCase):
         s['statusLine']['command'] = 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"'
         self.assertEqual(self.run_sh('--check', settings=s).returncode, 0, '建议写法被误判')
 
+    def test_directory_symlink_is_refused_without_writing_inside_it(self):
+        target = os.path.join(self.d, 'directory')
+        os.mkdir(target)
+        os.symlink(target, os.path.join(self.dest, 'statusline-command.sh'))
+        r = self.run_sh()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(os.listdir(target), [])
+
+    def test_reinstall_preserves_each_backup_from_the_same_second(self):
+        b = os.path.join(self.d, 'bin')
+        os.mkdir(b)
+        date = os.path.join(b, 'date')
+        with open(date, 'w') as f:
+            f.write('#!/bin/sh\necho 20260101000000\n')
+        os.chmod(date, 0o755)
+        env = dict(self.env, PATH=b + os.pathsep + self.env['PATH'])
+        name = 'statusline-command.sh'
+        for previous in ('first', 'second'):
+            with open(os.path.join(self.dest, name), 'w') as f:
+                f.write(previous)
+            self.assertEqual(self.run_sh(env=env).returncode, 0)
+        contents = []
+        for backup in os.listdir(self.dest):
+            if backup.startswith(name + '.bak.'):
+                with open(os.path.join(self.dest, backup)) as f:
+                    contents.append(f.read())
+        self.assertCountEqual(contents, ['first', 'second'])
+
+    def test_fifo_script_is_reported_without_reading_or_overwriting_it(self):
+        path = os.path.join(self.dest, 'statusline-tokens.py')
+        os.mkfifo(path)
+        for args in ((), ('--check',), ('--doctor',)):
+            r = self.run_sh(*args)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertIn('不是普通文件', r.stdout + r.stderr)
+            self.assertTrue(os.path.exists(path) and not os.path.isfile(path))
+
+    def test_check_requires_a_single_settings_object(self):
+        self.run_sh()
+        with open(os.path.join(self.dest, 'settings.json'), 'w') as f:
+            f.write(json.dumps(self.cmds(False)) + '\n{}')
+        self.assertNotEqual(self.run_sh('--check').returncode, 0)
+
     def test_check_accepts_config_dir_with_trailing_slash(self):
         env = dict(self.env, CLAUDE_CONFIG_DIR=self.dest + '//')
         self.assertEqual(self.run_sh(env=env).returncode, 0)
@@ -299,6 +342,7 @@ class Install(unittest.TestCase):
         """同名目录后接子路径与父目录前缀均不能误判为 rc=0 指向已安装副本。"""
         self.assertEqual(self.points_to(f'bash {self.dest}/statusline-command.sh/other.sh', self.dest), 1)
         self.assertEqual(self.points_to(f'bash /tmp/backup{self.dest}/statusline-command.sh', self.dest), 2)
+        self.assertEqual(self.points_to('bash /backup${CLAUDE_CONFIG_DIR}/statusline-command.sh', self.dest), 2)
 
     def test_install_refuses_directory_target_and_check_handles_missing_jq(self):
         """目标位置是目录时拒绝覆盖；缺少 jq 时 --check 报缺依赖而不是误报 JSON 语法错误。"""

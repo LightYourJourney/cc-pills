@@ -46,7 +46,12 @@ jq=$(command -v jq 2>/dev/null)
 if [ -z "$jq" ]; then
   res FAIL 环境/jq "未找到 jq" "brew install jq；缺失时同步路径的字段提取整体失败，状态栏会空"
 else
-  res PASS 环境/jq "$(jq --version 2>/dev/null)（${jq}）"
+  jver=$(jq --version 2>/dev/null)
+  if [ -n "$JQ_MIN" ] && ! ver_ge "${jver#jq-}" "$JQ_MIN"; then
+    res FAIL 环境/jq "${jver:-版本未知}，需要 jq ≥ ${JQ_MIN}" "升级 jq 至 $JQ_MIN 或更高"
+  else
+    res PASS 环境/jq "${jver}（${jq}）"
+  fi
 fi
 
 git=$(command -v git 2>/dev/null)

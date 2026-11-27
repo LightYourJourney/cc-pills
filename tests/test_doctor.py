@@ -245,6 +245,13 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.sb.status(r, '安装/statusLine'), 'PASS')
         self.assertEqual(self.sb.status(r, '数据/stdin'), 'PASS')
 
+    def test_concatenated_settings_objects_fail_diagnosis(self):
+        env = self.sb.healthy()
+        with open(os.path.join(self.sb.dest, 'settings.json'), 'a') as f:
+            f.write('\n{}')
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '安装/settings.json'), 'FAIL')
+
     def test_healthy_run_writes_nothing(self):
         """默认只读：除临时目录里的冒烟沙箱（跑完即删）外不落任何文件。"""
         env = self.sb.healthy()
@@ -270,6 +277,18 @@ class Doctor(unittest.TestCase):
         r = self.sb.run(env={'PATH': self.sb.minimal_path()})
         self.assertEqual(self.sb.status(r, '环境/jq'), 'FAIL')
         self.assertEqual(r.returncode, 1)
+
+    def test_old_jq_fails_install_and_diagnosis(self):
+        self.sb.healthy()
+        b = self.sb.minimal_path()
+        jq = shutil.which('jq')
+        self.sb.fake(b, 'jq', f'#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.5; else exec "{jq}" "$@"; fi\n')
+        env = dict(self.sb.env, PATH=b)
+        r = subprocess.run([BASE_BASH, INSTALL], env=env, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('需要 jq ≥ 1.6', r.stderr)
+        r = self.sb.run(env=env)
+        self.assertEqual(self.sb.status(r, '环境/jq'), 'FAIL')
 
     def test_low_python_is_fail(self):
         self.sb.healthy()                     # 缓存根存在，确保走的是版本分支而不是「根不可用」

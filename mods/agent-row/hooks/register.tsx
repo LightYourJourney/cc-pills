@@ -96,7 +96,7 @@ export const register: Register = on => {
         seen.delete(id)
       } else if (tokens !== null) {
         const prev = seen.get(id)
-        if (prev && now - prev.t >= 1000 && tokens - prev.k >= 0) {
+        if (prev && now - prev.t >= 1000 && now - prev.t < 600_000 && tokens - prev.k >= 0) {
           rate = (tokens - prev.k) / ((now - prev.t) / 1000)
         }
         if (!prev || now < prev.t || now - prev.t >= 2000) {
@@ -133,7 +133,7 @@ export const register: Register = on => {
     }
 
     if (tokens !== null && tokens > 0 && windowSize !== null && windowSize > 0) {
-      const left = Math.max(0, Math.min(100, Math.floor((1 - tokens / windowSize) * 100)))
+      const left = Math.max(0, Math.min(100, Math.floor(((windowSize - tokens) * 100) / windowSize)))
       parts.push(left < 20 ? `ctx 剩${left}%⚠` : `ctx 剩${left}%`)
     }
 

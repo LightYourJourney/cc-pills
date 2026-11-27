@@ -93,15 +93,16 @@ bash 侧按键名取值、不认识的键忽略，所以新增指标只是多一
   8. 预筛子串只用来跳过不相干的行：含 "compact_boundary" 的行先确认真是 compact 行才跳过，
      否则照常累计 usage（tool_use 的 input 里出现这个词很常见）。
   9. 状态文件按不可信磁盘数据对待：用 O_NOFOLLOW 打开并校验 st_uid 属于本人，不符就当
-     没有旧状态从头算——对应 bash 侧 cache_ok 的 ! -L / -O 两项；不单独校验普通文件（-f），
-     私有 0700 目录里只有本人能在这个路径放目录 / FIFO。
+     没有旧状态从头算——对应 bash 侧 cache_ok 的 ! -L / -O 两项；只读取普通文件，非阻塞打开以免 FIFO 卡住刷新进程。
 """
 import calendar
+from collections import OrderedDict
 import glob
 import json
 import math
 import os
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -199,7 +200,7 @@ def parse_ts(s):
         return None
 
 
-def scan_chunk(path, fs, st, pend, order, main, track_unl):
+def scan_chunk(path, fs, st, pend, main, track_unl):
     """从 fs['off'] 读一片并累加进 st；返回是否已追平该文件尾。"""
     with open(path, 'rb') as f:
         f.seek(fs['off'])
@@ -268,12 +269,10 @@ def scan_chunk(path, fs, st, pend, order, main, track_unl):
         else:
             for k, v in zip(KEYS, vals):
                 st[k] += v
-            if mid:
-                order.append(mid)
-                while len(order) > PEND_KEEP:
-                    pend.pop(order.pop(0), None)
         if mid:
             pend[mid] = (vals, stop)
+            if len(pend) > PEND_KEEP:
+                pend.popitem(last=False)
             if row:
                 st['unl'][mid] = row
             elif track_unl:
@@ -512,7 +511,8 @@ def relay_ledger(db, sid, st, now, midnight):
         ids = list(unl)
         for i in range(0, len(ids), 500):      # 会话日志已入账：request_id = 'session:<message.id>'
             chunk = ids[i:i + 500]
-            q = 'SELECT request_id FROM proxy_request_logs WHERE request_id IN (%s)' % ','.join('?' * len(chunk))
+            q = ("SELECT request_id FROM proxy_request_logs WHERE app_type = 'claude' "
+                 "AND request_id IN (%s)" % ','.join('?' * len(chunk)))
             for (rid,) in conn.execute(q, ['session:' + x for x in chunk]):
                 unl.pop(rid[8:], None)
         # CC Switch 只保留约 30 天：早于库内最早记录的消息与用量页同口径，不再自算（见文档 4）
@@ -539,7 +539,7 @@ def relay_ledger(db, sid, st, now, midnight):
         cost, unpriced = conn.execute(
             'SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0), '          # CC Switch 以 TEXT 存 Decimal
             'COALESCE(SUM(COALESCE(CAST(total_cost_usd AS REAL), 0) = 0 AND input_tokens + output_tokens > 0), 0) '
-            'FROM proxy_request_logs WHERE session_id = ?', (sid,)).fetchone()
+            "FROM proxy_request_logs WHERE session_id = ? AND app_type = 'claude'", (sid,)).fetchone()
         cost = _finite(cost)
         tail = tail_today = 0.0
         cache = {}
@@ -689,6 +689,8 @@ def valid_state(d):
     「助手没有输出」，于是该会话永久不出数，且没有任何提示。重扫最多多花几秒。"""
     if not isinstance(d, dict):
         return False
+    if d.get('ledger_db') is not None and not isinstance(d.get('ledger_db'), str):
+        return False
     if not all(nn_int(d.get(k, 0)) for k in KEYS) or not nn_int(d.get('comp', 0)):
         return False
     files = d.get('files', {})
@@ -748,57 +750,61 @@ def main():
     cost = cost_v[0] if cost_v and cost_v[0] >= 0 else None
     th_v = nums('th')
     th = th_v if th_v and len(th_v) >= 2 else [50, 80]
-    db = kv.get('relay')
-    db = db if db and os.path.isfile(db) else None
+    relay_path = kv.get('relay')
+    db = relay_path if relay_path and os.path.isfile(relay_path) else None
     if not os.path.isfile(path):
         return
     state_path = os.path.join(TMP, f'claude-statusline-{os.path.basename(sid)}.json')
     st = dict(EMPTY)
     try:
         # 与 bash 侧同一条：只读本人的普通文件，不跟随符号链接（O_NOFOLLOW）。
-        fd = os.open(state_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        fd = os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, encoding='utf-8') as f:
-            if os.fstat(f.fileno()).st_uid != os.getuid():
+            info = os.fstat(f.fileno())
+            if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode):
                 raise OSError
             loaded = json.load(f)
         if loaded.get('v') == STATE_V and valid_state(loaded):   # 约束 5：版本 + 结构
             st.update(loaded)
     except Exception:
         pass
-    files = transcript_files(path)
-    for p in files:                            # 约束 6：变短或原地改写 → 整体重扫
+    file_sizes = {p: os.path.getsize(p) for p in transcript_files(path)}
+    # 路径移走但旧文件仍在，或首次接入账本时，旧游标不再代表这次要统计的文件与尾部。
+    if not st['files'].keys() <= file_sizes.keys() or (db and db != st.get('ledger_db')):
+        st = dict(EMPTY)
+    for p, size in file_sizes.items():         # 约束 6：变短或原地改写 → 整体重扫
         fs = st['files'].get(p)
-        if fs and (os.path.getsize(p) < fs['off'] or tail_fp(p, fs['off']) != fs['fp']):
+        if fs and (size < fs['off'] or tail_fp(p, fs['off']) != fs['fp']):
             st = dict(EMPTY)
             break
-    if any(not os.path.isfile(p) for p in st['files']):   # 约束 6：已记账的文件消失 → 整体重扫
-        st = dict(EMPTY)
+    st['ledger_db'] = db
     st['files'] = {k: dict(v) for k, v in st['files'].items()}
     st['trk'] = dict(st['trk'])
     st['unl'] = dict(st['unl'])
-    pend = {k: (tuple(v[0]), v[1]) for k, v in st['pend']}
-    order = [k for k, _ in st['pend']]
+    pend = OrderedDict(st['pend'])
 
     def persist(scanned=None):
         if scanned:                            # 只有游标动过的文件要重算指纹，其余沿用状态里的
             fs = st['files'][scanned]
             fs['fp'] = tail_fp(scanned, fs['off'])
-        st['pend'] = [[k, [list(pend[k][0]), pend[k][1]]] for k in order if k in pend]
+        st['pend'] = list(pend.items())
         save(state_path, st)
 
-    t0 = time.time()
+    t0 = time.monotonic()
     caught_up = True
-    for p in files:
-        if time.time() - t0 >= TIME_BUDGET:   # 约束 1：预算跨文件共用
+    for p, size in file_sizes.items():
+        fs = st['files'].setdefault(p, {'off': 0, 'fp': 0})
+        if fs['off'] == size:
+            continue
+        if time.monotonic() - t0 >= TIME_BUDGET:   # 约束 1：预算跨文件共用
             caught_up = False
             break
-        fs = st['files'].setdefault(p, {'off': 0, 'fp': 0})
         while True:
             off = fs['off']
-            done = scan_chunk(p, fs, st, pend, order, p == path, db is not None)
+            done = scan_chunk(p, fs, st, pend, p == path, db is not None)
             if fs['off'] != off:               # 每片落盘：被杀只丢当前一片（约束 1）。没读到新内容
                 persist(p)                     # 就不落：否则每个已追平的文件都写一遍整份状态
-            if done or time.time() - t0 >= TIME_BUDGET:
+            if done or time.monotonic() - t0 >= TIME_BUDGET:
                 break
         caught_up = caught_up and done
 
@@ -816,7 +822,7 @@ def main():
             # 供应商切换 = 新窗口：epoch 带上 provider_id，避免把两家的速率混在一起
             track(st, 'day', relay['today_cur'], now,
                   epoch=f"{int(midnight)}:{relay['provider_id']}")
-    elif cost is not None and not db:          # 中转站模式下不改喂 stdin 费用（口径不同）
+    elif cost is not None and not relay_path:          # 中转站模式下不改喂 stdin 费用（口径不同）
         track(st, 'cost', cost, now, epoch='stdin')
     spv = kv.get('sp', '').split(',')
     sp = None
@@ -841,7 +847,7 @@ def main():
     if not caught_up:
         return                                 # 未追平不出数（约束 2）
     # 中转站读库失败时追踪器停在上一次账本读数，不能当现值输出（与上面喂追踪器同一条件）
-    r = rate(st, 'cost', now) if (relay or (cost is not None and not db)) else None
+    r = rate(st, 'cost', now) if (relay or (cost is not None and not relay_path)) else None
     rate_s = fmt_usd(r * 3600) if r is not None else '-'
     d = {'in': fmt(st['in'] + st['cw'] + st['cr']), 'out': fmt(st['out']),
          'rate': rate_s, 'comp': str(st['comp'])}

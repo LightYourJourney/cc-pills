@@ -206,9 +206,16 @@ class SubagentState(unittest.TestCase):
             {'id': 'run', 'status': 'running'}, {'id': 'pend', 'status': 'pending'},
             {'id': 'empty', 'status': ''}, {'id': 'none'},
             {'id': 'done', 'status': 'completed'}, {'id': 'bad', 'status': 'failed'}]}
+        for t in tasks['tasks']:
+            t['tokenCount'] = 100
+        tasks['tasks'].append({'id': 'unknown', 'status': 'running'})
+        with open(st, 'w') as f:
+            json.dump({'done': {'t': time.time(), 'k': 40}}, f)
         self.panel(tasks, st)
         with open(st) as f:
-            self.assertEqual(sorted(json.load(f)), ['empty', 'none', 'pend', 'run'])
+            saved = json.load(f)
+        self.assertEqual(sorted(saved), ['empty', 'none', 'pend', 'run', 'unknown'])
+        self.assertIsNone(saved['unknown']['k'])
 
     def test_write_failures_record_their_reason(self):
         """合并 / 建临时文件 / 写入 / 替换失败各落自己的原因码（假命令制造失败点）。"""

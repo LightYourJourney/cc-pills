@@ -9,7 +9,7 @@ fi
 
 sj=$DEST/settings.json
 SJ_OK=0; SJ_STATE=FAIL      # settings.json 不可用时的连带状态：文件缺失 / 损坏 = FAIL，jq 缺失 = SKIP
-if [ -n "$jq" ] && [ -r "$sj" ] && jq -e . "$sj" >/dev/null 2>&1; then
+if [ -n "$jq" ] && settings_object "$sj"; then
   SJ_OK=1
   res PASS 安装/settings.json "可解析"
 elif [ -z "$jq" ]; then
@@ -25,7 +25,7 @@ elif [ ! -r "$sj" ]; then
   res FAIL 安装/settings.json "$sj 不可读（权限）：Claude Code 读不到 statusLine 配置" \
     "chmod u+r \"$sj\""
 else
-  res FAIL 安装/settings.json "$sj 无法解析（JSON 语法错误）" "修好该文件的 JSON，状态栏配置才不会整体失效"
+  res FAIL 安装/settings.json "$sj 无法解析为单个 JSON 对象" "修好该文件的 JSON，状态栏配置才不会整体失效"
 fi
 
 # points_to 的判据在 tools/lib/points_to.sh（与 install.sh 共用）：0 明确指向已安装副本 / 2 只含文件名 / 1 未指向
@@ -71,12 +71,14 @@ fi
 
 for f in statusline-command.sh statusline-tokens.py statusline-theme.py subagent-statusline.sh; do
   dst=$DEST/$f; src=$REPO/src/$f
-  if [ ! -e "$dst" ]; then
+  if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
     if [ "$f" = subagent-statusline.sh ]; then
       res SKIP "安装/副本-$f" "未安装（未使用 agent 面板）"
     else
       res FAIL "安装/副本-$f" "未安装" "bash install.sh"
     fi
+  elif [ ! -f "$dst" ]; then
+    res FAIL "安装/副本-$f" "$dst 不是普通文件" "检查安装路径后重装"
   elif [ ! -f "$src" ]; then
     res SKIP "安装/副本-$f" "仓库里没有对应源文件（从已安装副本运行？）"
   elif cmp -s "$src" "$dst"; then

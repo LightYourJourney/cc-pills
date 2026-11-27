@@ -36,7 +36,7 @@ Chinese README: [README.zh.md](README.zh.md). Design rationale and past rulings:
 
 ## Requirements
 
-- macOS (iTerm2 profile detection; other terminals fall back to the built-in themes)
+- macOS or Linux. iTerm2 on macOS supports profile detection. Other terminals use the built-in themes.
 - bash ≥ 4.2 — macOS ships 3.2, so `brew install bash` (the script re-execs into a ≥4.2
   build at `/opt/homebrew/bin/bash` and friends when it finds one; the installer does not, so
   run it with that bash if `bash` on your PATH is still 3.2: `/opt/homebrew/bin/bash install.sh`)
@@ -92,14 +92,17 @@ bash install.sh --with-subagent --with-conf
 ```
 
 `install.sh` copies the scripts into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` (the panel
-script with `--with-subagent`, or when it is already installed) and prints whether `statusLine` and
-`subagentStatusLine` already point at them. If they do not, add:
+script with `--with-subagent`, or when it is already installed) and checks the commands in `settings.json`.
+Merge the `statusLine` entry below into your settings. Add `subagentStatusLine` only if you
+installed the legacy bash panel.
 
 ```json
-"statusLine": { "type": "command",
-                "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"" },
-"subagentStatusLine": { "type": "command",
-                        "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
+{
+  "statusLine": { "type": "command",
+                  "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"" },
+  "subagentStatusLine": { "type": "command",
+                          "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
+}
 ```
 
 > **The subagent panel is deprecated upstream.** Claude Code 2.1.330–2.1.332 ships
@@ -152,7 +155,13 @@ countdown and the `5h` / `7d` reset times freeze on the last frame. Its own `ref
 setting (seconds, minimum 1) re-runs on a fixed cadence:
 
 ```json
-"refreshInterval": 30
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"",
+    "refreshInterval": 30
+  }
+}
 ```
 
 Rendering only reads caches — the network call and python run in the background refresh — so a
@@ -267,7 +276,7 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # parallel shards; ~1 min on an 8-core machine, fully isolated (no live caches, no network)
 bash run_tests.sh tokens       # one module: render / tokens / theme / cache / subagent / freshness / install / doctor
-claude plugin test mods/agent-row          # the mod's 12 tests (run_tests.sh runs them too when `claude` is on PATH)
+claude plugin test mods/agent-row          # also run by run_tests.sh when the CLI supports plugin test
 UPDATE_GOLDEN=1 bash run_tests.sh render   # after an intentional rendering change
 ```
 
@@ -283,7 +292,8 @@ jobs because that runner's cross-process `mkdir` visibility is not POSIX-consist
 Token counts, costs, `$/h`, hit rates and quota pacing are **client-side estimates**, not
 billing records. When a field is missing the item is hidden rather than guessed. On a relay,
 the ledger comes from CC Switch's database (≈30-day retention) and is reconciled with its
-usage page; unpriced models are counted as a `+` lower bound.
+usage page. A `+` marks a lower bound when a model has no price. If the ledger is unavailable,
+the session cost falls back to the Claude Code estimate marked with `*`, and the hourly rate is hidden.
 
 ## License
 

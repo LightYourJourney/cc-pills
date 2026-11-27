@@ -187,6 +187,7 @@ CACHE_MAX_AGE=30         # 默认根内 token / skip / git 缓存、残留临时
                          # （会话状态另外要求记录里的 transcript 已不存在；后台每天清一次）
 PRUNE_GAP=86400          # 两次清理的最小间隔（秒）
 PALETTE_V=4              # 色板缓存格式版本：theme.py 新增 / 改名键时 +1，首行不符即重算
+JQ_MIN=1.6
 PY_MIN=3.9               # 两个 python 助手要求的最低版本（str.removesuffix 是 3.9，math.dist 是 3.8）
 TOK_V=1                  # token 缓存格式版本：键的含义变了就 +1，首行不符的缓存整份不读
 # token 缓存「键:本脚本的变量名」（键见 statusline-tokens.py 的 FIELDS，契约测试守护）。必须写在一行里。
@@ -330,6 +331,7 @@ not_future() { if [ "${1:-0}" -gt "$now" ]; then printf -v "$2" '%s' 0; else pri
 # .claude-sl-* 下，被杀进程的遗留由每日清理按这个前缀收走。
 put() {
   local t
+  [ ! -d "$1" ] || return 1
   t=$(mktemp "${SLT}/.claude-sl-$2.XXXXXX" 2>/dev/null) || return 1
   printf '%s\n' "$3" > "$t" 2>/dev/null && mv -f "$t" "$1" 2>/dev/null && return 0
   rm -f "$t" 2>/dev/null; return 1
@@ -376,7 +378,7 @@ if [ "${1:-}" = --facts ]; then
   relay=0; relay_env && relay=1
   tok_keys=""; for m in $TOK_MAP; do tok_keys="$tok_keys ${m%%:*}"; done
   printf '%s\n' "cc-pills-facts=3" "version=$VERSION" \
-    "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" \
+    "bash_min=$((BASH_MIN / 100)).$((BASH_MIN % 100))" "py_min=$PY_MIN" "jq_min=$JQ_MIN" \
     "conf=$SL_CONF" "conf_readable=$CONF_READ" "conf_unknown=${CONF_UNKNOWN# }" "conf_bad=${CONF_BAD# }" \
     "theme=$THEME" "pill_style=$PILL_STYLE" "pill_chroma=$PILL_CHROMA" "status_page=$STATUS_PAGE" \
     "slt=$SLT" "slt_explicit=$slt_explicit" "slt_ok=$SLT_OK" \
@@ -529,7 +531,7 @@ if [ "${1:-}" = "--refresh" ]; then
   fi
 
   relayarg="-"
-  [ "$mode" = relay ] && [ -r "$CCSWITCH_DB" ] && relayarg=$CCSWITCH_DB
+  [ "$mode" = relay ] && relayarg=$CCSWITCH_DB
 
   if [ -n "$tp" ] && [ "$tp" != "-" ] && [ -n "$sid" ] && [ "$sid" != "-" ]; then
     # 输入都没变、且距上次不足 TOK_MIN_GAP 秒 → 跳过 python
@@ -644,7 +646,7 @@ fields=$(jq -r --argjson now "$now" --argjson warn "$CTX_WARN" --argjson bad "$C
            (if ($q.resets_at | num) == null then "-"
             else "\($q.used_percentage | clamp),\($q.resets_at)" end) ] end;
   obj as $in | ($in.context_window | obj) as $cw | ($in.prompt_cache | obj) as $p |
-  ($in.rate_limits | obj) as $rl | ($in.cost | obj) as $c | ($rl.spend_limit | obj) as $sl |
+  ($in.rate_limits | obj) as $rl | ($in.cost | obj) as $c | ($rl.spend_limit | obj | if (.resets_at | num) != null and .resets_at <= $now then {} else . end) as $sl |
   # ctx 先取整再比阈值：显示 70% 就该是黄（约束 13 同理，显示值与着色同源）
   (if ($cw.used_percentage | num) != null then ($cw.used_percentage | clamp | round)
    elif ($cw.remaining_percentage | num) != null then (100 - $cw.remaining_percentage | clamp | round)
@@ -789,7 +791,13 @@ for m in $TOK_MAP; do printf -v "${m#*:}" '%s' "${TK[${m%%:*}]-}"; done   # 没�
 [ -n "$q5" ] && [ "$q5" -lt 100 ] && [ "$q5out" = 用尽 ] && { q5out=""; q5lv=""; }
 [ -n "$q7" ] && [ "$q7" -lt 100 ] && [ "$q7out" = 用尽 ] && { q7out=""; q7lv=""; }
 [ -n "$sp" ] && [ "$sp" -lt 100 ] && [ "$spout" = 用尽 ] && { spout=""; splv=""; }
-[ "$mode" = relay ] || { r_cost=""; r_today=""; r_limit=""; }
+# rate 与同一份缓存里的 rcost 同源。模式刚切换时隐藏另一种口径的速率。
+if [ "$mode" = sub ]; then
+  [ -n "$r_cost" ] && p_rate=""
+  r_cost=""; r_today=""; r_limit=""
+elif [ -z "$r_cost" ]; then
+  p_rate=""
+fi
 case "$comp" in ''|*[!0-9]*) comp="" ;; esac
 # 命中率要进算术展开取整，而 $((…)) 会把变量内容当表达式求值：只收「数字.数字」
 [[ $t_hit =~ ^[0-9]+\.[0-9]+$ ]] || t_hit=""

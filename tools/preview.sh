@@ -14,6 +14,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${CC_PILLS_SRC:-$HERE/../src}
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline.conf"
 STYLES=("$@"); [ ${#STYLES[@]} -eq 0 ] && STYLES=(cool jewel glass tokyo-glass)
+for st in "${STYLES[@]}"; do
+  case "$st" in
+    tint|cool|jewel|glass|mono|pastel|tokyo-glass) ;;
+    *) echo "未知的 pill_style：$st" >&2; exit 2 ;;
+  esac
+done
 COLS_LIST=${PREVIEW_COLS:-"160 100 70"}
 work=$(mktemp -d) || { echo "无法创建临时目录" >&2; exit 1; }
 cleanup() { rm -rf "$work"; }
@@ -29,11 +35,11 @@ SCENES=(
   "告警（ctx 96%、5h 82%、7d 97%、cache 已冷、Claude major）|96|960000|82|97|cold|major|in=118M out=736k rate=\$24/h comp=1 q5lv=warn q5out=36m q7lv=bad q7out=3h42m hit=98.6 msgs=517"
 )
 TOK_V=$("$BASH" "$SRC/statusline-command.sh" --facts </dev/null | sed -n 's/^tok_v=//p')   # 缓存格式版本问渲染脚本
-cwd_json=${PWD//\\/\\\\}; cwd_json=${cwd_json//\"/\\\"}
+cwd_json=$(jq -n --arg dir "$PWD" '$dir') || exit 1
 mk() {   # mk <sid> <ctx%> <ctx tok> <5h%> <7d%> <cache>
   local exp=$((now + ${6/cold/0})) warm=true
   [ "$6" = cold ] && { exp=$((now - 60)); warm=false; }
-  printf '{"session_id":"%s","transcript_path":"","cwd":"%s","model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"cost":{"total_cost_usd":36.32,"total_api_duration_ms":3900000},"context_window":{"total_input_tokens":%s,"context_window_size":1000000,"used_percentage":%s},"prompt_cache":{"warm":%s,"caching_observed":true,"ttl":"1h","expires_at":%s,"recache_tokens_if_cold":%s},"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' \
+  printf '{"session_id":"%s","transcript_path":"","cwd":%s,"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"cost":{"total_cost_usd":36.32,"total_api_duration_ms":3900000},"context_window":{"total_input_tokens":%s,"context_window_size":1000000,"used_percentage":%s},"prompt_cache":{"warm":%s,"caching_observed":true,"ttl":"1h","expires_at":%s,"recache_tokens_if_cold":%s},"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' \
     "$1" "$cwd_json" "$3" "$2" "$warm" "$exp" "$3" "$4" $((now + 7980)) "$5" $((now + 172800))
 }
 

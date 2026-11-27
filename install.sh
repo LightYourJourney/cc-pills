@@ -10,7 +10,7 @@
 #                                    并提示仍指向已删除脚本的 settings 键
 #
 # 复制安装：线上文件是独立副本，改仓库后必须重新运行本脚本才生效。
-# 覆盖前把旧副本存为 <文件名>.bak.<时间戳>（内容相同则不备份）。
+# 覆盖前把旧副本存为 <文件名>.bak.<时间戳>.<随机后缀>（内容相同则不备份）。
 set -u
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -47,10 +47,18 @@ check_deps() {
     command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖：$c" >&2; miss=1; }
   done
   # 版本下限问渲染脚本（--facts，bash 3.2 也能跑），不在这里另抄一份
-  local facts py_min bash_min
+  local facts py_min bash_min jq_min jver
   facts=$("$BASH" "$REPO/src/statusline-command.sh" --facts </dev/null 2>/dev/null)
   py_min=$(sed -n 's/^py_min=//p' <<< "$facts"); bash_min=$(sed -n 's/^bash_min=//p' <<< "$facts")
-  [ -n "$py_min" ] && [ -n "$bash_min" ] || { echo "读不到版本下限：src/statusline-command.sh --facts 没有输出" >&2; return 1; }
+  jq_min=$(sed -n 's/^jq_min=//p' <<< "$facts")
+  [ -n "$py_min" ] && [ -n "$bash_min" ] && [ -n "$jq_min" ] || { echo "读不到版本下限：src/statusline-command.sh --facts 没有输出" >&2; return 1; }
+  if [ "$HAS_JQ" = 1 ]; then
+    jver=$(jq --version 2>/dev/null)
+    if ! ver_ge "${jver#jq-}" "$jq_min"; then
+      echo "需要 jq ≥ ${jq_min}（当前 ${jver:-未知}）" >&2
+      miss=1
+    fi
+  fi
   if command -v python3 >/dev/null 2>&1 &&
      ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= tuple(map(int, sys.argv[1].split("."))) else 1)' "$py_min" 2>/dev/null; then
     echo "需要 python3 ≥ ${py_min}（当前 $(python3 -V 2>&1)）：后台 token / 色板助手无法运行" >&2
@@ -70,18 +78,20 @@ check_deps() {
 
 HAS_JQ=0; command -v jq >/dev/null 2>&1 && HAS_JQ=1
 settings_cmd() {  # settings_cmd <settings.json 路径> <键> → 打印该键的 command
-  [ "$HAS_JQ" = 1 ] && [ -r "$1" ] || return 1
+  [ "$HAS_JQ" = 1 ] && [ -f "$1" ] && [ -r "$1" ] || return 1
   jq -r --arg k "$2" '.[$k].command // empty' "$1" 2>/dev/null || return 1
 }
 # settings.json 存在却解析失败：两个键都无从判断，要说它坏了，而不是报「尚未配置」
 SJ="$DEST/settings.json"; SJ_BAD=0
-[ "$HAS_JQ" = 1 ] && [ -r "$SJ" ] && ! jq empty "$SJ" >/dev/null 2>&1 && SJ_BAD=1
-SJ_BAD_MSG="settings.json 不是合法 JSON（jq 解析失败）：先修好它，statusLine / subagentStatusLine 无法检查：$SJ"
+SJ_BAD_MSG="settings.json 不是合法 JSON 配置（需要一个可读的 JSON 对象）：先修好它，statusLine / subagentStatusLine 无法检查：$SJ"
 has_file() {  # 当前 FILES 里是否有某个脚本
   local f; for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1
 }
 # settings 命令是否指向已安装副本：与诊断工具共用 tools/lib/points_to.sh
+. "$REPO/tools/lib/version.sh" || exit 1
 . "$REPO/tools/lib/points_to.sh" || { echo "找不到 tools/lib/points_to.sh（需要在完整的仓库里运行）" >&2; exit 1; }
+
+if [ "$HAS_JQ" = 1 ] && { [ -e "$SJ" ] || [ -L "$SJ" ]; } && ! settings_object "$SJ"; then SJ_BAD=1; fi
 
 case $MODE in
 install)
@@ -90,17 +100,23 @@ install)
   rc=0
   for f in "${FILES[@]}"; do
     src=$REPO/src/$f; dst=$DEST/$f
-    if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    if [ -d "$dst" ]; then
       echo "  安装失败：${dst} 是目录（不覆盖）" >&2; rc=1; continue
     fi
+    if [ -e "$dst" ] && [ ! -f "$dst" ]; then
+      echo "  安装失败：${dst} 不是普通文件" >&2; rc=1; continue
+    fi
     if [ -f "$dst" ] && ! cmp -s "$src" "$dst"; then
-      bak=$dst.bak.$(date +%Y%m%d%H%M%S)
-      if cp -p "$dst" "$bak"; then echo "  备份旧副本 → $bak"
-      else echo "  备份失败，未覆盖 ${f}（线上副本有改动，先处理再重装）" >&2; rc=1; continue; fi
+      if bak=$(mktemp "$dst.bak.$(date +%Y%m%d%H%M%S).XXXXXX") && cp -p "$dst" "$bak"; then
+        echo "  备份旧副本 → $bak"
+      else
+        [ -z "$bak" ] || rm -f "$bak"
+        echo "  备份失败，未覆盖 ${f}（线上副本有改动，先处理再重装）" >&2; rc=1; continue
+      fi
     fi
     # 原子替换：install(1) 会先截断目标再写，重装那一刻每次状态栏刷新都可能读到
     # 「文件不存在」（实测 1404 次探测里 370 次），空白一帧。同目录临时文件 + mv 不会。
-    tmp="$DEST/.$f.tmp.$$"
+    tmp=$(mktemp "$DEST/.$f.tmp.XXXXXX") || { echo "  安装失败：无法创建临时文件 $f" >&2; rc=1; continue; }
     if cp "$src" "$tmp" 2>/dev/null && chmod 0755 "$tmp" && mv -f "$tmp" "$dst"; then
       echo "  已安装 $f → $dst"
     else
@@ -151,6 +167,7 @@ check)
   for f in "${FILES[@]}"; do
     dst=$DEST/$f
     if [ ! -e "$dst" ]; then echo "  未安装：$f"; rc=1
+    elif [ ! -f "$dst" ]; then echo "  安装路径不是普通文件：$dst"; rc=1
     elif cmp -s "$REPO/src/$f" "$dst"; then echo "  一致：$f"
     else echo "  不一致：${f}（仓库改过但没重新安装）"; rc=1; fi
   done

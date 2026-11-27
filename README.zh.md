@@ -31,7 +31,7 @@ Claude Code 的单行胶囊状态栏——响应式、缓存渲染，并且对�
 
 ## 依赖
 
-- macOS（用于读取 iTerm2 profile；其他终端回落内置主题）
+- macOS 或 Linux。macOS 上的 iTerm2 支持读取终端配色，其他终端使用内置主题。
 - bash ≥ 4.2（macOS 自带 3.2，需 `brew install bash`；脚本会先尝试
   `/opt/homebrew/bin/bash` 等位置的 ≥4.2 版本重跑。安装器不换壳：PATH 里的 `bash` 仍是 3.2 时，
   用新版 bash 运行它，如 `/opt/homebrew/bin/bash install.sh`）
@@ -81,14 +81,16 @@ bash install.sh --with-subagent --with-conf
 ```
 
 `install.sh` 把脚本复制到 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`（面板脚本在
-`--with-subagent` 或之前装过时），并告诉你 `settings.json` 的 `statusLine` 与
-`subagentStatusLine` 是否已指向它们。没有的话加上：
+`--with-subagent` 或之前装过时），并检查 `settings.json` 中的命令。将下面的 `statusLine` 合入现有配置。
+使用旧版 bash 面板时，再加入 `subagentStatusLine`。
 
 ```json
-"statusLine": { "type": "command",
-                "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"" },
-"subagentStatusLine": { "type": "command",
-                        "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
+{
+  "statusLine": { "type": "command",
+                  "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"" },
+  "subagentStatusLine": { "type": "command",
+                          "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\"" }
+}
 ```
 
 > **面板已被上游弃用。** Claude Code 2.1.330–2.1.332 的提示原文是
@@ -137,7 +139,13 @@ Claude Code ≥ 2.1.330（更早的版本没核实过有没有 `AgentRow`）。
 上一帧。Claude Code 自己的设置 `refreshInterval`（秒，最小 1）可以按固定间隔重跑：
 
 ```json
-"refreshInterval": 30
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh\"",
+    "refreshInterval": 30
+  }
+}
 ```
 
 同步渲染只读缓存，网络与 python 都在后台刷新里，设小不会拖慢输入。
@@ -247,7 +255,7 @@ install.sh  run_tests.sh
 ```bash
 bash run_tests.sh              # 并行分片，8 核机器约 1 分钟；全隔离（不读线上缓存、不联网）
 bash run_tests.sh tokens       # 单模块：render / tokens / theme / cache / subagent / freshness / install / doctor
-claude plugin test mods/agent-row          # mod 的 12 项（run_tests.sh 在 PATH 里有 claude 时顺带跑）
+claude plugin test mods/agent-row          # 本机 CLI 支持 plugin test 时，run_tests.sh 也会运行
 UPDATE_GOLDEN=1 bash run_tests.sh render   # 有意改变渲染结果后更新金样
 ```
 
@@ -259,7 +267,7 @@ CI 在 macOS 与 `ubuntu-latest` 上都跑全量，另有三个作业分别把 P
 
 token 计数、费用、`$/h`、命中率、额度节奏都是**客户端估算**，不是账单记录。字段缺失时
 隐藏该项而不是猜。中转站的账本来自 CC Switch 数据库（约 30 天保留），与它用量页同口径；
-价格表里没有的模型按 `+` 计为下限。
+价格表里没有的模型按 `+` 计为下限。账本不可用时，会话费用显示 Claude Code 的估算值并标记 `*`，每小时费率暂时隐藏。
 
 ## 许可
 

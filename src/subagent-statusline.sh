@@ -176,7 +176,7 @@ printf '%s' "$input" | jq -c --argjson prev "$prev" '
   | ($prev[.id] // null) as $p
   | (if $live and ($tc != null) and ($tc > 0) and ($p | type == "object")
         and (($p.t | type) == "number") and (($p.k | type) == "number")
-        and ((now - $p.t) >= 1) and (($tc - $p.k) >= 0)
+        and ((now - $p.t) >= 1) and ((now - $p.t) < 600) and (($tc - $p.k) >= 0)
      then (($tc - $p.k) / (now - $p.t))
      else null end) as $r
   | (if $r == null or $r < 1 then null
@@ -277,13 +277,12 @@ if [ "$got" = 1 ]; then
         and (.value.t | type == "number")
         and (.value.t <= $n)
         and (.value.t > ($n - 600))))) as $base
-    | reduce ((.tasks // [])[] | objects | select(.id | type == "string")
-              | select((.status // "running" | tostring) as $s
-                       | $s == "running" or $s == "" or $s == "pending" or $s == "waiting")) as $t
+    | reduce ((.tasks // [])[] | objects | select(.id | type == "string")) as $t
         ($base;
-         $t.id as $i
-         | if ((.[$i] | type) != "object") or (($n - .[$i].t) >= 2)
-           then .[$i] = {t: $n, k: (if ($t.tokenCount | type == "number") and ($t.tokenCount >= 0) then $t.tokenCount else 0 end)}
+         $t.id as $i | ($t.status // "running") as $s
+         | if (["running", "", "pending", "waiting"] | index($s)) == null then del(.[$i])
+           elif ($t.tokenCount | type) != "number" or $t.tokenCount < 0 then .[$i] //= {t: $n, k: null}
+           elif (.[$i].k | type) != "number" or ($n - .[$i].t) >= 2 then .[$i] = {t: $n, k: $t.tokenCount}
            else . end)
   ' 2>/dev/null)
   case $new in *$'\n'*) new="" ;; esac       # stdin 违约给了多个对象：多行结果不能落盘

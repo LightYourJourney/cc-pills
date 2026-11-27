@@ -224,6 +224,13 @@ class AutoDetect(unittest.TestCase):
         prof.update(extra)
         return prof
 
+    def test_failed_cache_write_returns_failure_to_refresh(self):
+        with tempfile.TemporaryDirectory() as dest:
+            r = subprocess.run([sys.executable, PATH, 'dracula', dest],
+                               capture_output=True, timeout=60)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual((r.stdout, r.stderr), (b'', b''))
+
     def test_plist_failure_falls_back_to_tokyonight(self):
         """文档 1：读 plist 出任何异常（缺键、损坏）都回落 tokyonight——异常不能让整个色板
         生成失败，否则状态栏一直无色。这里放一个缺 ANSI 键的 profile：取值时抛 KeyError。"""

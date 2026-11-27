@@ -1,4 +1,5 @@
 """statusline-tokens.py 单元测试：计数去重、追踪器、节奏分级、花费限额、中转站对账。"""
+from collections import OrderedDict
 import contextlib
 import importlib.util
 import io
@@ -68,6 +69,14 @@ class Base(unittest.TestCase):
 
 
 class Counting(Base):
+    def test_changed_main_transcript_excludes_previous_existing_file(self):
+        first = self.write('first.jsonl', [line('a', 1, 2, None)])
+        second = self.write('second.jsonl', [line('b', 3, 4, None)])
+        self.run_tok(first, 'moved')
+        out = self.fields(self.run_tok(second, 'moved').stdout)
+        self.assertEqual(out[IDX['in']], '3')
+        self.assertEqual(set(self.state('moved')['files']), {second})
+
     def test_dedup_stop_reason_then_larger_output(self):
         tp = self.write('a.jsonl', [line('m1', 10, 5, None), line('m1', 10, 300, 'end_turn'),
                                     line('m1', 10, 100, None), line('m2', 20, 40, 'end_turn')])
@@ -113,7 +122,7 @@ class Counting(Base):
             for track_unl in (False, True):
                 st = json.loads(json.dumps(self.t.EMPTY))
                 fs = {'off': 0, 'fp': 0}
-                self.t.scan_chunk(tp, fs, st, {}, [], True, track_unl)
+                self.t.scan_chunk(tp, fs, st, OrderedDict(), True, track_unl)
                 self.assertEqual(fs['off'], os.path.getsize(tp), '被丢的行也要推进游标')
                 # 中转站模式下 m3 的时间戳也要取，所以只有它被丢；普通模式只丢 m1
                 self.assertEqual((fs['last_id'], fs['msgs']), ('m2', 1) if track_unl else ('m3', 2),
@@ -128,7 +137,7 @@ class Counting(Base):
         ts = '2026-10-28T06:00:00Z'
         tp = self.write('z0.jsonl', [line('m0', 0, 0, 'end_turn', ts=ts), line('m1', 10, 1, 'end_turn', ts=ts)])
         st = json.loads(json.dumps(self.t.EMPTY))
-        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, {}, [], True, True)
+        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, OrderedDict(), True, True)
         self.assertEqual(sorted(st['unl']), ['m1'])
         self.assertEqual((st['in'], st['out']), (10, 1), '零用量的行仍要计入消息数等统计')
 
@@ -154,7 +163,7 @@ class Counting(Base):
         self.t.MAX_CHUNK = 500
         st, fs = json.loads(json.dumps(self.t.EMPTY)), {'off': 0, 'fp': 0}
         for _ in range(10):
-            if self.t.scan_chunk(tp, fs, st, {}, [], True, False):
+            if self.t.scan_chunk(tp, fs, st, OrderedDict(), True, False):
                 break
         self.assertGreater(fs['off'], 0, '超长行所在的那一片被反复重读，游标没有前进')
         self.assertEqual(fs['off'], os.path.getsize(tp))
@@ -252,7 +261,8 @@ class Counting(Base):
                  ('in', 'abc'), ('in', float('nan')),
                  ('files', {tp: {'off': -1, 'fp': 0}}),
                  ('files', {tp: {'off': 0, 'fp': 0, 'msgs': 'bad'}}),
-                 ('unl', {'m': [1, 2]}), ('unl', {'m': [None, 1, 1, 0, 0, 0, 0, 0]})]
+                 ('unl', {'m': [1, 2]}), ('unl', {'m': [None, 1, 1, 0, 0, 0, 0, 0]}),
+                 ('ledger_db', 123)]
         for i, (k, v) in enumerate(cases):
             sid = f'b{i + 1}'
             self.fields(self.run_tok(tp, sid).stdout)             # 先写出合法状态
@@ -280,6 +290,13 @@ class Counting(Base):
         with contextlib.redirect_stdout(io.StringIO()):
             self.t.main()
         self.assertLess(time.time() - t0, 3.0)  # 共享预算约 1.2 s；6 倍则是 2.4 s+，3.0 s 仍能区分且容忍慢 runner
+
+    def test_fifo_checkpoint_is_replaced_without_blocking(self):
+        tp = self.write('fifo.jsonl', [line('m1', 10, 1, 'end_turn')])
+        os.mkfifo(os.path.join(self.d, 'claude-statusline-fifo.json'))
+        out = self.fields(self.run_tok(tp, 'fifo').stdout)
+        self.assertEqual(out[IDX['in']], '10')
+        self.assertEqual(self.state('fifo')['files'][tp]['off'], os.path.getsize(tp))
 
     def test_state_symlink_is_not_followed(self):
         """约束 9：状态文件按不可信磁盘数据对待，用 O_NOFOLLOW 打开。链接指向一份「看起来
@@ -378,6 +395,11 @@ class Incremental(Base):
             time.sleep(0.05)
             return orig(*a, **k)
         self.t.save = slow
+
+        def unexpected_read(*args):
+            self.fail('已追平的文件不应重读数据块')
+
+        self.t.scan_chunk = unexpected_read
         sys.argv = ['x', tp, 'many']
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -533,6 +555,22 @@ class Relay(Base):
         c.commit()
         c.close()
         return db
+
+    def test_relay_rebuilds_tail_after_subscription_and_missing_db(self):
+        now = int(time.time())
+        tp = self.write('switch.jsonl', [line('new', 1000, 100, 'end_turn', ts=iso_utc(now))])
+        self.run_tok(tp, 'r1', 'cost=20')
+        db = os.path.join(self.d, 'cc.db')
+        self.run_tok(tp, 'r1', f'relay={db}', 'cost=99')
+        self.assertEqual(self.state('r1')['trk']['cost']['lv'], 20)
+        self.make_db(now)
+        with sqlite3.connect(db) as conn:
+            conn.execute("insert into proxy_request_logs values('session:new', 'r1', 'p', 'codex', "
+                         "'session_log', 200, ?, 1000, 100, 0, 0, '9')", (now,))
+        for _ in range(2):
+            out = self.fields(self.run_tok(tp, 'r1', f'relay={db}').stdout)
+            self.assertEqual(out[IDX['in']], '1k')
+            self.assertEqual(out[IDX['rcost']], '30.0075')
 
     def test_ledger_plus_tail_and_retention(self):
         now = int(time.time())
@@ -756,7 +794,7 @@ class Relay(Base):
         tp = self.write('zrep.jsonl', [line('m1', 100, 10, None, ts=ts),
                                        line('m1', 0, 0, 'end_turn', ts=ts)])
         st = json.loads(json.dumps(self.t.EMPTY))
-        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, {}, [], True, True)
+        self.t.scan_chunk(tp, {'off': 0, 'fp': 0}, st, OrderedDict(), True, True)
         self.assertNotIn('m1', st['unl'], '被全零行替换后 st[unl] 仍残留旧非零行')
 
 

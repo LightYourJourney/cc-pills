@@ -50,9 +50,16 @@ def main():
     if os.environ.get('CCPILLS_SERIAL') == '1':   # 全部串行 = 一片，走同一套汇总
         jobs = 1
     else:
-        jobs = int(os.environ.get('CCPILLS_JOBS') or min(os.cpu_count() or 2, 8))
+        try:
+            jobs = int(os.environ.get('CCPILLS_JOBS') or min(os.cpu_count() or 2, 8))
+            if jobs < 1:
+                raise ValueError
+        except ValueError:
+            print('CCPILLS_JOBS 必须是正整数', file=sys.stderr)
+            return 2
     ids = test_ids(PARALLEL)
-    shards = [ids[i::jobs] for i in range(jobs) if ids[i::jobs]]
+    jobs = min(jobs, len(ids))
+    shards = [ids[i::jobs] for i in range(jobs)]
     print(f'并行段：{len(ids)} 项，{len(shards)} 片', flush=True)
     with concurrent.futures.ThreadPoolExecutor(len(shards)) as ex:
         results = list(ex.map(run, shards))

@@ -105,18 +105,6 @@ else
   fsize() { stat -f %z "$1" 2>/dev/null; }
 fi
 
-# 点分版本比较：ver_ge <实际> <最低>；无法解析时返回 1（当作不达标，宁可报出来）
-ver_ge() {
-  local a1=${1%%.*} b1=${2%%.*} a2 b2
-  case "$a1$b1" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$a1" -gt "$b1" ] && return 0
-  [ "$a1" -lt "$b1" ] && return 1
-  a2=${1#*.}; [ "$a2" = "$1" ] && a2=0; a2=${a2%%.*}      # 阈值写成 5 时 minor 按 0
-  b2=${2#*.}; [ "$b2" = "$2" ] && b2=0; b2=${b2%%.*}
-  case "$a2$b2" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$a2" -ge "$b2" ]
-}
-
 # 三段点分版本比较：ver3_ge <实际> <最低>（如 1.0.9 >= 1.0.9；解析失败返回 1）
 ver3_ge() {
   local a1 a2 a3 b1 b2 b3 IFS=.
@@ -196,11 +184,12 @@ CONF=$F_conf; CCSWITCH_DB=$F_ccswitch_db
 THEME_TTL=$F_theme_ttl; TOK_STALE=$F_tok_stale; STATUS_STALE=$F_status_stale; LOCK_STALE=$F_lock_stale
 # 装着旧副本时判据取自仓库，可它未必清理锁（1.0.6 及更早不清理）：天数留空，残锁文案改给手工命令
 CACHE_MAX_AGE=${F_cache_max_age:-}; [ "$COPY_OLD" = 1 ] && CACHE_MAX_AGE=""
-BASH_MIN=$F_bash_min; PY_MIN=$F_py_min
+BASH_MIN=$F_bash_min; PY_MIN=$F_py_min; JQ_MIN=${F_jq_min:-${R_jq_min:-}}
 C_THEME=$F_theme; C_CHROMA=$F_pill_chroma; C_STYLE=$F_pill_style; C_PAGE=$F_status_page
 CFG_READABLE=$F_conf_readable
 CFG_BAD=${F_conf_bad:+ $F_conf_bad}; CFG_UNKNOWN=${F_conf_unknown:+ $F_conf_unknown}
 
+. "$REPO/tools/lib/version.sh" || exit 1
 . "$REPO/tools/lib/points_to.sh" || { echo "缺少 $REPO/tools/lib/points_to.sh" >&2; exit 1; }
 
 for _m in env install cache data; do

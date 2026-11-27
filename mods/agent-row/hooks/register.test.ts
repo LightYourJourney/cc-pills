@@ -55,6 +55,12 @@ test('a running row carries model, tokens, context left and duration', async ($,
   expect(text).not.toContain('[running]')
 })
 
+test('exactly twenty percent remaining stays outside the warning band', async ($, on) => {
+  const text = await harness($, on)({ tokenCount: 800_000, contextWindowSize: 1_000_000 })
+  expect(text).toContain('ctx 剩20%')
+  expect(text).not.toContain('⚠')
+})
+
 test('a finished row shows its status and no duration', async ($, on) => {
   const text = await harness($, on)({ status: 'completed' })
 
@@ -191,6 +197,9 @@ test('clock rollback resets rate baseline and narrow CJK cut emits no bare ellip
   expect(await render({ id: 'rb1', tokenCount: 100_000 })).not.toContain('↑')
   now += 2000
   expect(await render({ id: 'rb1', tokenCount: 104_000 })).toContain('↑2.0k/s')
+
+  now += 600_000
+  expect(await render({ id: 'rb1', tokenCount: 800_000 })).not.toContain('↑')
 
   // 预算恰剩 2 列遇宽字符时，不得拼出孤零零的「…  — 」
   const tight = await render({
