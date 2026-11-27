@@ -136,7 +136,9 @@ install)
          echo '  "subagentStatusLine": {"type": "command", "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/subagent-statusline.sh\""}' ;;
     esac
     echo "  注意：subagentStatusLine 已被上游弃用（2.1.330–2.1.332 起每会话警告一次，未来版本会"
-    echo "  停止调用）。面板脚本照常可用、本仓库继续维护；替代品是 mod 的 AgentRow，见 README。"
+    echo "  停止调用）。替代品是本仓库的 mod，在提示符里装："
+    echo "    /plugin install cc-pills-agent-row --marketplace LightYourJourney/cc-pills"
+    echo "  装好后删掉 settings.json 的 subagentStatusLine，否则两行会同时画出来。"
   fi
   exit "$rc"
   ;;

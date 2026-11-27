@@ -105,6 +105,22 @@ script with `--with-subagent`, or when it is already installed) and prints wheth
 > script itself still works and this repo keeps maintaining it; the replacement is a mod's
 > `AgentRow` render point. See `docs/DECISIONS.md` for the migration note.
 
+### The replacement: `cc-pills-agent-row` (a mod)
+
+`mods/agent-row` is the same panel as a mod, drawn at the engine's `AgentRow` render point: one
+row per subagent, same content (description · model · effort · tokens with a measured rate ·
+context left · duration), fed straight from the engine's `AgentInfo` — no transcript parsing, no
+shared state, no lock. Needs Claude Code ≥ 2.1.330.
+
+At the Claude Code prompt:
+
+```
+/plugin install cc-pills-agent-row --marketplace LightYourJourney/cc-pills
+```
+
+Then remove `subagentStatusLine` from `settings.json`: with both active you get two rows. The
+bash panel stays for one more version as a transition, so you can switch back at any time.
+
 Copy-install means the repo is the source of truth and the installed files are snapshots:
 re-run `bash install.sh` after pulling. `--with-conf` writes the example config only when you
 have no config file yet. `bash install.sh --check` reports drift; `--uninstall` removes the

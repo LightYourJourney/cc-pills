@@ -14,4 +14,10 @@ if [ $# -gt 0 ]; then
   mods=(); for m in "$@"; do mods+=("test_$m"); done
   exec python3 -m unittest "${mods[@]}"
 fi
+# mod 的测试要 claude CLI（`claude plugin test`），CI runner 上没有：有就跑，没有就跳过
+if command -v claude >/dev/null 2>&1; then
+  claude plugin test ../mods/agent-row || exit 1
+else
+  echo "skip: 没有 claude CLI，mods/agent-row 的测试未跑"
+fi
 exec python3 _parallel.py

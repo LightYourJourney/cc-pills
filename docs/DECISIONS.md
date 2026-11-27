@@ -208,9 +208,25 @@
 - **上游已弃用 `subagentStatusLine`**（11-27）：Claude Code 2.1.330–2.1.332 的二进制里有
   `subagentStatusLine is deprecated in favor of mods and will stop working in a future release`，
   每个会话警告一次，官方文档已删掉这一节。脚本继续维护，`install.sh` 与两个 README 都写明
-  现状。替代品是 mod 的 `AgentRow` 渲染点：`AgentInfo` 与本脚本 stdin 的 task 字段同源（另有
-  `tokenSamples`、`cost`、面板实测的 `columns` 和可带 SGR 的 `body`），换过去就不必再解析
-  transcript。迁移方案待定。
+  现状。替代品是 mod 的 `AgentRow` 渲染点，见下一节。
+- **迁移到 mod `cc-pills-agent-row`**（11-27）：`mods/agent-row`，分发用仓库根的
+  `.claude-plugin/marketplace.json`（`/plugin install cc-pills-agent-row --marketplace
+  LightYourJourney/cc-pills`）。bash 面板保留一个版本作过渡；两者同时生效会画两行，所以
+  README 要求装 mod 后删掉 `subagentStatusLine`。
+  - **数据全部来自 `AgentInfo`**：描述取 `label`（模型写的进度摘要）否则 `description`，
+    另加 model / effort / tokenCount / contextWindowSize / startTime / status。不再解析
+    transcript，也就没有共享状态、锁、600 s 剪枝与写回失败标记。
+  - **`label` 清空、正文写进 `body`**：`label` 是引擎在名字旁画的字，不清空会与正文里的
+    描述重复。`body` 替掉的是引擎的列，指针 / 连接符 / 项目符号仍由引擎画。
+  - **速率不用 `tokenSamples`**：文档只说「约五秒一次」，换算成每秒要假设间隔，违背
+    「不显示推算值」。模块变量记上次的（时刻, tokenCount），两次实测求差，与 bash 面板同
+    口径（间隔 ≥1 s、增量非负、≥1 tok/s 才显示；基线每 2 s 才更新）。
+  - **宽度用引擎实测的 `columns`**（嵌套行的连接符已由它扣掉），截断与 `dw` 同 bash 那份；
+    落不到 `columns` 的 surface 按 120。
+  - **最低版本 2.1.330**：`AgentRow` 在该版本的二进制里首次确认；更早的版本未核实。
+  - **测试**：`claude plugin test mods/agent-row`（5 项，引擎那一层由测试钩子代替，断言
+    写进 `body` 的字符串）。`run_tests.sh` 在 PATH 里有 `claude` 时顺带跑，CI runner 没有
+    这个 CLI，所以 CI 不覆盖 mod。
 - **截断按显示宽度算**（11-27）：`length` 数的是码点，CJK / emoji 在终端占两列——80 列实测中文
   描述让整行宽 99 列，面板把行尾（tok、ctx 剩余、时长）裁掉。jq 侧 `cw` / `dw` / `cut` 与主栏
   `dw()` 同一模型（1/2 字节字符 1 列，3/4 字节 2 列，…↑↓↺↻⇡⇣ 除外），预算用各段实际拼出的

@@ -92,6 +92,22 @@ bash install.sh --with-subagent --with-conf
 > release`，每个会话警告一次，官方文档也已删掉这一节。脚本本身照常工作，本仓库继续维护；
 > 替代品是 mod 的 `AgentRow` 渲染点，迁移说明见 `docs/DECISIONS.md`。
 
+### 面板的替代品：`cc-pills-agent-row`（mod）
+
+仓库里的 `mods/agent-row` 是同一套面板的 mod 版本，用引擎的 `AgentRow` 渲染点：每个
+subagent 一行，内容不变（描述 · 模型 · effort · tok 与实测增速 · ctx 剩余 · 时长），
+数据直接来自引擎的 `AgentInfo`，不再解析 transcript、不再有共享状态与锁。需要
+Claude Code ≥ 2.1.330。
+
+在 Claude Code 的提示符里：
+
+```
+/plugin install cc-pills-agent-row --marketplace LightYourJourney/cc-pills
+```
+
+装好后从 `settings.json` 删掉 `subagentStatusLine`：两者同时生效会画出两行。bash 面板
+保留一个版本作过渡，随时可以装回去。
+
 复制安装意味着仓库是源、线上文件是快照：`git pull` 之后要重新跑一次 `bash install.sh`。
 `--with-conf` 只在还没有配置文件时写入示例配置。`bash install.sh --check` 检查两边是否一致；
 `--uninstall` 删除线上副本（本地改过则拒绝，加 `--force` 照删）。

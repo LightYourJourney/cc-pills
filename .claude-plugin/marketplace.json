@@ -1,0 +1,10 @@
+{
+  "name": "cc-pills",
+  "owner": { "name": "LightYourJourney" },
+  "plugins": [
+    {
+      "name": "cc-pills-agent-row",
+      "source": "./mods/agent-row"
+    }
+  ]
+}

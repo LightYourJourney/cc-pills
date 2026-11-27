@@ -245,6 +245,13 @@ H9 不是纸面顾虑：本轮给面板加宽度函数时就写了 `{s: .s, w: $
 | 三：文档与测试/CI 加固 | ae02145 | 332 | README 两版写弃用现状与 `refreshInterval`；install.sh 装面板时提示；DECISIONS 记四处新裁定；35 处子进程超时；jq 1.6 作业 |
 | 发布 1.0.9 | 见 tag `v1.0.9` | 332 | `VERSION=1.0.9` |
 
+### mod 迁移（11-27 决定）
+
+`mods/agent-row` 用 `AgentRow` 渲染点重写了面板：138 行 TypeScript（含宽度、格式化与
+速率基线）替掉 286 行 bash 与它背后的共享状态。5 项测试通过 `claude plugin test` 跑，
+`run_tests.sh` 在 PATH 里有 `claude` 时顺带跑。分发走仓库根的 marketplace 文件。
+bash 面板保留一个版本作过渡。
+
 ### 没有改的
 
 - 未入账集合不加界：现实规模离触发很远（本机中位数 9 条）。
